@@ -1,0 +1,1088 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PSD Editor · 在线 PSD 编辑器</title>
+<meta name="theme-color" content="#2b2b2b">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/assets/app-icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="editor/editor.css">
+<link rel="stylesheet" href="editor/ps-shell.css">
+</head>
+<body>
+<div id="bootMask" style="position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:#1e1e1e;color:#b7b7b7;font:13px/1.7 -apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif">
+  <div style="width:26px;height:26px;border:2px solid #3a3a3a;border-top-color:#2d8cf0;border-radius:50%;animation:fpBootSpin .8s linear infinite"></div>
+  <div id="bootMaskText">正在加载编辑器…</div>
+  <style>@keyframes fpBootSpin{to{transform:rotate(360deg)}}</style>
+</div>
+<div class="app ps preview">
+  
+  <header class="menubar-row">
+    <a class="brand" href="/" title="PSD Editor"><svg class="logo" viewBox="0 0 32 32" aria-hidden="true" fill="none"><rect x="7" y="6.6" width="14.6" height="14.6" rx="3.6" fill="none" stroke="#fff" stroke-width="1.7" opacity=".52"/><rect x="10.6" y="10.4" width="14.6" height="14.6" rx="3.6" fill="#fff"/><circle cx="22.4" cy="9.4" r="2.9" fill="#FF4D9D"/></svg></a>
+    <nav id="menubar" class="menubar"></nav>
+    <div class="grow"></div>
+    <div class="appbar-right">
+      <input id="file" type="file" accept=".psd,.psb,image/png,image/jpeg,image/webp,image/gif,image/bmp,image/avif,image/tiff,image/heic,image/heif,image/jxl,image/svg+xml,application/pdf,.tif,.tiff,.tga,.pbm,.pgm,.ppm,.pnm,.pam,.ico,.cur,.hdr,.exr,.svg,.pdf,.ai,.heic,.heif,.jxl,.cr2,.cr3,.crw,.nef,.nrw,.arw,.srf,.sr2,.raf,.orf,.rw2,.raw,.pef,.dng,.srw,.x3f,.3fr,.iiq,.erf,.mef,.mos,.mrw,.kdc,.dcr,.rwl" hidden>
+      <select id="modeSel" hidden><option value="rgb">RGB</option><option value="cmyk">CMYK</option></select>
+      <button id="undoBtn" class="ghost hidden-ctl" data-icon="undo-2" title="还原 (⌘/Ctrl+Z)" disabled></button>
+      <button id="redoBtn" class="ghost hidden-ctl" data-icon="redo-2" title="重做 (⌘/Ctrl+Shift+Z)" disabled></button>
+      
+      <a class="appbar-btn gh" href="https://github.com/hmwl/psdeditor" target="_blank" rel="noopener noreferrer" title="GitHub 仓库：https://github.com/hmwl/psdeditor" aria-label="GitHub 仓库"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg><span>GitHub</span></a>
+      <button class="appbar-btn share" id="exportPsd" title="导出 PSD / PNG / JPG…（⌘/Ctrl+S）">导出</button>
+      
+    </div>
+  </header>
+
+  
+  <div class="optbar preview">
+    <button class="tool-preset" id="toolPreset" title="工具预设拾取器"><span class="tp-icon"></span><i class="tp-tri"></i></button>
+    <span class="sep"></span>
+    <div class="group transform-warp-toolbar" id="grpTransformWarp" hidden aria-label="变形选项">
+      <button id="twToFree" type="button" data-icon="warp-mode" data-icon-size="16" title="切换回自由变换" aria-label="切换回自由变换"></button>
+      <span class="sep"></span><span class="seg">拆分
+        <button id="twSplitBoth" type="button" data-icon="warp-split-cross" data-icon-size="16" title="交叉拆分变形" aria-label="交叉拆分变形"></button>
+        <button id="twSplitVertical" type="button" data-icon="warp-split-vertical" data-icon-size="16" title="垂直拆分变形" aria-label="垂直拆分变形"></button>
+        <button id="twSplitHorizontal" type="button" data-icon="warp-split-horizontal" data-icon-size="16" title="水平拆分变形" aria-label="水平拆分变形"></button>
+      </span>
+      <label class="seg">网格 <select id="twGrid"><option value="default">默认</option><option value="3">3 × 3</option><option value="4">4 × 4</option><option value="5">5 × 5</option><option value="custom">自定</option><option value="custom-split" hidden>自定</option></select></label>
+      <span id="twCustomGrid" class="seg" hidden><input id="twGridCols" type="number" min="1" max="50" value="3" title="网格列数" aria-label="网格列数"> × <input id="twGridRows" type="number" min="1" max="50" value="3" title="网格行数" aria-label="网格行数"></span>
+      <button id="twGuides" type="button" title="设置变形视觉指南" aria-label="设置变形视觉指南" aria-expanded="false"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M8 2h4l.6 3 2.5 1.4 2.9-.8 2 3.4-2.3 2.2v2.8l2.3 2.2-2 3.4-2.9-.8-2.5 1.4-.6 3H8l-.6-3-2.5-1.4-2.9.8-2-3.4L2.3 14v-2.8L0 9l2-3.4 2.9.8L7.4 5z" transform="translate(2 0) scale(.8)"/><circle cx="10" cy="10" r="3"/></svg></button>
+      <span class="sep"></span><label class="seg">变形 <select id="twStyle"></select></label>
+      <button id="twDirection" type="button" data-icon="warp-orientation" data-icon-size="16" title="更改变形方向" aria-label="更改变形方向"></button>
+      <label class="seg">弯曲 <input id="twBend" type="number" min="-100" max="100" value="50">%</label>
+      <label class="seg">H <input id="twH" type="number" min="-100" max="100" value="0">%</label>
+      <label class="seg">V <input id="twV" type="number" min="-100" max="100" value="0">%</label>
+      <span id="twCylinderParams" class="seg" hidden><label>上弧 <input id="twCylinderTop" type="number" step=".05" value=".5" aria-label="圆柱体上弧"></label><label>下弧 <input id="twCylinderBottom" type="number" step=".05" value=".5" aria-label="圆柱体下弧"></label><label>深度 <input id="twCylinderStrength" type="number" min="0" max="1" step=".05" value=".9" aria-label="圆柱体深度"></label></span><button id="twReset" type="button" data-icon="warp-reset" data-icon-size="16" title="重置变形" aria-label="重置变形"></button><span class="sep"></span><button id="twCancel" type="button" data-icon="transform-cancel" data-icon-size="16" title="取消变形（Esc）" aria-label="取消变形"></button><button id="twConfirm" type="button" class="primary" data-icon="transform-commit" data-icon-size="16" title="确认变形（Enter）" aria-label="确认变形"></button>
+      <div id="twGuidePanel" class="transform-warp-guide-panel" hidden aria-label="变形视觉指南设置">
+        <label>显示 <select id="twGuideDisplay" aria-label="变形指南显示方式"><option value="auto">自动显示参考线</option><option value="always" selected>始终显示参考线</option><option value="never">从不显示参考线</option></select></label>
+        <label>颜色 <input id="twGuideColor" type="color" value="#ffffff"></label>
+        <label>不透明度 <input id="twGuideOpacity" type="number" min="0" max="100" value="100">%</label>
+        <label>密度 <input id="twGuideDensity" type="number" min="0" max="10" value="2"></label>
+      </div>
+    </div>
+    <div class="group" id="grpReplace">
+      <label class="btn" data-icon="image-plus" title="替换当前智能对象的设计图">换设计图<input id="repl" type="file" accept="image/*" hidden></label>
+      <span class="seg">覆盖 <select id="fitMode"></select></span>
+      <span class="seg" id="alignWrap">对齐
+        <select id="alignX"><option value="0">左</option><option value="0.5" selected>中</option><option value="1">右</option></select>
+        <select id="alignY"><option value="0">上</option><option value="0.5" selected>中</option><option value="1">下</option></select>
+      </span>
+      <span class="seg">缩放 <input type="range" id="fitScale" min="0.1" max="3" step="0.05" value="1" style="width:90px"><span id="fitScaleVal">1.00</span></span>
+    </div>
+    <span class="sep"></span>
+    <div class="group" id="grpMesh">
+      <span class="seg warp-mode" title="变形：拖动锚点 / 手柄 / 网格内部（变形态由 PS 的「编辑 › 变换 › 变形」进入）">
+        <button class="tool active" id="toolWarp" data-icon="spline" data-icon-size="14" title="变形（拖动锚点 / 手柄 / 网格内部）— 快捷键 V"></button>
+        <button class="tool" id="toolSplit" data-icon="grid-2x2" data-icon-size="14" title="拆分变形（在网格上点击落下经/纬线，Alt+点击删除）— 快捷键 S"></button>
+      </span>
+      <label class="seg"><input type="checkbox" id="showCage" checked> 显示控件</label>
+      <label class="seg" id="smoothWrap"><input type="checkbox" id="smooth" checked> 平滑拼接</label>
+      <span class="seg" title="超采样倍数，越高越细腻越慢">品质 <input type="range" id="ss" min="1" max="3" step="1" value="2" style="width:60px"></span>
+      <button id="resetMesh" data-icon="rotate-ccw" data-icon-size="13" title="恢复为 PSD 里的原始网格 / 变形顶点">复位</button>
+    </div>
+    <span class="sep"></span>
+    
+
+    <div class="group" id="grpDeform" hidden>
+      <span class="seg" id="dfTitle" style="color:var(--text);font-weight:600"></span>
+      <span class="sep"></span>
+      
+      <span class="seg" id="dfPuppet" hidden>
+        <span class="seg" title="网格跟着图钉走的硬度：刚性只许旋转，正常允许等比缩放，扭曲连切变一起放开">模式
+          <select id="dfMode" style="width:64px">
+            <option value="rigid">刚性</option>
+            <option value="similarity" selected>正常</option>
+            <option value="affine">扭曲</option>
+          </select>
+        </span>
+        <span class="seg" title="网格密度：点越多越贴合形状、也越慢（改它会重铺网格，图钉要重新落）">浓度
+          <select id="dfDensity" style="width:84px">
+            <option value="less">较少点</option>
+            <option value="normal" selected>正常</option>
+            <option value="more">较多点</option>
+          </select>
+        </span>
+        <span class="seg" title="网格向不透明区域外扩多少（盖住描边 / 发光的边缘）">扩展
+          <input id="dfExpand" type="number" min="0" max="400" step="1" value="2" style="width:56px"> px</span>
+        <label class="seg" title="画不画网格线（图钉一直都画）"><input id="dfShowMesh" type="checkbox" checked> 显示网格</label>
+        <span class="sep"></span>
+        <span class="seg" id="dfDepthWrap" title="图钉深度：网格自己叠起来时谁压着谁。写进 PSD、PS 里生效；本编辑器的三角网预览没有这个次序，所以画布上看不出变化">图钉深度
+          <span class="modebtns">
+            <button id="dfDepthUp" data-icon="chevron-up" data-icon-size="12" title="图钉前移（选中一枚图钉后可用）"></button>
+            <button id="dfDepthDown" data-icon="chevron-down" data-icon-size="12" title="图钉后移（选中一枚图钉后可用）"></button>
+          </span>
+        </span>
+        <span class="seg" title="选中的那枚图钉周围转多少度：自动 = 由相邻图钉推算，固定 = 按右边的角度锁死">旋转
+          <select id="dfRotMode" style="width:64px"><option value="auto">自动</option><option value="fixed">固定</option></select>
+          <input id="dfRotAngle" type="number" step="1" value="0" style="width:58px" disabled> 度</span>
+        <span class="sep"></span>
+        <button id="dfRemovePins" data-icon="eraser" data-icon-size="13" title="移去所有图钉">移去所有图钉</button>
+        <span class="seg" id="dfPinInfo" style="color:var(--muted);white-space:nowrap"></span>
+      </span>
+      
+      <span class="seg" id="dfPersp" hidden>
+        <span class="seg modebtns" title="版面：空白处拖出一个新面、拖顶点摆放它们、Alt 点面删掉（拖的是变形前的顶点）；变形：拖顶点做透视（拖的是变形后的顶点）">
+          <button id="dfLayout" style="width:auto;padding:0 10px">版面</button>
+          <button id="dfWarpMode" class="on" style="width:auto;padding:0 10px">变形</button>
+        </span>
+        <span class="seg" id="dfGridWrap" title="把放置区切成几个面（PS 里是在版面模式下一块块拖出来的）">面
+          <input type="number" id="dfCols" min="1" max="8" step="1" value="1" style="width:46px">×<input type="number" id="dfRows" min="1" max="8" step="1" value="1" style="width:46px">
+          <span id="dfGridWhy" style="color:var(--muted)"></span>
+        </span>
+        <span class="sep"></span>
+        <span class="seg modebtns" id="dfStraighten">
+          
+
+          <button id="dfStrV" data-icon="align-center" data-icon-size="12" title="自动拉直近似垂直的线"></button>
+          <button id="dfStrH" data-icon="align-center-vertical" data-icon-size="12" title="自动拉直近似水平的线"></button>
+          <button id="dfStrB" data-icon="grid-2x2" data-icon-size="12" title="水平和垂直都自动拉直"></button>
+        </span>
+        <span class="seg why" id="dfStrWhy"></span>
+      </span>
+      <span class="sep"></span>
+      <button id="dfCancel" title="取消（Esc）">✕</button>
+      <button id="dfOk" class="primary" title="确定（Enter）">✓</button>
+    </div>
+    <span class="sep"></span>
+    <div class="split-bar" id="grpSplit">
+      <label class="seg"><input type="checkbox" id="splitMode" hidden> <b>拆分</b></label>
+      <span class="seg">方向
+        <select id="splitDir">
+          <option value="both">十字（经+纬）</option>
+          <option value="u">仅经线（竖）</option>
+          <option value="v">仅纬线（横）</option>
+        </select>
+      </span>
+      <span class="seg" title="仅视觉辅助线，不影响控制点">辅助线 <input type="range" id="density" min="1" max="6" step="1" value="3" style="width:60px"><span id="densityVal">3</span></span>
+      <button id="unsplitAll" data-icon="eraser" data-icon-size="13" title="删除全部拆分线（恢复为单 patch）">清除拆分线</button>
+      <span id="warpSessionButtons" hidden>
+        <button id="warpSessionCancel" title="取消变形（Esc）">✕</button>
+        <button id="warpSessionOk" class="primary" title="确定变形（Enter）">✓</button>
+      </span>
+    </div>
+    <div class="group" id="grpMove" hidden>
+      <label class="seg" title="PS 的「自动选择」：关掉时拖动只移动当前选中的图层；按住 ⌘/Ctrl 可临时打开"><input id="mvAuto" type="checkbox"> 自动选择</label>
+      <span class="seg"><select id="mvAutoKind" style="width:74px" title="自动选择的粒度（组 = 连同所在的图层组一起选）"><option value="layer">图层</option><option value="group">组</option></select></span>
+      <label class="seg" title="PS 的「显示变换控件」：勾上后选中图层四周出现变换框，可直接拖角柄缩放、框外旋转"><input id="mvShowTf" type="checkbox"> 显示变换控件</label>
+      <span class="sep"></span>
+      <span class="seg modebtns" id="mvAlign" title="对齐：有像素选区就对到选区；选中多层时按「对齐：选区 / 画布」；只有一层时对到画布"></span>
+      <span class="seg modebtns"><button id="mvMore" title="对齐和分布：更多选项（分布 / 分布间距 / 对齐到）"></button></span>
+      <div id="mvAlignPop" class="mv-align-pop" hidden>
+        <div class="mv-pop-lab">对齐：</div><div class="modebtns" id="mvAlign2"></div>
+        <div class="mv-pop-lab">分布：</div><div class="modebtns" id="mvDistribute" title="分布：至少选中三个图层（⌘/Ctrl 点图层行多选）"></div>
+        <div class="mv-pop-lab">分布间距：</div><div class="modebtns" id="mvSpacing"></div>
+        <div class="mv-pop-lab">对齐：</div><div><select id="mvAlignTo" style="width:90px" title="选中多个图层时，对齐到它们合起来的外框（选区）还是画布"><option value="selection">选区</option><option value="canvas">画布</option></select></div>
+      </div>
+      <span class="sep"></span>
+      <span class="seg modebtns"><button id="mvGear" title="设置其它移动工具选项"></button></span>
+      <span class="seg" id="mvWhy" style="color:var(--muted)"></span>
+    </div>
+    <div class="group" id="grpZoom" hidden>
+      
+      <span class="seg modebtns" id="zmDirWrap">
+        <button id="zmIn" title="放大（按住 Alt 临时切成缩小）"></button>
+        <button id="zmOut" title="缩小（按住 Alt 临时切成放大）"></button>
+      </span>
+      <label class="seg" id="zmResizeWrap" title="调整窗口大小以满屏显示：缩放时浮动的文档窗口跟着改大小（只对浮动窗口有效）"><input id="zmResize" type="checkbox"> 调整窗口大小以满屏显示</label>
+      <label class="seg" id="zmAllWrap" title="缩放所有窗口：同时缩放所有打开的文档窗口"><input id="zmAll" type="checkbox"> 缩放所有窗口</label>
+      <label class="seg" id="zmScrubWrap" title="细微缩放：按住左右拖 = 连续缩放（右放大、左缩小），按住不动 = 持续缩放；关掉后拖一个框 = 把框里的内容放大铺满窗口"><input id="zmScrubby" type="checkbox" checked> 细微缩放</label>
+      <label class="seg" id="hdAllWrap" title="滚动所有窗口：同时滚动所有打开的文档窗口"><input id="hdAll" type="checkbox"> 滚动所有窗口</label>
+      <span class="sep"></span>
+      <button id="zm100" title="100%（⌘1；双击左侧缩放工具同）">100%</button>
+      <button id="zmFit" title="适合屏幕（⌘0；双击左侧抓手工具同）">适合屏幕</button>
+      <button id="zmFill" title="填充屏幕：图像铺满整个窗口（长边可能超出）">填充屏幕</button>
+    </div>
+    <div class="group" id="grpSel" hidden>
+      <span class="seg modebtns" title="选区运算（也可以按住 Shift 加、Alt 减、Shift+Alt 交）">
+        <button id="selModeReplace" data-attr="sel-mode-replace" class="on" title="新选区（替换）">新</button>
+        <button id="selModeAdd" data-attr="sel-mode-add" title="添加到选区（Shift）">+</button>
+        <button id="selModeSubtract" data-attr="sel-mode-subtract" title="从选区减去（Alt）">−</button>
+        <button id="selModeIntersect" data-attr="sel-mode-intersect" title="与选区交叉（Shift+Alt）">∩</button>
+      </span>
+      <span class="seg" id="selFeatherWrap">羽化: <input id="selFeather" type="number" min="0" max="1000" step="1" value="0" style="width:52px" title="选区边缘羽化半径（像素），0 = 硬边；PS 在建立选区的同时就羽化"> 像素</span>
+      <label class="seg" id="selAAWrap" title="消除锯齿：边缘按覆盖率平滑（矩形选框 / 单行单列没有斜边，PS 在这几把工具上把它置灰）"><input id="selAA" type="checkbox" checked> 消除锯齿</label>
+      <span class="seg" id="mqStyleWrap" hidden>样式: <select id="mqStyle" style="width:84px" title="正常 = 拖多大是多大；固定比例 = 拖动时锁定宽高比；固定大小 = 单击就落一个给定尺寸的框">
+          <option value="normal">正常</option><option value="ratio">固定比例</option><option value="size">固定大小</option></select>
+        &nbsp;宽度: <input id="mqW" type="number" min="0.001" step="1" value="1" style="width:56px" title="宽度（固定比例时是比例值，固定大小时是像素）">
+        <button id="mqSwap" data-attr="mq-swap" title="高度和宽度互换">⇄</button>
+        高度: <input id="mqH" type="number" min="0.001" step="1" value="1" style="width:56px" title="高度（固定比例时是比例值，固定大小时是像素）"></span>
+      <span class="seg" id="wandOpts" hidden>取样大小: <select id="wandSample" style="width:96px" title="拿落点周围多大一块的平均色当「要找的颜色」（与吸管工具的取样大小同一份设置）">
+          <option value="1">取样点</option><option value="3">3×3 平均</option><option value="5">5×5 平均</option><option value="11">11×11 平均</option>
+          <option value="31">31×31 平均</option><option value="51">51×51 平均</option><option value="101">101×101 平均</option></select>
+        &nbsp;容差: <input id="wandTol" type="number" min="0" max="255" step="1" value="32" style="width:52px" title="0–255：红 / 绿 / 蓝各通道与取样色之差都不超过它的像素才选（PS 的口径：取三通道差的最大值）"></span>
+      <label class="seg" id="wandAAWrap" hidden title="消除锯齿：选区边缘的那一圈按色差给部分覆盖率"><input id="wandAA" type="checkbox" checked> 消除锯齿</label>
+      <label class="seg" id="wandContigWrap" hidden title="只选与落点相连的区域（关闭 = 全图同色都选）"><input id="wandContig" type="checkbox" checked> 连续</label>
+      <label class="seg" id="wandAllWrap" hidden title="取样合成后的全部可见图层（关闭 = 只看选中的那一层）"><input id="wandAll" type="checkbox"> 对所有图层取样</label>
+      <span class="seg" id="sbOpacityWrap" hidden>不透明度: <input id="sbOpac" type="number" min="1" max="100" step="1" value="100" style="width:46px" title="选区画笔描边不透明度"> %</span>
+      <button id="sbBrushBtn" hidden title="修改笔尖大小和硬度" aria-label="选区画笔笔尖"></button>
+      <div id="sbOpts" class="br-pop" hidden>
+        <div class="br-pop-row">大小: <input id="sbSize" type="number" min="1" max="5000" step="1" value="60" style="width:64px" title="笔尖直径（像素）；[ / ] 调小调大"> 像素</div>
+        <div class="br-pop-row">硬度: <input id="sbHard" type="number" min="0" max="100" step="1" value="100" style="width:64px" title="笔尖边缘硬度"> %</div>
+      </div>
+      <button id="sbOverlayBtn" hidden title="叠加选项" aria-label="选区画笔叠加选项"></button>
+      <div id="sbShowWrap" class="br-pop" hidden>
+        <div class="br-pop-row">模式: <select id="sbShow" title="选区显示方式"><option value="overlay">蒙版覆盖</option><option value="ants">选择</option></select></div>
+        <div class="br-pop-row">叠加颜色: <input id="sbColor" type="color" value="#ff0080" title="叠加颜色"></div>
+        <div class="br-pop-row">不透明度: <input id="sbOverlayOp" type="number" min="1" max="100" step="1" value="50" style="width:64px" title="叠加不透明度"> %</div>
+      </div>
+      <span class="seg" id="qsOpts" hidden>大小: <input id="qsSize" type="number" min="1" max="5000" step="1" value="30" style="width:52px" title="笔尖直径（像素）；[ / ] 调小调大"> 像素</span>
+      <label class="seg" id="qsAllWrap" hidden title="取样合成后的全部可见图层（关闭 = 只看选中的那一层）"><input id="qsAll" type="checkbox"> 对所有图层取样</label>
+      <label class="seg" id="qsEnhanceWrap" hidden title="增强边缘：自动把选区边缘往真实边界上收一收、顺一顺（减少块状锯齿）"><input id="qsEnhance" type="checkbox"> 增强边缘</label>
+      <span class="seg" id="osFinderWrap" hidden><label title="对象查找程序：自动找出画面里的物体，悬停高亮、单击就选"><input id="osFinder" type="checkbox" checked> 对象查找程序</label>
+        <button id="osRefresh" data-attr="os-refresh" title="刷新对象查找程序（画面改过之后重新找一遍）"></button>
+        <button id="osShowAll" data-attr="os-show-all" title="显示所有对象（按住 N 同）"></button></span>
+      <span class="seg" id="osOpts" hidden>模式: <select id="osMode" style="width:74px" title="矩形 = 拖一个框；套索 = 徒手圈一圈"><option value="rect">矩形</option><option value="lasso">套索</option></select></span>
+      <label class="seg" id="osAllWrap" hidden title="取样合成后的全部可见图层（关闭 = 只看选中的那一层）"><input id="osAll" type="checkbox"> 对所有图层取样</label>
+      <label class="seg" id="osHardWrap" hidden title="硬化边缘：选区边缘不留半透明过渡（适合轮廓清楚的物体）"><input id="osHard" type="checkbox"> 硬化边缘</label>
+      <button id="osGear" data-attr="os-gear" hidden title="设置其它选项"></button>
+      <span class="seg" id="magOpts" hidden>宽度: <input id="magWidth" type="number" min="1" max="256" step="1" value="10" style="width:52px" title="只在光标附近这么宽的带子里找边缘（像素）；[ / ] 调，Caps Lock 显示宽度圆"> 像素
+        &nbsp;对比度: <input id="magContrast" type="number" min="1" max="100" step="1" value="10" style="width:52px" title="边缘强度低于这个百分比就当作没有边，免得在平坦区域乱贴"> %
+        &nbsp;频率: <input id="magFreq" type="number" min="0" max="100" step="1" value="57" style="width:52px" title="多久自动落一个固定点，越大越密">
+        <button id="magPen" data-attr="mag-pen" title="使用绘图板压力以更改钢笔宽度（压力越大，宽度越小）"></button></span>
+      <span class="seg" id="selSubjectWrap" hidden><button id="selSubjectBtn" data-attr="sel-subject" title="选择主体：自动选出画面里最突出的主体">选择主体</button>
+        <select id="selSubjectWhere" style="width:62px" title="处理位置：设备（更快结果）/ 云端（详细结果）。云端用的是 AI 模型，本编辑器不接，统一在本机用传统算法近似">
+          <option value="device">设备</option><option value="cloud" disabled>云端（不可用）</option></select></span>
+      <button id="selInvert" data-attr="sel-invert" class="hidden-ctl" title="反选（⌘/Ctrl+Shift+I）">反选</button>
+      <button id="selFeatherBtn" data-attr="sel-feather" class="hidden-ctl" title="按上面的羽化值羽化当前选区">羽化</button>
+      <button id="selExpand" data-attr="sel-expand" class="hidden-ctl" title="扩展 1px">扩展</button>
+      <button id="selContract" data-attr="sel-contract" class="hidden-ctl" title="收缩 1px">收缩</button>
+      <button id="selMaskBtn" data-attr="sel-and-mask" title="选择并遮住：平滑 / 移动边缘 / 羽化，实时预览">选择并遮住…</button>
+      <button id="selNone" data-attr="sel-none" class="hidden-ctl" title="取消选择（⌘/Ctrl+D）">取消选择</button>
+      <span class="seg" id="selInfo" style="color:var(--muted)"></span>
+    </div>
+    <div class="group" id="grpBrush" hidden>
+      
+      <button id="brPresetBtn" class="br-preset-btn" title="点按可打开「画笔预设」选取器（大小 / 硬度 / 角度 / 圆度 / 笔尖）"><canvas id="brPresetThumb" width="22" height="22"></canvas><span id="brPresetSize">60</span><span class="caret">▾</span></button>
+      <button id="brPanelBtn" class="br-ibtn" title="切换「画笔设置」面板（F5）"></button>
+      <div id="brPresetPop" class="br-pop" hidden>
+        <div class="br-pop-row">大小: <input id="brSize" type="range" min="1" max="5000" step="1" value="60" title="画笔直径（像素）— 快捷键 [ ]"><input id="brSizeNum" type="number" min="1" max="5000" step="1" value="60"><span id="brSizeVal" class="val">60</span> 像素</div>
+        <div class="br-pop-row">硬度: <input id="brHard" type="range" min="0" max="100" step="1" value="60" title="边缘过渡：100% 硬边，0% 全程渐隐 — 快捷键 Shift+[ ]"><input id="brHardNum" type="number" min="0" max="100" step="1" value="60"><span id="brHardVal" class="val">60%</span></div>
+        <div class="br-pop-row br-angle-row"><canvas id="brAngleDial" width="72" height="72" title="拖箭头改角度，拖两个圆点改圆度"></canvas>
+          <span>角度: <input id="brAngleNum" type="number" min="-180" max="180" step="1" value="0">°<br>圆度: <input id="brRoundNum" type="number" min="1" max="100" step="1" value="100">%</span></div>
+        <label class="br-pop-row">作用于 <select id="brTarget" data-attr="brush-target"><option value="pixels">图层像素</option><option value="mask">图层蒙版</option></select></label>
+        <div id="brPresetList" class="br-preset-list"></div>
+      </div>
+
+      <span class="seg" id="brAdjWrap" hidden>调整: <select id="brAdjKind" title="要刷上去的调整（落笔时自动建一个对应的调整图层）"></select></span>
+      <span class="seg" id="brAdjOps" hidden><button id="brAdjAdd" class="br-ibtn on" title="添加到调整（在蒙版上刷白）"></button><button id="brAdjSub" class="br-ibtn" title="从调整中减去（在蒙版上刷黑）— 按 X 切换"></button></span>
+      <label class="seg" id="brAdjOverlayWrap" hidden title="用洋红色显示已刷上调整的区域"><input id="brAdjOverlay" type="checkbox"> 显示叠加</label>
+      <span class="seg" id="brMixerSlot" hidden></span>
+      <span class="seg" id="brModeWrap">模式: <select id="brMode" style="width:112px" title="绘画混合模式"></select></span>
+      <span class="seg" id="brEraseModeWrap" hidden>模式: <select id="brEraseMode" style="width:64px" title="橡皮擦的笔尖：画笔（软边）/ 铅笔（硬边无抗锯齿）/ 块（固定大小的方块）"><option value="brush">画笔</option><option value="pencil">铅笔</option><option value="block">块</option></select></span>
+      <span class="seg" id="brOpacityWrap">不透明度: <input id="brOpacity" type="range" min="1" max="100" step="1" value="100" style="width:70px" title="一笔画到底能达到的最大覆盖率（数字键 1…0）"><span id="brOpacityVal" class="val">100%</span></span>
+      <button id="brPressOp" class="br-ibtn" title="始终对「不透明度」使用压力。关闭时，由「画笔设置」面板控制压力"></button>
+      <span class="seg" id="brArtSlot" hidden></span>
+      <span class="seg" id="brFlowWrap">流量: <input id="brFlow" type="range" min="1" max="100" step="1" value="100" style="width:70px" title="每一个笔尖印记贡献的覆盖率（Shift+数字键）"><span id="brFlowVal" class="val">100%</span></span>
+      <button id="brAir" class="br-ibtn" title="启用喷枪样式的建立效果（Alt+Shift+P）：按住不动也会持续上色"></button>
+      <span class="seg" id="brSmoothWrap">平滑: <input id="brSmooth" type="range" min="0" max="100" step="1" value="10" style="width:60px" title="设置描边平滑度，值越大抖动越少"><span id="brSmoothVal" class="val">10%</span><button id="brSmoothGear" class="br-ibtn" title="设置其它平滑选项"></button></span>
+      <span class="seg" id="brAngleWrap" title="设置画笔角度"><span id="brAngleIco"></span><input id="brAngle" type="number" min="-180" max="180" step="1" value="0" style="width:46px">°</span>
+      <label class="seg" id="brAutoEraseWrap" hidden title="自动抹除：落笔处是前景色时改画背景色（PS 铅笔）"><input id="brAutoErase" type="checkbox"> 自动抹除</label>
+      <label class="seg" id="brToHistWrap" hidden title="抹到历史记录：把擦过的地方恢复到历史记录面板里选定的源状态（按住 Alt 临时启用）"><input id="brToHist" type="checkbox"> 抹到历史记录</label>
+      <button id="brPressSize" class="br-ibtn" title="始终对「大小」使用压力。关闭时，由「画笔设置」面板控制压力"></button>
+      <button id="brSym" class="br-ibtn br-sym" title="设置绘画的对称选项"></button>
+      <span class="swatchpair hidden-ctl" title="前景色 / 背景色（X 交换、D 复位）"><i class="fg" id="brFg"></i><i class="bg" id="brBg"></i></span>
+      <button id="brSwap" data-attr="brush-swap" class="hidden-ctl" title="交换前景/背景色（X）">⇄</button>
+      <button id="brAddMask" data-attr="brush-add-mask" hidden title="这个图层没有蒙版：新建一个再涂">新建蒙版</button>
+      <span class="seg why" id="brWhy"></span>
+    </div>
+    <div class="group" id="grpBrushOps" hidden>
+      <span class="seg modebtns"><button id="boCloneSrcBtn" hidden title="切换仿制源面板">仿制源</button></span>
+      <span class="seg" id="boBlendWrap" hidden>模式: <select id="boBlend" style="width:92px" title="仿制 / 图案像素以什么混合模式落到图层上">
+        <option value="norm">正常</option><option value="diss">溶解</option>
+        <option value="dark">变暗</option><option value="mul ">正片叠底</option><option value="idiv">颜色加深</option><option value="lbrn">线性加深</option><option value="dkCl">深色</option>
+        <option value="lite">变亮</option><option value="scrn">滤色</option><option value="div ">颜色减淡</option><option value="lddg">线性减淡（添加）</option><option value="lgCl">浅色</option>
+        <option value="over">叠加</option><option value="sLit">柔光</option><option value="hLit">强光</option><option value="vLit">亮光</option><option value="lLit">线性光</option><option value="pLit">点光</option><option value="hMix">实色混合</option>
+        <option value="diff">差值</option><option value="smud">排除</option><option value="fsub">减去</option><option value="fdiv">划分</option>
+        <option value="hue ">色相</option><option value="sat ">饱和度</option><option value="colr">颜色</option><option value="lum ">明度</option></select></span>
+      <span class="seg modebtns"><button id="boAirbrush" hidden title="启用喷枪样式的建立效果：按住不动也会按流量继续堆积">喷枪</button></span>
+      <span class="seg" id="boPatternWrap" hidden>图案 <select id="boPattern" style="width:120px" title="图案（内置图案 + 文档里的图案资源）"></select></span>
+      <label class="seg" id="boAlignWrap" hidden title="对齐：连续取样，松开再涂也不丢失当前取样点（图案图章：图案按文档原点平铺；关掉 = 每一笔都重新开始）"><input id="boAlign" type="checkbox" checked> 对齐</label>
+      <label class="seg" id="boImpWrap" hidden title="印象派效果：用图案颜色涂出一块块色斑"><input id="boImp" type="checkbox"> 印象派效果</label>
+      <span class="seg" id="boCsSampleWrap" hidden>样本: <select id="boCsSample" style="width:110px" title="从哪些图层取样"><option value="layer">当前图层</option><option value="below">当前和下方图层</option><option value="all">所有图层</option></select>
+        <button id="boCsIgnoreAdj" title="打开以在仿制时忽略调整图层">忽略调整</button></span>
+      <span class="seg" id="boSampleWrap" hidden>样本 <select id="boSample" style="width:110px" title="从哪儿取像素"><option value="layer">当前图层</option><option value="merged">所有图层</option></select></span>
+      <span class="seg" id="boTolWrap" hidden>容差: <input id="boTol" type="number" min="0" max="255" step="1" value="30" style="width:52px" title="颜色离取样色多远还算同一片（L∞）"></span>
+      <span class="seg" id="boModeWrap" hidden>模式 <select id="boMode" style="width:90px"></select></span>
+      <span class="seg" id="boStrengthWrap" hidden><span id="boStrengthLab">强度:</span> <input id="boStrength" type="range" min="1" max="100" step="1" value="50" style="width:70px"><span id="boStrengthVal" class="val">50%</span></span>
+      <label class="seg" id="boAllLayersWrap" hidden title="对所有图层取样：用所有可见图层合成后的画面来算（结果仍只写当前图层）"><input id="boAllLayers" type="checkbox"> 对所有图层取样</label>
+      <label class="seg" id="boProtectDetailWrap" hidden title="保护细节：增强细节并尽量减少锐化带来的像素化 / 彩边 / 光晕"><input id="boProtectDetail" type="checkbox" checked> 保护细节</label>
+      <label class="seg" id="boFingerWrap" hidden title="手指绘画：用前景色开始涂抹（按住 Alt 临时切换）"><input id="boFinger" type="checkbox"> 手指绘画</label>
+      <span class="seg" id="boRangeWrap" hidden>范围: <select id="boRange" style="width:84px"><option value="shadows">阴影</option><option value="midtones" selected>中间调</option><option value="highlights">高光</option></select></span>
+      <span class="seg" id="boExposureWrap" hidden>曝光度: <input id="boExposure" type="range" min="1" max="100" step="1" value="50" style="width:70px"><span id="boExposureVal" class="val">50%</span></span>
+      <label class="seg" id="boProtectTonesWrap" hidden title="保护色调：尽量减少阴影与高光的修剪，并防止颜色的色相偏移"><input id="boProtectTones" type="checkbox" checked> 保护色调</label>
+      <label class="seg" id="boVibranceWrap" hidden title="越是已经很艳的像素动得越少（PS 的「自然饱和度」）"><input id="boVibrance" type="checkbox" checked> 自然饱和度</label>
+      <span class="seg" id="boSampModeWrap" hidden>取样: <span class="modebtns" id="boSampMode"><button data-v="continuous" title="取样：连续（拖动时一直取笔尖中心下的颜色）">连续</button><button data-v="once" title="取样：一次（只取落笔那一下的颜色）">一次</button><button data-v="swatch" title="取样：背景色板（用背景色）">背景色板</button></span></span>
+      <span class="seg" id="boLimitWrap" hidden>限制: <select id="boLimit" style="width:84px" title="不连续 = 笔尖下凡是相近颜色都算；连续 = 只算与笔尖中心相连的；查找边缘 = 连续并保留形状边缘的锐利"><option value="discontiguous">不连续</option><option value="contiguous">连续</option><option value="findEdges">查找边缘</option></select></span>
+      <span class="seg" id="boTolPctWrap" hidden>容差: <input id="boTolPct" type="number" min="1" max="100" step="1" value="30" style="width:48px" title="颜色离取样色多远还算同一种（1–100%）">%</span>
+      <label class="seg" id="boAAWrap" hidden title="消除锯齿：在作用区域边缘给一条柔和的过渡"><input id="boAA" type="checkbox" checked> 消除锯齿</label>
+      <label class="seg" id="boProtectWrap" hidden title="与前景色同样贴近的像素不擦（PS 的「保护前景色」）"><input id="boProtect" type="checkbox"> 保护前景色</label>
+      <label class="seg" id="boContigWrap" hidden title="连续：只擦与点击处相连的区域（Shift+点临时反转）"><input id="boContig" type="checkbox" checked> 连续</label>
+      <label class="seg" id="boAllWrap" hidden title="对所有图层取样：按所有可见图层合成后的颜色判断（仍只擦当前图层）"><input id="boAll" type="checkbox"> 对所有图层取样</label>
+      <span class="seg" id="boOpWrap" hidden>不透明度: <input id="boOp" type="number" min="1" max="100" step="1" value="100" style="width:48px" title="擦除强度：100% = 完全透明">%</span>
+      <button id="boSampleBtn" hidden title="取样：先按这里（或按住 Alt 在画布上点）">取样</button>
+      <span class="seg" id="boInfo" style="opacity:.7"></span>
+    </div>
+    <div class="group" id="grpPath" hidden>
+      <span class="seg" id="pathScopeWrap" title="选择：现用图层 = 只在当前路径上选；所有图层 = 点到哪个形状层的路径就切过去">选择: <select id="pathScope" style="width:84px"><option value="layer">现用图层</option><option value="all">所有图层</option></select></span>
+      <span class="sep"></span>
+      <span class="seg" id="pathBtns" style="display:inline-flex;gap:2px;align-items:center"></span>
+      <label class="seg" title="对齐边缘：移动路径时位移取整，形状边缘落在像素网格上"><input id="pathSnap" type="checkbox"> 对齐边缘</label>
+      <label class="seg" id="pathConstrainWrap" title="约束路径拖动：拖曲线段只改这一段（两端平滑点被掰断）；不勾时两端保持平滑、相邻段跟着变"><input id="pathConstrain" type="checkbox"> 约束路径拖动</label>
+      <span class="sep"></span>
+      <span class="seg" id="pathInfo" style="color:var(--muted)"></span>
+      <span class="seg why" id="pathWhy"></span>
+      <span class="seg" id="pathOps" hidden>
+        <button id="pathToSel" class="ghost" title="将路径作为选区载入">载入选区</button>
+        <button id="selToPath" class="ghost" title="从选区建立工作路径">选区 → 路径</button>
+      </span>
+    </div>
+    <div class="group" id="grpText" hidden>
+      <button id="txOrient" class="tx-ibtn" title="切换文本取向（横排 ↔ 直排）"></button>
+      <button id="txFont" class="fontbtn" title="设置字体系列（读取本机字体）"><span id="txFontName" style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Arial</span><span class="caret">▾</span></button>
+      <select id="txFontStyle" title="设置字体样式" style="width:96px" disabled><option>—</option></select>
+      <span class="seg tx-lab" id="txSizeLab" title="设置字体大小（点）"><input id="txSize" type="number" min="0.01" max="1296" step="0.5" value="24" style="width:56px" title="字号（点）"><button id="txSizeMenu" class="tx-caret" type="button" title="字号预设">▾</button></span>
+      <span class="seg tx-lab" id="txAALab" title="设置消除锯齿的方法"><select id="txAA" style="width:88px" title="设置消除锯齿的方法"></select></span>
+      <span class="seg modebtns" id="txAligns" title="段落对齐"></span>
+      <span class="seg tx-lab" title="设置文本颜色"><input id="txColor" type="color" value="#000000" style="width:34px;height:22px;padding:0;border:1px solid var(--ps-line-2);background:var(--ps-input)" title="设置文本颜色"></span>
+      <button id="txWarp" class="tx-ibtn" title="创建文字变形"></button>
+      <button id="txDynamic" class="tx-ibtn" title="动态文本：文字随文字框自动调整字号与换行（再点一次还原为普通文字）"></button>
+      <button id="txPanels" class="tx-ibtn" title="切换字符和段落面板"></button>
+      <span class="seg modebtns" hidden><button id="txBold" class="tx-ibtn" title="仿粗体">B</button><button id="txItalic" class="tx-ibtn" title="仿斜体"><i>I</i></button></span>
+      <button id="txEdit" title="在画布上就地编辑这段文字（双击文字层同效）" hidden>编辑文字</button>
+      <span class="sep"></span>
+      <button id="txCancel" class="tx-ibtn" title="取消所有当前编辑" hidden>✕</button>
+      <button id="txCommit" class="tx-ibtn" title="提交所有当前编辑（⌘/Ctrl+Enter、Esc）" hidden>✓</button>
+      <span class="seg why" id="txWhy"></span>
+    </div>
+    <div class="group" id="grpFrame" hidden>
+      
+      <span class="seg modebtns" id="frKinds">
+        <button id="frRect" data-kind="rect" title="创建新的矩形图框"></button>
+        <button id="frEllipse" data-kind="ellipse" title="创建新的椭圆图框"></button>
+      </span>
+      <select id="frKind" hidden><option value="rect">矩形</option><option value="ellipse">椭圆</option></select>
+      <span class="sep"></span>
+      <button id="frPlace" title="置入：选一张图片放进选中的图框（按图框大小铺满，多出的部分被图框裁掉）；也可以直接把图片文件拖到画布上的图框里">置入图像…</button>
+      <button id="frPut" title="将所选像素图层或智能对象放进图框">放进图框</button>
+      <button id="frTake" title="将内容智能对象移到图框外">取出</button>
+      <span class="seg" id="frInfo" style="opacity:.7"></span>
+    </div>
+    <div class="group" id="grpArtboard" hidden>
+      <span class="seg">大小： <select id="abPreset" style="width:190px" title="画板预设尺寸（选中画板时直接改它的尺寸）"></select></span>
+      <span class="seg">宽度： <input id="abW" type="number" min="1" max="30000" step="1" style="width:64px" title="画板宽度（像素）"></span>
+      <span class="seg modebtns"><button id="abSwap" title="交换宽度和高度"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 5h10M9 2l3 3-3 3M12 9H2M5 6l-3 3 3 3"/></svg></button></span>
+      <span class="seg">高度： <input id="abH" type="number" min="1" max="30000" step="1" style="width:64px" title="画板高度（像素）"></span>
+      <span class="sep"></span>
+      <span class="seg modebtns">
+        <button id="abPortrait" title="制作纵版"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="4" y="1.5" width="6" height="11" rx="1"/></svg></button>
+        <button id="abLandscape" title="制作横版"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.5" y="4" width="11" height="6" rx="1"/></svg></button>
+      </span>
+      <span class="seg">背景： <select id="abBg" style="width:74px" title="画板背景颜色（白色 / 黑色 / 透明 / 其它）"></select>
+        <input id="abBgColor" type="color" value="#ffffff" hidden title="画板背景的自定颜色" style="width:30px;height:22px;padding:0;border:1px solid var(--ps-line-2);background:var(--ps-input)"></span>
+      <span class="sep"></span>
+      <span class="seg modebtns"><button id="abAdd" title="添加新画板（放在选中画板 / 最右边画板的右侧）"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.5" y="2.5" width="8" height="9" rx="1"/><path d="M11.5 4v5M9 6.5h5"/></svg></button></span>
+      <span class="seg modebtns"><button id="abGear" title="设置其它画板选项"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2"><circle cx="7" cy="7" r="2"/><path d="M7 1v2M7 11v2M1 7h2M11 7h2M2.8 2.8l1.4 1.4M9.8 9.8l1.4 1.4M2.8 11.2l1.4-1.4M9.8 4.2l1.4-1.4"/></svg></button></span>
+      <span class="seg" id="abInfo" style="opacity:.7"></span>
+    </div>
+    <div class="group" id="grpSlice" hidden>
+      
+      <span class="seg" id="slStyleWrap">样式： <select id="slStyle" style="width:100px" title="正常 = 拖多大是多大；固定长宽比 = 按宽高比拖；固定大小 = 单击就放一块指定尺寸的切片"><option value="normal">正常</option><option value="ratio">固定长宽比</option><option value="fixed">固定大小</option></select></span>
+      <span class="seg" id="slSizeWrap">宽度： <input id="slW" type="number" min="1" step="1" value="1" style="width:56px" title="宽度（固定长宽比 = 比例；固定大小 = 像素）"> 高度： <input id="slH" type="number" min="1" step="1" value="1" style="width:56px" title="高度（固定长宽比 = 比例；固定大小 = 像素）"></span>
+      <button id="slFromGuides" title="按现有参考线把画布切成网格（每格一块用户切片，替换现有切片）">基于参考线的切片</button>
+      
+      <span class="seg modebtns" id="slOrderWrap">
+        <button id="slTop" title="置为顶层"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="4" y="4" width="8" height="8" fill="currentColor" fill-opacity=".35"/><path d="M2 2h8M2 2v8"/></svg></button>
+        <button id="slUp" title="前移一层"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="2" y="2" width="7" height="7" fill="currentColor" fill-opacity=".35"/><rect x="5" y="5" width="7" height="7"/></svg></button>
+        <button id="slDown" title="后移一层"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="2" y="2" width="7" height="7"/><rect x="5" y="5" width="7" height="7" fill="currentColor" fill-opacity=".35"/></svg></button>
+        <button id="slBottom" title="置为底层"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="2" y="2" width="8" height="8" fill="currentColor" fill-opacity=".35"/><path d="M12 4v8H4"/></svg></button>
+      </span>
+      <button id="slPromote" title="提升：把选中的自动切片（或基于图层的切片）变成用户切片">提升</button>
+      <button id="slDivide" title="划分切片：把选中的切片横竖均分">划分…</button>
+      <button id="slHideAuto" title="隐藏自动切片">隐藏自动切片</button>
+      <span class="seg modebtns"><button id="slOptions" title="为当前切片设置选项（名称 / URL / 目标 / 信息文本 / Alt 标记）；双击切片同效"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="1.5" y="2.5" width="11" height="9" rx="1"/><path d="M4 5.5h6M4 8.5h4"/></svg></button></span>
+      <button id="slDelete" title="删除选中的切片（Delete）">删除</button>
+      <label class="seg" title="在画布上显示切片框与号码（视图 › 显示 › 切片）"><input id="slShow" type="checkbox" checked> 显示切片</label>
+      <span class="seg" id="slInfo" style="opacity:.7"></span>
+    </div>
+    <div class="group" id="grpPCrop" hidden>
+      <span class="seg">W： <input id="pcW" type="number" min="1" max="30000" step="1" style="width:64px" placeholder="自动" title="摆正之后的宽度（像素；留空 = 按四边形边长自动算）"></span>
+      <span class="seg modebtns"><button id="pcSwap" title="高度和宽度互换"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 5h10M9 2l3 3-3 3M12 9H2M5 6l-3 3 3 3"/></svg></button></span>
+      <span class="seg">H： <input id="pcH" type="number" min="1" max="30000" step="1" style="width:64px" placeholder="自动" title="摆正之后的高度（像素；留空 = 按四边形边长自动算）"></span>
+      <span class="seg">分辨率： <input id="pcRes" type="number" min="1" max="10000" step="1" style="width:52px" title="摆正之后的分辨率（留空 = 保持文档原分辨率）"> <select id="pcResUnit" style="width:82px" title="分辨率单位"><option value="in">像素/英寸</option><option value="cm">像素/厘米</option></select></span>
+      <button id="pcFront" title="前面的图像：宽 / 高 / 分辨率取当前文档的值">前面的图像</button>
+      <button id="pcClear" title="清除宽度 / 高度 / 分辨率">清除</button>
+      <label class="seg" title="显示网格：框里画一张透视网格，方便对齐画面里本该平行的线"><input id="pcGrid" type="checkbox" checked> 显示网格</label>
+      <span class="seg" id="pcInfo" style="opacity:.7"></span>
+      <span class="sep"></span>
+      <button id="pcCancel" title="取消当前裁剪操作（Esc）">✕</button>
+      <button id="pcOk" class="primary" title="提交当前裁剪操作（Enter）">✓</button>
+    </div>
+    <div class="group" id="grpCrop" hidden>
+      <span class="seg"><select id="cropRatio" style="width:150px" title="选择预设长宽比或裁剪尺寸"></select></span>
+      <span class="seg"><input id="cropW" type="text" inputmode="decimal" style="width:58px" title="设置宽度（「比例」= 长宽比里的宽；「宽 x 高 x 分辨率」= 裁剪后的宽度）"></span>
+      <span class="seg modebtns"><button id="cropSwap" title="高度和宽度互换（X 键同时把裁剪框横竖对调）"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 5h10M9 2l3 3-3 3M12 9H2M5 6l-3 3 3 3"/></svg></button></span>
+      <span class="seg"><input id="cropH" type="text" inputmode="decimal" style="width:58px" title="设置高度（「比例」= 长宽比里的高；「宽 x 高 x 分辨率」= 裁剪后的高度）"></span>
+      <span class="seg" id="cropUnitWrap" hidden><select id="cropUnit" title="宽度 / 高度的单位" style="width:52px"><option value="px">像素</option><option value="in">英寸</option><option value="cm">厘米</option><option value="mm">毫米</option></select></span>
+      <span class="seg" id="cropResWrap" hidden><input id="cropRes" type="text" inputmode="decimal" style="width:48px" title="裁剪后的分辨率（留空 = 保持文档原分辨率）"> <select id="cropResUnit" title="分辨率单位" style="width:82px"><option value="in">像素/英寸</option><option value="cm">像素/厘米</option></select></span>
+      <button id="cropClear" title="清除长宽比值">清除</button>
+      <span class="sep"></span>
+      <span class="seg modebtns"><button id="cropStraight" title="拉直：通过在图像上画一条线来拉直该图像（裁剪中按住 ⌘/Ctrl 拖动同效）"><svg width="16" height="14" viewBox="0 0 16 14" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="1" y="4.5" width="14" height="5" rx="1"/><path d="M6.5 7h3"/><circle cx="8" cy="7" r="1.1"/></svg></button></span>
+      <span class="seg"><input id="cropAngle" type="number" min="-180" max="180" step="0.1" style="width:52px" title="画面旋转角度（−180…180 度）：提交时整幅画面按这个角度转正">°</span>
+      <button id="cropAuto" title="自动：按画面内容检测倾角并拉直（PS 的自动拉直）">自动</button>
+      <span class="seg modebtns"><button id="cropOverlayBtn" title="设置裁剪工具的叠加选项（O 循环切换叠加 · Shift+O 循环切换取向）"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="1" y="1" width="12" height="12"/><path d="M5 1v12M9 1v12M1 5h12M1 9h12"/></svg></button></span>
+      <span class="seg modebtns"><button id="cropGear" title="设置其它裁切选项"></button></span>
+      <label class="seg" title="删除裁剪的像素：勾上 = 导出时把新画布之外的图层像素真正删掉；不勾 = 与 PS 默认一样保留在文件里，以后还能再把框拉回去"><input id="cropDelete" type="checkbox"> 删除裁剪的像素</label>
+      <label class="seg" title="内容识别：拉直 / 旋转 / 扩展画布时，框里露出的空白用周围内容自动填好（不勾 = 透明；背景图层 = 背景色）"><input id="cropAware" type="checkbox"> 内容识别</label>
+      <span class="seg" id="cropInfo" style="color:var(--muted)"></span>
+      <span class="sep"></span>
+      <span class="seg modebtns"><button id="cropReset" title="复位裁剪框、图像旋转以及长宽比设置"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2.5 7a4.5 4.5 0 1 0 1.3-3.2"/><path d="M2.5 1.5v2.8h2.8"/></svg></button></span>
+      <button id="cropCancel" title="取消当前裁剪操作（Esc）">✕</button>
+      <button id="cropOk" class="primary" title="提交当前裁剪操作（Enter）">✓</button>
+    </div>
+    <div class="group" id="grpGrad" hidden>
+      <span class="seg"><select id="gdMode" style="width:92px" title="渐变模式：渐变 = 新建可编辑的渐变填充图层（画布上带控件）；经典渐变 = 直接画到当前图层的像素上">
+        <option value="gradient">渐变</option><option value="classic">经典渐变</option></select></span>
+      <span class="seg gd-pick"><span id="gdSwatch" data-attr="grad-swatch" style="width:96px;height:16px;border:1px solid var(--line);border-radius:2px;display:inline-block"></span><button id="gdPickBtn" type="button" class="gd-caret" title="点按可打开「渐变」拾取器">▾</button></span>
+      <span class="sep"></span>
+      <span class="seg modebtns" id="gdStyles" title="渐变样式（PS 的五个按钮）"></span>
+      <span class="sep"></span>
+      <span class="seg" id="gdBlendWrap" hidden>模式: <select id="gdBlend" style="width:96px" title="渐变颜色与图层原有像素的混合方式"></select></span>
+      <span class="seg" id="gdOpacityWrap" hidden>不透明度: <input id="gdOpacity" type="number" min="0" max="100" step="1" value="100" style="width:56px">%</span>
+      <label class="seg" title="反向：色标首尾对调"><input id="gdReverse" type="checkbox"> 反向</label>
+      <label class="seg" title="仿色：用平滑的混合创建较平滑的渐变（压掉 8 位里的色带）"><input id="gdDither" type="checkbox" checked> 仿色</label>
+      <label class="seg" id="gdTransWrap" hidden title="透明区域：使用渐变里的不透明度色标（关掉 = 一律不透明）"><input id="gdTrans" type="checkbox" checked> 透明区域</label>
+      <span class="seg">方法: <select id="gdMethod" style="width:78px" title="插值方法：可感知（OKLab，默认）/ 线性（线性光）/ 古典（旧版 sRGB 三次插值）/ 平滑 / 条纹"></select></span>
+      <span class="seg" id="gdInfo" style="color:var(--muted)"></span>
+    </div>
+    <div class="group" id="grpBucket" hidden>
+      <span class="seg"><select id="bkSource" style="width:72px" title="设置填充区域的源"><option value="fg">前景</option><option value="pattern">图案</option></select></span>
+      <span class="seg" id="bkSwatch" style="width:22px;height:16px;border:1px solid var(--line);border-radius:2px;display:inline-block"></span>
+      <span class="seg" id="bkPatternWrap" hidden><select id="bkPattern" style="width:120px"></select></span>
+      <span class="sep"></span>
+      <span class="seg">模式: <select id="bkBlend" style="width:96px"></select></span>
+      <span class="seg">不透明度: <input id="bkOpacity" type="number" min="0" max="100" step="1" value="100" style="width:56px">%</span>
+      <span class="seg">容差: <input id="bkTol" type="number" min="0" max="255" step="1" value="32" style="width:56px"></span>
+      <label class="seg" title="消除锯齿：柔化填充区域的边缘"><input id="bkAA" type="checkbox" checked> 消除锯齿</label>
+      <label class="seg" title="只填与落点连成一片的区域（关掉 = 填整层所有颜色接近的像素）"><input id="bkContig" type="checkbox" checked> 连续的</label>
+      <label class="seg" title="按合成后的画面取样判定区域（填充仍然只写当前图层）"><input id="bkAll" type="checkbox"> 所有图层</label>
+      <span class="seg" id="bkInfo" style="color:var(--muted)"></span>
+    </div>
+    
+    <div class="group" id="grpRetouch" hidden>
+      <span class="seg" id="rtBrushWrap"><button id="rtBrushBtn" class="presetbtn" title="画笔预设选取器：大小 / 硬度 / 间距（[ ] 改大小）"><span class="pv" id="rtBrushPv"></span><span class="pn" id="rtBrushSize">24</span><span class="pc">▾</span></button></span>
+      <span class="seg modebtns" id="rtSelOps" hidden title="选区运算（也可以按住 Shift 加、Alt 减、Shift+Alt 交）">
+        <button data-m="replace" data-icon="sel-new" title="新选区">新</button><button data-m="add" data-icon="sel-add" title="添加到选区（Shift）">+</button><button data-m="subtract" data-icon="sel-subtract" title="从选区减去（Alt）">−</button><button data-m="intersect" data-icon="sel-intersect" title="与选区交叉（Shift+Alt）">∩</button>
+      </span>
+      <span class="seg modebtns"><button id="rtCloneSrcBtn" hidden title="切换仿制源面板">仿制源</button></span>
+      <span class="seg" id="rtModeWrap">模式: <select id="rtMode" style="width:84px" title="修复结果以哪种混合模式落回原图（替换：柔边笔触的边缘保留杂色、胶片颗粒与纹理）">
+        <option value="normal">正常</option><option value="replace">替换</option><option value="multiply">正片叠底</option><option value="screen">滤色</option><option value="darken">变暗</option><option value="lighten">变亮</option><option value="color">颜色</option><option value="luminosity">明度</option></select></span>
+      <span class="seg" id="rtTypeWrap" hidden>类型:
+        <label title="比较附近的图像内容，不留痕迹地填充选区，同时保留阴影与边缘等关键细节"><input type="radio" name="rtType" value="content"> 内容识别</label>
+        <label title="用涂抹区域四周的像素拼出纹理再融合进来（适合颗粒、布纹这类没有结构的地方）"><input type="radio" name="rtType" value="texture"> 创建纹理</label>
+        <label title="用笔触边缘周围的像素找一块最像的区域，拿来修补"><input type="radio" name="rtType" value="proximity"> 近似匹配</label></span>
+      <span class="seg" id="rtSourceWrap" hidden>源:
+        <label title="Alt/⌥ 点击取样，用取样处的像素修复"><input type="radio" name="rtSrc" value="sample"> 取样</label>
+        <label title="用图案修复"><input type="radio" name="rtSrc" value="pattern"> 图案</label>
+        <select id="rtHealPattern" style="width:96px" title="图案（内置图案 + 文档里的图案）" hidden></select></span>
+      <label class="seg" id="rtAlignWrap" hidden title="对齐：连续取样，松开再涂也不丢失当前取样点（关掉 = 每一笔都从最初的取样点开始）"><input id="rtAlign" type="checkbox" checked> 对齐</label>
+      <label class="seg" id="rtLegacyWrap" hidden title="使用旧版：扩散固定为完全融合（CC 2014 之前的修复算法口径）"><input id="rtLegacy" type="checkbox"> 使用旧版</label>
+      <span class="seg" id="rtSampleWrap" hidden>样本: <select id="rtSample" style="width:110px" title="从哪些图层取样"><option value="layer">当前图层</option><option value="below">当前和下方图层</option><option value="all">所有图层</option></select>
+        <button id="rtIgnoreAdj" title="打开以在修复时忽略调整图层">忽略调整</button></span>
+      <span class="seg" id="rtPatchKindWrap" hidden>修补: <select id="rtPatchKind" style="width:84px"><option value="normal">正常</option><option value="content">内容识别</option></select></span>
+      <span class="seg" id="rtPatchModeWrap" hidden>
+        <label title="源：把选区拖到干净的地方，选区里的内容被那里的纹理替换"><input type="radio" name="rtPatchMode" value="source"> 源</label>
+        <label title="目标：把选区里的内容复制到拖到的地方"><input type="radio" name="rtPatchMode" value="destination"> 目标</label></span>
+      <label class="seg" id="rtTransparentWrap" hidden title="透明：从取样区域提取透明纹理（只叠纹理，颜色与结构保持目标的）"><input id="rtTransparent" type="checkbox"> 透明</label>
+      <span class="seg" id="rtUsePatternWrap" hidden><button id="rtUsePattern" title="用选定的图案修复选区">使用图案</button> <select id="rtPatchPattern" style="width:96px" title="图案（内置图案 + 文档里的图案）"></select></span>
+      <span class="seg" id="rtMoveModeWrap" hidden>模式: <select id="rtMoveMode" style="width:70px" title="移动：搬到新位置、原处补掉；扩展：复制过去（拉长 / 缩短头发、树、建筑）"><option value="move">移动</option><option value="extend">扩展</option></select></span>
+      <span class="seg" id="rtStructWrap" hidden>结构: <input id="rtStructure" type="number" min="1" max="7" step="1" value="4" style="width:44px" title="1–7：修补内容保持现有图像图案的严格程度（7 = 最严格）"></span>
+      <span class="seg" id="rtColorWrap" hidden>颜色: <input id="rtColor" type="number" min="0" max="10" step="1" value="0" style="width:44px" title="0–10：算法颜色混合的程度（0 = 不混合，10 = 最大）"></span>
+      <label class="seg" id="rtAllWrap" hidden title="用所有可见图层的数据修复，结果写进当前图层"><input id="rtAll" type="checkbox"> 对所有图层取样</label>
+      <label class="seg" id="rtTodWrap" hidden title="投影时变换：放下之后可以缩放 / 旋转，再按 Enter 提交"><input id="rtTod" type="checkbox" checked> 投影时变换</label>
+      <span class="seg modebtns"><button id="rtPressure" hidden title="始终对「大小」使用压力（数位笔）">压力</button></span>
+      <span class="seg" id="rtDiffWrap" hidden>扩散: <input id="rtDiffusion" type="number" min="1" max="7" step="1" value="5" style="width:44px" title="1–7：修复区域适应周围图像的速度。有颗粒或精细细节的图像用小值，平滑的图像用大值"></span>
+      <span class="seg" id="rtRedWrap" hidden>瞳孔大小: <input id="rtPupil" type="number" min="1" max="100" step="1" value="50" style="width:52px" title="瞳孔（眼睛暗色中心）的大小">%</span>
+      <span class="seg" id="rtDarkWrap" hidden>变暗量: <input id="rtAmount" type="number" min="1" max="100" step="1" value="50" style="width:52px" title="瞳孔的暗度">%</span>
+      <button id="rtCancel" hidden title="取消（Esc）">✕</button>
+      <button id="rtCommit" class="primary" hidden title="提交（Enter）">✓</button>
+      <span class="seg" id="rtInfo" style="color:var(--muted)"></span>
+      <span class="seg" id="rtWhy" style="color:var(--warn)"></span>
+    </div>
+    <div class="group" id="grpEyedrop" hidden>
+      <span class="seg">取样大小： <select id="edSize" style="width:110px" title="取样点 = 只取单击的那一个像素；n × n 平均 = 取周围一块的平均色">
+        <option value="1">取样点</option><option value="3">3 × 3 平均</option><option value="5">5 × 5 平均</option>
+        <option value="11">11 × 11 平均</option><option value="31">31 × 31 平均</option><option value="51">51 × 51 平均</option>
+        <option value="101">101 × 101 平均</option></select></span>
+      <span class="seg">样本： <select id="edAll" style="width:150px" title="从哪些图层取色">
+        <option value="curBelow">当前和下方图层</option><option value="cur">当前图层</option>
+        <option value="curBelowNoAdj">当前和下方图层（无调整）</option><option value="all">所有图层</option>
+        <option value="allNoAdj">所有图层（无调整）</option></select></span>
+      <label class="seg" title="显示取样环：拖动取色时指针周围显示一圈 —— 上半是新颜色、下半是原来的颜色"><input id="edRing" type="checkbox" checked> 显示取样环</label>
+      <span class="sep"></span>
+      <span class="seg" id="edInfo" style="color:var(--muted)">单击 / 拖动取前景色 · Alt 取背景色 · Shift 单击放颜色取样点</span>
+    </div>
+    <div class="group" id="grpShape" hidden>
+      <span class="seg" id="shpKindName" style="color:var(--text)"></span>
+      <span class="seg"><select id="shpMode" style="width:64px" title="选择工具模式：形状 = 矢量图层 · 路径 = 只留工作路径 · 像素 = 栅格化到当前图层"></select></span>
+      <span class="seg" id="shpMakeWrap" hidden>建立: <button id="shpMkSel" title="将路径作为选区载入（弹出「建立选区」对话框）">选区...</button><button id="shpMkMask" title="用当前路径给选中图层建立矢量蒙版">蒙版</button><button id="shpMkShape" title="把当前路径变成一个形状图层（填充前景色）">形状</button></span>
+      <span class="sep"></span>
+      <span class="seg" id="shpFillWrap">填充: <button id="shpFillBtn" class="swbtn" title="设置形状填充类型（无 / 纯色 / 渐变 / 图案）"></button><input id="shpFill" type="color" value="#1473e6" hidden></span>
+      <span class="seg" id="shpStrokeWrap">描边: <button id="shpStrokeBtn" class="swbtn" title="设置形状描边类型（无 / 纯色 / 渐变 / 图案）"></button><input id="shpStroke" type="color" value="#000000" hidden></span>
+      <span class="seg" id="shpStrokeWWrap"><input id="shpStrokeW" type="number" min="0" max="1000" step="0.5" value="0" style="width:52px" title="设置形状描边宽度（像素）">像素</span>
+      <span class="seg" id="shpStrokeOptWrap"><button id="shpStrokeOpt" class="strokeoptbtn" title="设置形状描边类型：对齐 / 端点 / 角点 / 虚线"></button></span>
+      <span class="seg" id="shpStrokeAlignWrap" hidden><select id="shpStrokeAlign"><option value="center">居中</option><option value="inside">内部</option><option value="outside">外部</option></select></span>
+      <span class="seg" id="shpDashWrap" hidden><select id="shpDash"><option value="solid">实线</option><option value="dash">虚线</option><option value="dot">点线</option><option value="custom">自定</option></select></span>
+      <span class="sep"></span>
+      <span class="seg" id="shpWHWrap">W: <input id="shpW" type="number" min="0" step="1" style="width:56px" title="设置形状宽度（选中形状图层时直接改它）"> <button id="shpLink" class="linkbtn" title="链接形状的宽度和高度">⛓</button> H: <input id="shpH" type="number" min="0" step="1" style="width:56px" title="设置形状高度"></span>
+      <span class="seg" id="shpBtns" style="display:inline-flex;gap:2px;align-items:center"></span>
+      <span class="seg" id="shpRadiusWrap"><span title="设置圆角的半径（四角相同；四角各自不同请在属性面板里调）">⌜</span> <input id="shpRadius" type="number" min="0" step="1" value="0" style="width:52px" title="矩形的圆角半径（像素）">像素</span>
+      <span class="seg" id="shpTriRadiusWrap" hidden><span title="设置圆角的半径">⌜</span> <input id="shpTriRadius" type="number" min="0" step="1" value="0" style="width:52px" title="三角形的圆角半径（像素）">像素</span>
+      <span class="seg" id="shpSidesWrap"><span title="设置边数">#</span> <input id="shpSides" type="number" min="3" max="100" step="1" value="5" style="width:44px" title="多边形的边数（3…100）"> <span title="设置圆角的半径">⌜</span> <input id="shpPolyRadius" type="number" min="0" step="1" value="0" style="width:48px" title="多边形的圆角半径（像素）">像素</span>
+      <span class="seg" id="shpWeightWrap">粗细: <input id="shpWeight" type="number" min="0.1" step="0.5" value="2" style="width:52px" title="直线的粗细（像素）">像素</span>
+      <span class="seg" id="shpCustomWrap">形状: <button id="shpCustomBtn" class="presetbtn" title="自定形状拾色器（拖动时按住 Shift 保持它定义的比例）"><span class="pv"></span><span class="pn"></span><span class="pc">▾</span></button></span>
+      <label class="seg" title="对齐边缘：形状的边落在像素网格上"><input id="shpSnap" type="checkbox"> 对齐边缘</label>
+      <span class="seg" id="shpPathOpWrap" hidden>路径操作 <select id="shpPathOp" style="width:136px"></select></span>
+      <span class="seg" id="shpWorkWrap" hidden>
+        <button id="shpWorkSel" title="把工作路径作为选区载入（⌘/Ctrl+Enter）">建立选区</button>
+        <button id="shpWorkDel" title="删除工作路径">删除路径</button>
+      </span>
+      <span class="sep"></span>
+      <span class="seg" id="shpInfo" style="color:var(--muted)"></span>
+      <span class="seg why" id="shpWhy"></span>
+    </div>
+    <div id="shpCustomPop" class="presetpop" hidden></div>
+    <div class="group" id="grpPen" hidden>
+      <span class="seg" id="penKindName" style="color:var(--text)">钢笔</span>
+      <span class="seg"><select id="penMode" style="width:64px" title="选择工具模式：形状 = 矢量图层 · 路径 = 只留工作路径 · 像素 = 栅格化到当前图层"></select></span>
+      <span class="seg" id="penMakeWrap">建立: <button id="penMkSel" title="将路径作为选区载入（弹出「建立选区」对话框）">选区...</button><button id="penMkMask" title="用当前路径给选中图层建立矢量蒙版">蒙版</button><button id="penMkShape" title="把当前路径变成一个形状图层（填充前景色）">形状</button></span>
+      <span class="seg" id="penFillWrap">填充: <button id="penFillBtn" class="swbtn" title="设置形状填充类型"></button><input id="penFill" type="color" value="#1473e6" hidden></span>
+      <span class="seg" id="penStrokeWrap">描边: <button id="penStrokeBtn" class="swbtn" title="设置形状描边类型"></button><input id="penStrokeW" type="number" min="0" max="1000" step="0.5" value="0" style="width:48px" title="设置形状描边宽度（像素）">像素</span>
+      <span class="sep"></span>
+      <span class="seg" id="penBtns" style="display:inline-flex;gap:2px;align-items:center"></span>
+      <label class="seg" id="penAutoWrap" title="自动添加/删除：悬停在路径线段上 = 加锚点，在锚点上 = 删锚点"><input id="penAuto" type="checkbox" checked> 自动添加/删除</label>
+      <label class="seg" id="penMagWrap" hidden title="磁性的：沿图像边缘吸附（宽度 / 对比 / 频率在齿轮里）"><input id="penMag" type="checkbox"> 磁性的</label>
+      <label class="seg" title="对齐边缘：锚点落在整像素上"><input id="penSnap" type="checkbox"> 对齐边缘</label>
+      <span class="sep"></span>
+      <span class="seg" id="penInfo" style="color:var(--muted)"></span>
+      <button id="penClose" title="闭合路径">闭合路径</button>
+      <button id="penFinish" hidden title="完成这条开放路径（Enter / Esc / ⌘ 点空白处）">完成路径</button>
+      <button id="penCancel" title="放弃这条路径">✕</button>
+      <span class="seg why" id="penWhy">点击落锚点 · 按住拖动拉出手柄 · 点回第一个锚点闭合</span>
+    </div>
+    <div class="group" id="grpTransform" hidden>
+      <span class="seg refwrap" title="参考点：变换围绕它进行（可直接在画布上拖动那个标记）"><span class="refgrid" id="tfRef"></span></span>
+      <span class="seg">X: <input id="tfX" type="number" step="1" style="width:64px"></span>
+      <span class="seg">Y: <input id="tfY" type="number" step="1" style="width:64px"></span>
+      <span class="sep"></span>
+      <span class="seg">W: <input id="tfW" type="number" step="0.1" style="width:58px">%</span>
+      <button id="tfLink" class="linkbtn" data-icon="transform-link" data-icon-size="14" title="保持长宽比"></button>
+      <span class="seg">H: <input id="tfH" type="number" step="0.1" style="width:58px">%</span>
+      <span class="sep"></span>
+      <span class="seg tf-rs">⦟ <input id="tfRot" type="number" step="0.1" style="width:58px">度</span>
+      <span class="seg tf-rs">H: <input id="tfSkewH" type="number" step="0.1" style="width:52px">度</span>
+      <span class="seg tf-rs">V: <input id="tfSkewV" type="number" step="0.1" style="width:52px">度</span>
+      
+      <span class="seg tf-cas" title="数量：内容识别缩放与普通缩放的比例（100% = 全部按内容识别）">数量: <input id="casAmount" type="number" min="0" max="100" step="1" value="100" style="width:48px">%</span>
+      <span class="seg tf-cas" title="保护：选一个 Alpha 通道（存储的选区），白色区域尽量不变形">保护: <select id="casProtect" style="width:96px"><option value="">无</option></select></span>
+      <button id="casSkin" class="tf-cas iconbtn" type="button" title="保护肤色：自动找出肤色区域（人像）并尽量不变形"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="8" cy="4" r="2.6"/><path d="M3.2 14.5c0-3.1 2.1-5.6 4.8-5.6s4.8 2.5 4.8 5.6z"/></svg></button>
+      <span class="sep"></span>
+      <span class="seg" id="tfMode" style="color:var(--text)"></span>
+      <span class="seg why" id="tfWhy"></span>
+      <span class="sep"></span>
+      <button id="tfWarp" class="tf-rs" title="变形（Pro 版功能）">变形（Pro）</button>
+      <button id="tfCancel" data-icon="transform-cancel" data-icon-size="16" title="取消变换（Esc）"></button>
+      <button id="tfOk" class="primary" data-icon="transform-commit" data-icon-size="16" title="提交变换（Enter）"></button>
+    </div>
+    <span class="seg" id="docInfo"></span>
+    <span class="seg" id="optHint" hidden style="color:var(--muted);white-space:nowrap"></span>
+  </div>
+
+  
+  <nav class="toolbar" id="toolbar" aria-label="工具"></nav>
+
+  
+  <div class="docarea">
+    <div class="doctabs" id="docTabs">
+      <div class="doctab active" id="docTab" hidden><span class="doctab-title"></span><button class="doctab-close" title="关闭（⌘/Ctrl+W）" data-icon="x" data-icon-size="10"></button></div>
+      <span id="docName" hidden>未打开文件</span>
+    </div>
+    <main class="viewport" id="viewport">
+      <div id="err"></div>
+      <div id="notice" aria-live="polite"></div>
+      <div id="docLoadingOverlay" hidden aria-live="polite" aria-busy="true">
+        <span class="doc-loading-spinner" aria-hidden="true"></span>
+        <span id="docLoadingText">正在打开文档…</span>
+      </div>
+      <div class="home" id="emptyHint">
+        <section class="home-main">
+          <h1>欢迎使用 PSD Editor</h1>
+          <div class="home-cards">
+            <button class="home-card" data-action="file.new"><span class="hc-icon" data-icon="new-file" data-icon-size="22"></span><span>新建文件</span></button>
+            <button class="home-card" data-action="file.open"><span class="hc-icon" data-icon="folder-open" data-icon-size="22"></span><span>打开</span></button>
+          </div>
+          <h2>最近使用项</h2>
+          <div class="home-recent" id="homeRecent"><div class="hint">尚无最近打开的文件</div></div>
+          <div class="home-tip" id="homeTip" aria-live="polite"></div>
+          <div class="home-links">
+            <button type="button" class="home-link" data-action="help.shortcuts">键盘快捷键速查</button><span>·</span>
+            <button type="button" class="home-link" data-action="help.about">关于</button>
+          </div>
+        </section>
+      </div>
+      
+      <canvas id="rulerH" title="从标尺拖出水平参考线；拖回标尺删除"></canvas>
+      <canvas id="rulerV" title="从标尺拖出垂直参考线；拖回标尺删除"></canvas>
+      <div id="rulerCorner" title="标尺单位"></div>
+      <div class="stage" id="stage" hidden>
+        <canvas id="below"></canvas>
+        <canvas id="warp"></canvas>
+        <canvas id="above"></canvas>
+        <canvas id="gizmo"></canvas>
+        <canvas id="gizmoView" aria-hidden="true"></canvas>
+      </div>
+    </main>
+    <footer class="statusbar">
+      <span class="zoom">
+        <button id="zoomOut" class="ghost hidden-ctl" data-icon="minus" data-icon-size="13" title="缩小 (⌘/Ctrl+−)"></button>
+        <input id="zoomVal" class="zoomfield" value="100%" title="缩放：输入百分比后回车；⌘/Ctrl + / − 缩放，⌘/Ctrl+0 按屏幕大小缩放，⌘/Ctrl+1 100%">
+        <button id="zoomIn" class="ghost hidden-ctl" data-icon="plus" data-icon-size="13" title="放大 (⌘/Ctrl+=)"></button>
+        <button id="zoom100" class="ghost hidden-ctl" title="100%（⌘/Ctrl+1）">100</button>
+        <button id="zoomFit" class="ghost hidden-ctl" data-icon="maximize" data-icon-size="12" title="按屏幕大小缩放（⌘/Ctrl+0）">适合</button>
+      </span>
+      <span class="status-doc"><span id="docSize"></span><button class="status-arrow" id="statusMenuBtn" title="状态栏显示项" data-icon="chevron-right" data-icon-size="9"></button></span>
+      <span id="docStats"></span>
+      <span id="info">就绪</span>
+      <span id="meshInfo"></span>
+    </footer>
+  </div>
+
+  
+  <aside class="side" id="layerPanel">
+    <div class="icon-dock" id="iconDock">
+      <button type="button" data-panel="history" data-icon="history" data-icon-size="16" title="历史记录"></button>
+      <button type="button" data-panel="notes" data-icon="notes" data-icon-size="16" title="注释"></button>
+    </div>
+    
+
+    <div class="side-resize" id="sideResize" title="拖拽调整面板列宽度（双击复位）"></div>
+    <div class="panel-col" id="panelCol">
+      <div class="panel-group" data-group="color">
+        <div class="pg-tabs"><button type="button" data-panel="color">颜色</button><button type="button" data-panel="swatches">色板</button><button type="button" data-panel="gradients">渐变</button><button type="button" data-panel="patterns">图案</button><span class="grow"></span><button type="button" class="pg-menu" title="面板菜单" data-icon="panel-menu" data-icon-size="13"></button></div>
+        <div class="pg-body">
+          <section class="panel" id="panelColor" data-panel="color">
+            <div class="color-panel">
+              <div class="cp-swatches"><button class="cp-fg on" id="cpFg" title="前景色"></button><button class="cp-bg" id="cpBg" title="背景色"></button></div>
+              <canvas id="cpSquare" width="160" height="120" title="饱和度 / 亮度"></canvas>
+              <canvas id="cpHue" width="14" height="120" title="色相"></canvas>
+              
+
+
+
+
+
+            </div>
+          </section>
+          <section class="panel" id="panelSwatches" data-panel="swatches" hidden><div class="swatch-grid" id="swatchGrid"></div></section>
+          <section class="panel" id="panelGradients" data-panel="gradients" hidden><div class="preset-grid" id="gradientGrid"></div></section>
+          <section class="panel" id="panelPatterns" data-panel="patterns" hidden><div class="preset-grid" id="patternGrid"></div></section>
+        </div>
+      </div>
+      <div class="pg-splitter"></div>
+      <div class="panel-group" data-group="props">
+        <div class="pg-tabs"><button type="button" data-panel="properties">属性</button><button type="button" data-panel="adjustments">调整</button><span class="grow"></span><button type="button" class="pg-menu" title="面板菜单" data-icon="panel-menu" data-icon-size="13"></button></div>
+        <div class="pg-body">
+          <section class="panel" id="panelProps" data-panel="properties">
+            <nav class="panel-dock" id="propTabs" aria-label="属性面板页签">
+              <button type="button" data-prop-tab="layer" title="图层属性">图</button>
+              <button type="button" data-prop-tab="mask" title="蒙版" hidden>蒙</button>
+              <span class="prop-head-title" id="propHeadTitle"></span>
+            </nav>
+            <div class="panel-head"><span id="propTitle">图层属性</span></div>
+            <div class="panel-body">
+              <div class="props" id="props"><div class="empty" data-primary="true">打开或新建文档以查看属性</div></div>
+            </div>
+          </section>
+          <section class="panel" id="panelAdjustments" data-panel="adjustments" hidden>
+            <div class="adj-head">添加调整</div>
+            <div class="adj-grid" id="adjGrid"></div>
+          </section>
+        </div>
+      </div>
+      <div class="pg-splitter"></div>
+      <div class="panel-group grow" data-group="layers">
+        <div class="pg-tabs"><button type="button" data-panel="layers">图层</button><button type="button" data-panel="channels">通道</button><button type="button" data-panel="paths">路径</button><span class="grow"></span><button type="button" class="pg-menu" title="面板菜单" data-icon="panel-menu" data-icon-size="13"></button></div>
+        <div class="pg-body">
+          <section class="panel" id="panelLayers" data-panel="layers">
+            <div class="panel-body">
+              <div class="layer-filter"><span class="lf-label" data-icon="search" data-icon-size="12">类型</span><input id="layerFilter" type="text" placeholder="按名称筛选图层" title="输入关键字过滤图层列表（清空恢复全部）"></div>
+              <div class="layer-controls">
+                <select id="hdrBlend" title="混合模式（作用于选中图层）" disabled></select>
+                <span class="lc-label">不透明度:</span><input id="hdrOpacity" type="number" min="0" max="100" value="100" title="不透明度 %（作用于选中图层）" disabled><span class="lc-pct">%</span>
+              </div>
+              <div class="layer-controls lock-row">
+                <span class="lc-label">锁定:</span>
+                <button class="lock-btn" data-lock="transparent" title="锁定透明像素" disabled data-icon="lock-transparent" data-icon-size="14"></button>
+                <button class="lock-btn" data-lock="pixels" title="锁定图像像素" disabled data-icon="lock-pixels" data-icon-size="14"></button>
+                <button class="lock-btn" data-lock="position" title="锁定位置" disabled data-icon="lock-position" data-icon-size="14"></button>
+                <button class="lock-btn" data-lock="artboard" title="防止在画板和画框内外自动嵌套" disabled data-icon="lock-artboard" data-icon-size="14"></button>
+                <button class="lock-btn" data-lock="all" title="锁定全部" disabled data-icon="lock-all" data-icon-size="14"></button>
+                <span class="grow"></span>
+                <span class="lc-label">填充:</span><input id="hdrFill" type="number" min="0" max="100" value="100" title="填充 %" disabled><span class="lc-pct">%</span>
+              </div>
+              <div id="layerList"></div>
+              <div class="layer-foot">
+                <button class="lf-btn" data-action="layer.link" title="链接图层" disabled data-icon="link-layers" data-icon-size="15"></button>
+                <button class="lf-btn has-popup" data-action="layer.style.menu" title="添加图层样式" disabled data-icon="fx" data-icon-size="15"><span class="lf-popup" data-icon="popup-arrow-down" data-icon-size="3"></span></button>
+                <button class="lf-btn" data-action="layer.mask.revealAll" title="添加图层蒙版" disabled data-icon="add-mask" data-icon-size="15"></button>
+                <span class="lf-ctl has-popup"><select id="newAdjSel" title="创建新的填充或调整图层" disabled></select><span class="lf-popup" data-icon="popup-arrow-down" data-icon-size="3"></span></span>
+                <button class="lf-btn" data-action="layer.newGroup" title="创建新组" disabled data-icon="new-group" data-icon-size="15"></button>
+                <button id="newLayerBtn" class="lf-btn" data-icon="add-style" data-icon-size="15" title="创建新图层" disabled></button>
+                <button class="lf-btn" data-action="layer.delete" title="删除图层" disabled data-icon="layer-delete" data-icon-size="15"></button>
+              </div>
+            </div>
+          </section>
+          <section class="panel" id="panelChannels" data-panel="channels" hidden><div class="chan-list" id="chanList"><div class="panel-empty">打开文档后显示通道</div></div></section>
+          <section class="panel" id="panelPaths" data-panel="paths" hidden><div class="path-list" id="pathList"><div class="panel-empty">打开文档后显示路径</div></div></section>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  
+  <div id="panelStore" hidden>
+    <section class="panel" data-panel="history" hidden><div class="hist-list" id="histList"><div class="panel-empty">打开文档后记录历史</div></div></section>
+    <section class="panel" data-panel="notes" hidden><div class="panel-empty">没有注释。使用注释工具（I 组）在画布上添加。</div></section>
+    <section class="panel" data-panel="navigator" hidden><div class="nav-panel" id="navPanel"><div class="nav-view"><canvas id="navCanvas" width="220" height="160"></canvas><div id="navBox"></div></div><div class="nav-zoom"><button type="button" id="navOut" title="缩小">▁</button><input id="navZoom" type="range" min="0" max="1000" value="500"><button type="button" id="navIn" title="放大">▲</button><span id="navPct">100%</span></div></div></section>
+    <section class="panel" data-panel="info" hidden><div class="info-panel" id="infoPanel"><div class="panel-empty">在画布上移动指针以查看信息</div></div></section>
+    <section class="panel" data-panel="actions" hidden></section>
+    <section class="panel" data-panel="brushSettings" hidden><div class="panel-empty">画笔设置：大小 / 硬度 / 不透明度 / 流量在选项栏中调整。</div></section>
+    <section class="panel" data-panel="brushes" hidden><div class="panel-empty">画笔预设：尚未实现。</div></section>
+    <section class="panel" data-panel="character" hidden></section>
+    <section class="panel" data-panel="paragraph" hidden></section>
+    <section class="panel" data-panel="glyphs" hidden><div class="panel-empty">字形面板：尚未实现。</div></section>
+    <section class="panel" data-panel="characterStyles" hidden><div class="panel-empty">字符样式：尚未实现。</div></section>
+    <section class="panel" data-panel="paragraphStyles" hidden><div class="panel-empty">段落样式：尚未实现。</div></section>
+    <section class="panel" data-panel="layerComps" hidden><div class="panel-empty">图层复合：尚未实现。</div></section>
+    <section class="panel" data-panel="histogram" hidden><div class="hist-panel"><div class="hist-row">通道 <select id="histCh"><option value="rgb">RGB</option><option value="colors">颜色</option><option value="lum">明度</option><option value="r">红</option><option value="g">绿</option><option value="b">蓝</option></select></div><canvas id="histCanvas" width="256" height="110"></canvas><div class="hist-stats" id="histStats"></div></div></section>
+    <section class="panel" data-panel="styles" hidden><div class="panel-empty">样式：尚未实现。图层样式在「属性 › 图层样式」里编辑。</div></section>
+    <section class="panel" data-panel="shapes" hidden><div class="panel-empty">形状：尚未实现。自定形状在形状工具的选项栏里挑。</div></section>
+    <section class="panel" data-panel="timeline" hidden><div class="panel-empty">时间轴：尚未实现。</div></section>
+    <section class="panel" data-panel="measurementLog" hidden><div class="panel-empty">测量记录：尚未实现。</div></section>
+    <section class="panel" data-panel="toolPresets" hidden><div class="panel-empty">工具预设：尚未实现。</div></section>
+    <section class="panel" data-panel="comments" hidden><div class="panel-empty">评论：需要云端文档。</div></section>
+    <section class="panel" data-panel="contentCredentials" hidden><div class="panel-empty">内容凭证：尚未实现。</div></section>
+    <section class="panel" data-panel="cloneSource" hidden></section>
+    <section class="panel" data-panel="modifierKeys" hidden><div class="panel-empty">修改键：Shift / Alt(⌥) / Ctrl(⌘)。</div></section>
+    <section class="panel" data-panel="plugins" hidden><div class="panel-empty">增效工具：尚未实现。</div></section>
+    <section class="panel" data-panel="3d" hidden><div class="panel-empty">3D 功能已在 Photoshop 中停用。</div></section>
+  </div>
+</div>
+
+<dialog id="selMaskDlg" class="sm-dlg">
+  <form method="dialog">
+    <h3>选择并遮住</h3>
+    
+
+    <div class="row sm-tools" id="smTools">
+      <span class="modebtns" id="smToolBtns"><button type="button" data-smt="quick" title="快速选择工具（W）"></button><button type="button" data-smt="refine" title="调整边缘画笔工具（R）：在边缘区域刷一刷 = 局部加大边缘检测半径（毛发、细枝）"></button><button type="button" data-smt="brush" title="画笔工具（B）：直接画 / 擦选区"></button><button type="button" data-smt="lasso" title="套索工具（L）"></button><button type="button" data-smt="hand" title="抓手工具（H）"></button><button type="button" data-smt="zoom" title="缩放工具（Z）"></button></span>
+      <span class="modebtns" id="smToolOps" style="margin-left:6px"><button type="button" data-op="add" title="添加到选区（调整边缘画笔：扩展检测区域）">+</button><button type="button" data-op="subtract" title="从选区减去（Alt 临时切换；调整边缘画笔：恢复原始边缘）">−</button></span>
+      <span class="hint" style="margin-left:6px">大小</span><input id="smToolSize" type="number" min="1" max="1000" value="30" style="width:52px" title="笔尖大小（像素），[ ] 调">
+    </div>
+    <div class="sm-sec">视图模式</div>
+    <div class="row"><span class="sm-l">视图</span><select id="smView" style="flex:1" title="O 洋葱皮 · M 闪烁虚线 · V 叠加 · A 黑底 · T 白底 · K 黑白 · Y 图层上（F 循环）">
+      <option value="onion">洋葱皮 (O)</option><option value="ants">闪烁虚线 (M)</option><option value="overlay">叠加 (V)</option>
+      <option value="black">黑底 (A)</option><option value="white">白底 (T)</option><option value="bw">黑白 (K)</option><option value="layers">图层上 (Y)</option></select></div>
+    <div class="row"><span class="sm-l">不透明度</span><input id="smViewOp" type="range" min="0" max="100" value="50" style="flex:1"><span id="smViewOpVal" class="hint sm-v">50%</span></div>
+    <div class="row"><label title="显示原稿（P）：暂时不叠视图，只看原图"><input id="smShowOrig" type="checkbox"> 显示原稿 (P)</label></div>
+    <div class="sm-sec">边缘检测</div>
+    <div class="row"><span class="sm-l">半径</span><input id="smRadius" type="range" min="0" max="250" value="0" style="flex:1"><span id="smRadiusVal" class="hint sm-v">0 像素</span></div>
+    <div class="row"><label title="智能半径：边缘清楚的地方用满半径，平坦处收窄"><input id="smSmart" type="checkbox"> 智能半径</label></div>
+    <div class="sm-sec">全局调整</div>
+    <div class="row"><span class="sm-l">平滑</span><input id="smSmooth" type="range" min="0" max="100" value="0" style="flex:1"><span id="smSmoothVal" class="hint sm-v">0</span></div>
+    <div class="row"><span class="sm-l">羽化</span><input id="smFeather" type="range" min="0" max="1000" step="1" value="0" style="flex:1"><span id="smFeatherVal" class="hint sm-v">0 像素</span></div>
+    <div class="row"><span class="sm-l">对比度</span><input id="smContrast" type="range" min="0" max="100" value="0" style="flex:1"><span id="smContrastVal" class="hint sm-v">0%</span></div>
+    <div class="row"><span class="sm-l">移动边缘</span><input id="smMove" type="range" min="-100" max="100" value="0" style="flex:1"><span id="smMoveVal" class="hint sm-v">0%</span></div>
+    <div class="sm-sec">输出设置</div>
+    <div class="row"><span class="sm-l">输出到</span><select id="smOutput" style="flex:1">
+      <option value="selection">选区</option><option value="mask">图层蒙版</option><option value="layer">新建图层</option><option value="layerMask">新建带有图层蒙版的图层</option></select></div>
+    <div class="row"><label title="净化颜色：用附近完全选中像素的颜色替换半透明边缘里的彩色溢出（只能输出到新建图层 / 新建带有图层蒙版的图层，PS 同）"><input id="smDecon" type="checkbox"> 净化颜色</label></div>
+    <div class="row"><span class="sm-l">数量</span><input id="smDeconAmt" type="range" min="0" max="100" value="100" style="flex:1" disabled><span id="smDeconAmtVal" class="hint sm-v">100%</span></div>
+    <div class="hint" id="smStats" style="margin-top:6px"></div>
+    <div class="hint" style="margin-top:4px">半径 / 智能半径是传统的局部颜色抠图，不是 PS 的 AI「调整细线」。「确定」写入一步撤销，「取消」还原。</div>
+    <div class="row" style="justify-content:flex-end;margin-top:10px">
+      <button type="button" id="smReset" title="复位工作区">复位</button>
+      <button type="button" id="smCancel">取消</button>
+      <button type="button" id="smOk" class="primary">确定</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="fontDlg">  <form method="dialog">
+    <h3>替换字体</h3>
+    <div id="fontDlgMsg" style="margin-bottom:6px"></div>
+    <div id="fontListHost"></div>
+    <div class="row">样式 <select id="fontStyleSel" style="width:140px" disabled></select> <span id="fontPicked" class="hint" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px"></span></div>
+    <div class="row">或上传字体文件 <input id="fontFile" type="file" accept=".ttf,.otf,.ttc,.otc,.woff,.woff2"></div>
+    <div class="row" id="fontUserList" hidden></div>
+    <div class="hint">上传的字体保存在本浏览器里，下次打开自动可用，并按字体内的 PostScript 名参与匹配（PSD 里用的就是这款字体时直接命中）。替换字体会同时写进导出的 PSD（EngineData/字体名），PS 打开时按替换字体显示；字体文件本身不会嵌入 PSD。</div>
+    <div class="row" style="justify-content:flex-end;margin-top:12px">
+      <button type="button" id="fontCancel" value="cancel">取消</button>
+      <button type="button" id="fontOk" value="ok" class="primary">使用该字体</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="soLeaveDlg">
+  <form method="dialog">
+    <h3>退出变形编辑</h3>
+    <p class="hint" id="soLeaveMsg"></p>
+    <div class="row" style="justify-content:flex-end;margin-top:12px">
+      <button type="button" id="soLeaveDiscard" style="color:#ff8a88">丢弃调整</button>
+      <button type="button" id="soLeaveStay">留在变形</button>
+      <button type="button" id="soLeaveCommit" class="primary">保留并切换</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="exportDlg">
+  <form method="dialog">
+    <h3>导出</h3>
+    <div class="row"><span style="width:48px;color:var(--muted)">文件名</span><input id="exportName" type="text" value="modified" style="flex:1;background:#1b1b1c;border:1px solid var(--line2);border-radius:6px;padding:4px 8px;color:var(--text);user-select:text"><span class="hint" id="exportExt">.psd</span></div>
+    <div class="row"><span style="width:48px;color:var(--muted)">格式</span>
+      <select id="exportFormat" style="flex:1;height:24px">
+        <option value="psd">PSD</option>
+        <option value="png">PNG</option>
+        <option value="jpg">JPG</option>
+        <option value="tiff">TIFF</option>
+        <option value="webp">WebP</option>
+        <option value="pdf">Photoshop PDF</option>
+        <option value="png8">PNG-8</option>
+        <option value="gif">GIF</option>
+        <option value="bmp">BMP</option>
+        <option value="tga">Targa (TGA)</option>
+        <option value="ico">ICO 图标</option>
+        <option value="exr">OpenEXR</option>
+        <option value="hdr">Radiance HDR</option>
+        <option value="ppm">PPM</option>
+        <option value="pam">PAM</option>
+      </select>
+    </div>
+    <div class="row"><span style="width:48px;color:var(--muted)">色彩</span><span class="hint" id="exportModeLabel">RGB</span></div>
+    <div class="row" id="exportQualityRow" hidden><span style="width:48px;color:var(--muted);text-align:left">质量</span><input id="exportQuality" type="number" min="1" max="100" value="92" style="width:64px;background:#1b1b1c;border:1px solid var(--line2);border-radius:6px;padding:4px 6px;color:var(--text)"><span class="hint">1–100</span></div>
+    <div class="row" id="exportPdfRow" hidden><span style="width:48px;color:var(--muted)">压缩</span><select id="exportPdfComp" style="flex:1;height:24px"><option value="zip">ZIP（无损，保留透明）</option><option value="jpeg">JPEG（按上面的质量）</option></select></div>
+    <div class="row" id="exportIccRow" hidden><span style="width:48px;color:var(--muted)">ICC</span><select id="exportIcc" style="flex:1;height:24px"><option value="">（无）</option></select></div>
+    <div class="row" id="exportAbRow" hidden><label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="exportPerArtboard" checked>按画板分别导出（<span id="exportAbCount">0</span> 个画板，多个时打成 zip）</label></div>
+    <div id="exportNote" class="hint" style="margin-top:6px;display:none"></div>
+    <div id="exportSummary" class="hint" style="margin-top:10px;white-space:pre-wrap;display:none"></div>
+    <div class="row" style="justify-content:flex-end;margin-top:12px">
+      <button type="button" id="exportCancel">取消</button>
+      <button type="button" id="exportOk" class="primary" data-icon="file-down">导出</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="gradEditDlg">
+  <form method="dialog">
+    <h3 id="gradEditTitle">渐变编辑器</h3>
+    <div class="abody" id="gradEditBody"></div>
+    <div class="anote plain">在色标条上点一下插入颜色色标，条上方点一下插入不透明度色标；拖动色标改位置，拖小菱形改中点。</div>
+    <div class="row" style="justify-content:flex-end;gap:8px;margin-top:12px">
+      <button type="button" id="gradEditCancel">取消</button>
+      <button type="button" id="gradEditOk" class="primary">确定</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="fillDlg">
+  <form method="dialog">
+    <h3 id="fillTitle">新建填充图层</h3>
+    <div class="abody" id="fillBody"></div>
+    <div id="fillNotes"></div>
+    <div class="row" style="justify-content:flex-end;gap:8px;margin-top:12px">
+      <button type="button" id="fillCancel">取消</button>
+      <button type="button" id="fillOk" class="primary">确定</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="fltDlg">
+  <form method="dialog">
+    <h3 id="fltTitle">滤镜</h3>
+    <div class="asel">
+      <select id="fltKind" title="选择滤镜（PS「滤镜」菜单里那一组）"></select>
+      <button type="button" id="fltReset" title="把参数复位成默认值">复位</button>
+    </div>
+    <div class="abody" id="fltBody"></div>
+    <div id="fltNotes"></div>
+    <div class="anote plain" id="fltErr" hidden></div>
+    <div class="row" style="justify-content:space-between;margin-top:12px">
+      <label class="seg"><input type="checkbox" id="fltPreview" checked> 预览</label>
+      <span style="display:flex;gap:8px">
+        <button type="button" id="fltCancel">取消</button>
+        <button type="button" id="fltOk" class="primary">确定</button>
+      </span>
+    </div>
+  </form>
+</dialog>
+<dialog id="adjDlg">
+  <form method="dialog">
+    <h3 id="adjTitle">图像调整</h3>
+    <div class="asel">
+      <select id="adjKind" title="选择要应用的调整（PS「图像 › 调整」那一组）"></select>
+      <button type="button" id="adjReset" data-attr="adj-reset" title="把参数复位成中性值（该调整没有恒等状态时置灰）">复位</button>
+    </div>
+    <div class="abody" id="adjBody"></div>
+    <div id="adjNotes"></div>
+    <div class="row" style="justify-content:space-between;margin-top:12px">
+      <label class="seg"><input type="checkbox" id="adjPreview" data-attr="adj-preview" checked> 预览</label>
+      <span style="display:flex;gap:8px">
+        <button type="button" id="adjCancel" data-attr="adj-cancel">取消</button>
+        <button type="button" id="adjOk" data-attr="adj-ok" class="primary">确定</button>
+      </span>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="newDlg">
+  <form method="dialog">
+    <h3>新建文档</h3>
+    <div class="newdoc">
+      <div class="nd-left">
+        <nav class="nd-tabs" id="ndTabs"></nav>
+        <div class="nd-presets" id="ndPresets"></div>
+      </div>
+      <div class="nd-detail">
+        <label class="nd-row"><span>名称</span><input id="ndName" type="text" value="未标题-1"></label>
+        <div class="nd-row two"><label><span class="unit">宽度</span><input id="ndW" type="number" min="1" max="30000" step="1" value="1000"></label><label><span class="unit">高度</span><input id="ndH" type="number" min="1" max="30000" step="1" value="800"></label><select id="ndUnit" style="width:58px"><option value="px">像素</option><option value="cm">厘米</option><option value="mm">毫米</option><option value="in">英寸</option><option value="pt">点</option><option value="pc">派卡</option></select></div>
+        <div class="nd-row"><label><span>分辨率</span><input id="ndRes" type="number" min="1" max="10000" value="72"></label><select id="ndResUnit" style="width:110px"><option value="ppi">像素/英寸</option><option value="ppcm">像素/厘米</option></select></div>
+        <div class="nd-row two"><label><span>颜色模式</span><select id="ndMode"></select></label><select id="ndDepth" style="width:92px" title="每通道位数"><option value="8">8 位</option><option value="16">16 位</option></select></div>
+        <div class="nd-row"><label><span>背景内容</span><select id="ndBg"><option value="white">白色</option><option value="black">黑色</option><option value="transparent">透明</option><option value="color">自定义</option></select></label><input id="ndBgColor" type="color" value="#ffffff" title="背景颜色（改了会自动切到「自定义」）"></div>
+        <div class="hint" id="ndInfo"></div>
+      </div>
+    </div>
+    <div class="row" style="justify-content:flex-end;margin-top:12px">
+      <button type="button" id="ndCancel">取消</button>
+      <button type="submit" id="ndOk" class="primary">创建</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="imgSizeDlg">
+  <form method="dialog">
+    <h3>图像大小</h3>
+    <div class="hint" id="isSummary" style="margin-bottom:8px"></div>
+    <div class="nd-row two"><label><span>宽度</span><input id="isW" type="number" min="1" step="1"></label><select id="isUnit"><option value="px">像素</option><option value="pct">百分比</option></select><button type="button" id="isLink" class="linkbtn on" title="约束长宽比">⛓</button></div>
+    <div class="nd-row two"><label><span>高度</span><input id="isH" type="number" min="1" step="1"></label><span class="unit" id="isUnit2">像素</span></div>
+    <div class="nd-row"><label><span>分辨率</span><input id="isRes" type="number" min="1" max="10000"></label><span class="unit">像素/英寸</span></div>
+    <label class="nd-row"><input id="isResample" type="checkbox" checked> <span style="width:auto">重新采样</span>
+      <select id="isInterp"><option value="auto">自动</option><option value="bilinear">两次线性</option><option value="nearest">邻近（硬边缘）</option></select></label>
+    <div class="hint" id="isWhy" style="margin-top:6px"></div>
+    <div class="row" style="justify-content:flex-end;margin-top:12px">
+      <button type="button" id="isCancel">取消</button>
+      <button type="button" id="isOk" class="primary">确定</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="canvasSizeDlg">
+  <form method="dialog">
+    <h3>画布大小</h3>
+    <div class="hint" id="csCurrent" style="margin-bottom:8px"></div>
+    <div class="nd-row two"><label><span>宽度</span><input id="csW" type="number" step="1"></label><select id="csUnit"><option value="px">像素</option><option value="pct">百分比</option></select></div>
+    <div class="nd-row two"><label><span>高度</span><input id="csH" type="number" step="1"></label><span class="unit" id="csUnit2">像素</span></div>
+    <label class="nd-row"><input id="csRelative" type="checkbox"> <span style="width:auto">相对</span></label>
+    <div class="nd-row"><span style="width:64px;color:var(--muted)">定位</span><span class="anchorgrid" id="csAnchor"></span></div>
+    <div class="nd-row two"><label><span>画布扩展颜色</span><select id="csExt"><option value="bg">背景</option><option value="fg">前景</option><option value="white">白色</option><option value="black">黑色</option><option value="gray">灰色</option></select></label></div>
+    <div class="hint" id="csWhy" style="margin-top:6px"></div>
+    <div class="row" style="justify-content:flex-end;margin-top:12px">
+      <button type="button" id="csCancel">取消</button>
+      <button type="button" id="csOk" class="primary">确定</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="shortcutsDlg">
+  <form method="dialog">
+    <h3>键盘快捷键</h3>
+    <p class="hint" style="margin:0 0 8px">当前键位表（Photoshop 2025 默认键位；「待实现」的命令会在菜单里置灰）。</p>
+    <div class="sc-body"></div>
+    <div class="row" style="justify-content:flex-end;margin-top:10px"><button value="ok" class="primary">确定</button></div>
+  </form>
+</dialog>
+<dialog id="aboutDlg">
+  <form method="dialog">
+    <div class="about-logo"><svg viewBox="0 0 32 32" width="40" height="40" aria-hidden="true" fill="none"><rect x="7" y="6.6" width="14.6" height="14.6" rx="3.6" fill="none" stroke="#fff" stroke-width="1.7" opacity=".52"/><rect x="10.6" y="10.4" width="14.6" height="14.6" rx="3.6" fill="#fff"/><circle cx="22.4" cy="9.4" r="2.9" fill="#FF4D9D"/></svg><div><h3 style="margin:0">PSD Editor</h3><div class="hint">在线 PSD 编辑器</div><div class="hint" id="aboutVer"></div></div></div>
+    <p class="hint">置灰条目为尚未实现的命令。导出的 PSD 保留可编辑性。</p>
+    <div class="row" style="justify-content:flex-end;margin-top:10px"><button value="ok" class="primary">确定</button></div>
+  </form>
+</dialog>
+
+
+<dialog id="fxDlg">
+  <form method="dialog" class="fxdlg-form">
+    <h3 id="fxDlgTitle">图层样式</h3>
+    <div class="fxdlg-body">
+      <div class="fxdlg-list" id="fxDlgList"></div>
+      <div class="fxdlg-pane">
+        <div class="fxdlg-pane-title" id="fxDlgPaneTitle">混合选项</div>
+        <div class="fxdlg-pane-body" id="fxDlgBody"></div>
+      </div>
+    </div>
+    <div class="fxdlg-foot">
+      <label class="seg"><input type="checkbox" id="fxDlgPreview" data-attr="fxdlg-preview" checked> 预览</label>
+      <span class="fxdlg-note" id="fxDlgNote"></span>
+      <span class="fxdlg-btns">
+        <button type="button" id="fxDlgCancel" data-attr="fxdlg-cancel">取消</button>
+        <button type="button" id="fxDlgOk" data-attr="fxdlg-ok" class="primary">确定</button>
+      </span>
+    </div>
+  </form>
+</dialog>
+
+<script id="dev-reload">
+window.__PSD_EDITOR_DEV__ = true;
+
+
+try {
+  const es = new EventSource('/api/dev/reload');
+  let armed = false;
+  es.onopen = () => { armed = true; };
+  es.onmessage = () => {
+    if (!armed) return;
+    const dirty = (() => { try { return !!(window.__psd_editor && window.__psd_editor.hasAnyEdits && window.__psd_editor.hasAnyEdits()); } catch { return false; } })();
+    if (!dirty) { location.reload(); return; }
+    const el = document.querySelector('#notice');
+    if (el) el.textContent = '前端代码已更新：当前文档有未保存改动，按 ⌘/Ctrl+R 手动刷新即可载入新代码。';
+  };
+} catch {}
+</script>
+<script>
+
+
+
+
+
+
+window.__psd_editorPreflight = (async () => {
+  try {
+    const r = await fetch('api/session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    if (!r.ok) return { error: 'session HTTP ' + r.status };
+    const session = await r.json();
+    if (window.__PSD_EDITOR_DEV__) return { sid: session.sid, session, engine: null };   
+    const e = await fetch('api/engine', { headers: { Authorization: 'Bearer ' + session.token } });
+    if (!e.ok) return { sid: session.sid, session, engine: null };
+    return { sid: session.sid, session, engine: new Uint8Array(await e.arrayBuffer()) };
+  } catch (err) { return { error: (err && err.message) || String(err) }; }
+})();
+
+
+
+(function () {
+  var drop = function () { var m = document.getElementById('bootMask'); if (m) m.remove(); };
+  addEventListener('error', function (e) { if (e && e.target && e.target !== window) return; drop(); });
+  addEventListener('unhandledrejection', drop);
+  setTimeout(function () {
+    var t = document.getElementById('bootMaskText');
+    if (t) t.textContent = '正在加载编辑器… 首次打开需要下载约 1 MB 资源';
+  }, 2500);
+  setTimeout(drop, 30000);
+})();
+</script>
+<script type="module" src="editor/main.js"></script>
+</body>
+</html>

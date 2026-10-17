@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" data-name="S_Close_10_N@2x" height="20" id="S_Close_10_N_2x" viewBox="0 0 20 20" width="20">
+  <defs>
+    <style>
+      .cls-1 {
+        fill: #f0f;
+        fill-opacity: 0;
+      }
+
+      .cls-2 {
+        fill: #fff;
+      }
+
+      
+    </style>
+  </defs>
+  <rect class="cls-1" height="16" id="Frame" width="16" x="2" y="2" />
+  <path class="cls-2" d="M17.54,15.418,12.122,10,17.54,4.582A1.5,1.5,0,0,0,15.418,2.46h0L10,7.878,4.582,2.46A1.5,1.5,0,0,0,2.46,4.582L7.878,10,2.46,15.418A1.5,1.5,0,0,0,4.582,17.54L10,12.122l5.418,5.418a1.5,1.5,0,0,0,2.122-2.122Z" id="Shape" />
+  </svg>

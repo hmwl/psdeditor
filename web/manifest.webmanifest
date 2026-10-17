@@ -1,0 +1,30 @@
+{
+  "name": "PSD Editor",
+  "short_name": "PSD Editor",
+  "description": "浏览器里的 PSD / PSB 编辑器：图层、智能对象、文字与导出。",
+  "start_url": "/editor",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#1e1e1e",
+  "theme_color": "#2b2b2b",
+  "lang": "zh-CN",
+  "icons": [
+    {
+      "src": "/assets/app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "file_handlers": [
+    {
+      "action": "/editor",
+      "accept": {
+        "image/vnd.adobe.photoshop": [
+          ".psd",
+          ".psb"
+        ]
+      }
+    }
+  ]
+}

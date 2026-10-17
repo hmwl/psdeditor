@@ -1,0 +1,77 @@
+import assert from 'node:assert/strict';
+import { loadPlaywright } from './pw.mjs';
+const PW=await loadPlaywright(), browser=await PW.chromium.launch({executablePath:process.env.CHROMIUM||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'});
+const page=await browser.newPage({viewport:{width:1440,height:1000}});
+const errors=[];page.on('pageerror',e=>errors.push(e.message));
+try {
+  await page.goto(`http://127.0.0.1:${process.argv[2]}/editor`);
+  await page.waitForFunction(()=>window.__psd_editorPresets?.lib.ready,null,{timeout:60000});
+  await page.evaluate(()=>window.__psd_editorPresets._api().panels.show('gradients'));
+  const first=page.locator('[data-preset-kind=gradients] .pp-grad').nth(0), second=page.locator('[data-preset-kind=gradients] .pp-grad').nth(1);
+  const before=await first.evaluate(e=>e.style.background), beforeSecond=await second.evaluate(e=>e.style.background);
+  await page.evaluate(()=>{window.__psd_editor.paint.setColors([255,0,0],[0,0,255]);window.__gradientNodes=[...document.querySelectorAll('[data-preset-kind=gradients] .pp-grad')];});
+  await page.waitForFunction(before=>document.querySelector('[data-preset-kind=gradients] .pp-grad').style.background!==before,before);
+  assert.notEqual(await second.evaluate(e=>e.style.background),beforeSecond);
+  assert.match(await first.evaluate(e=>e.style.background),/^linear-gradient\(to right bottom, rgb|^linear-gradient\(to bottom right, rgb/);
+  assert.match(await first.evaluate(e=>e.style.background),/255, 0, 0/);
+  assert.match(await first.evaluate(e=>e.style.background),/0, 0, 255/);
+  const fgTransparent=await second.evaluate(e=>e.style.background);
+  await page.evaluate(()=>window.__psd_editor.paint.setColors([255,0,0],[255,255,0]));
+  await page.waitForFunction(()=>document.querySelector('[data-preset-kind=gradients] .pp-grad').style.background.includes('255, 255, 0'));
+  assert.equal(await second.evaluate(e=>e.style.background),fgTransparent);
+  const modelBefore=await page.evaluate(()=>JSON.stringify(window.__psd_editorPresets.lib.gradients[0].model));
+  await page.evaluate(()=>window.__psd_editor.paint.setColors([0,255,0],[255,255,0]));
+  await page.waitForFunction(()=>document.querySelector('[data-preset-kind=gradients] .pp-grad').style.background.includes('0, 255, 0'));
+  assert.equal(await page.evaluate(()=>JSON.stringify(window.__psd_editorPresets.lib.gradients[0].model)),modelBefore);
+  assert.equal(await first.evaluate(e=>e===window.__gradientNodes[0]),true);
+  console.log('✓ FG/BG updates both basic thumbnails in place; diagonal thumbnails preserve preset values');
+  await page.evaluate(async()=>{
+    const {writePsd}=await import('/core/psd-write.js');const {loadPsd}=await import('/editor/app/21-load-document.js');
+    window.makePresetDoc=async opaque=>{
+      const rgba=new Uint8Array(64*64*4);if(opaque)rgba.fill(255);
+      const bytes=writePsd({width:64,height:64,layers:[{name:'Pixel layer',bounds:{left:0,top:0,right:64,bottom:64},rgba}],composite:rgba});
+      if(!await loadPsd(new File([bytes],opaque?'filled.psd':'empty.psd')))throw Error('fixture load failed');
+    };
+    await window.makePresetDoc(false);
+  });
+  await page.evaluate(()=>{
+    const b=document.querySelector('[data-preset-kind=gradients] .pp-tile');b.click();b.click();
+  });
+  await page.waitForFunction(()=>window.__psd_editorPresets._api().getDoc().layers.some(l=>l.fill?.key==='GdFl'),null,{timeout:30000});
+  let result=await page.evaluate(()=>{const A=window.__psd_editorPresets._api(),doc=A.getDoc();return{count:doc.layers.length,selected:A.selectedLayer(),fill:doc.layers[A.selectedLayer()].fill,firstAlpha:doc.layers[0].rgba?.[3]||0};});
+  assert.equal(result.count,2);assert.equal(result.selected,1);assert.equal(result.fill.key,'GdFl');assert.equal(result.fill.params.desc.Angl.value,90);assert.equal(result.firstAlpha,0);
+  await page.locator('.lrow.fillrow .fillthumb-plate').waitFor();
+  assert.equal(await page.locator('.lrow.fillrow .maskthumb').count(),1);
+  assert.equal(await page.locator('.lrow.fillrow .masklink .ps-icon').count(),1);
+  assert.equal(await page.locator('.lrow.fillrow .layer-type-badge').count(),0);
+  await page.evaluate(async()=>{const {historyStep}=await import('/editor/app/03-history.js');await historyStep(true);});
+  assert.equal(await page.evaluate(()=>window.__psd_editorPresets._api().getDoc().layers.length),1);
+  console.log('✓ empty-layer gradient click creates/selects one fill and undoes in one step');
+  await page.evaluate(()=>window.__psd_editorPresets._api().panels.show('patterns'));
+  await page.locator('[data-preset-kind=patterns] .pp-tile').first().click();
+  await page.waitForFunction(()=>window.__psd_editorPresets._api().getDoc().layers.some(l=>l.fill?.key==='PtFl'),null,{timeout:30000});
+  result=await page.evaluate(()=>{const A=window.__psd_editorPresets._api(),doc=A.getDoc();return{count:doc.layers.length,selected:A.selectedLayer(),key:doc.layers[A.selectedLayer()].fill?.key,embedded:doc.patterns.filter(p=>!p._lib).length};});
+  assert.equal(result.count,2);assert.equal(result.selected,1);assert.equal(result.key,'PtFl');assert.ok(result.embedded>0);
+  await page.evaluate(async()=>{await (await import('/editor/app/03-history.js')).historyStep(true);});
+  assert.equal(await page.evaluate(()=>window.__psd_editorPresets._api().getDoc().layers.length),1);
+  console.log('✓ empty-layer pattern click embeds pixels, creates/selects a fill and supports undo');
+  await page.evaluate(()=>window.makePresetDoc(true));
+  await page.locator('[data-preset-kind=patterns] .pp-tile').first().click();
+  await page.evaluate(()=>window.__psd_editorPresets._api().panels.show('gradients'));
+  await page.locator('[data-preset-kind=gradients] .pp-tile').first().click();
+  assert.equal(await page.evaluate(()=>window.__psd_editorPresets._api().getDoc().layers.length),1);
+  await page.evaluate(async()=>{
+    const {writePsd}=await import('/core/psd-write.js'), {loadPsd}=await import('/editor/app/21-load-document.js');
+    const bytes=writePsd({width:30,height:12,layers:[{name:'Small canvas',bounds:{left:0,top:0,right:30,bottom:12},rgba:new Uint8Array(30*12*4)}],composite:new Uint8Array(30*12*4)});
+    await loadPsd(new File([bytes],'small.psd'));
+    document.querySelector('[data-preset-kind=gradients] .pp-tile').click();
+  });
+  await page.waitForFunction(()=>window.__psd_editorPresets._api().getDoc().layers.some(l=>l.fill?.key==='GdFl'),null,{timeout:30000});
+  const mask=await page.locator('.lrow.fillrow .maskthumb').boundingBox(), thumb=await page.locator('.lrow.fillrow .fillthumb').boundingBox();
+  assert.ok(mask.width>mask.height*2);assert.ok(Math.abs(thumb.width-thumb.height)<2);assert.equal(await page.locator('.lrow.fillrow .fillthumb-small img').count(),1);
+  assert.equal((await page.locator('.lrow.fillrow').boundingBox()).height,24);
+  await page.locator('#layerList').screenshot({path:'/tmp/psd_editor-fill-layers.png'});
+  assert.equal(await page.evaluate(()=>window.__psd_editorPresets._api().getDoc().layers[1].mask?.defaultColor),255);
+  assert.deepEqual(errors,[]);
+  console.log('✓ nonempty pixel layers keep existing preset-selection behavior');
+}finally{await browser.close();}

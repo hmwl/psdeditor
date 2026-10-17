@@ -1,0 +1,16 @@
+第三方组件（按需加载，原样发布，未经混淆）
+pdfjs/   pdf.js 6.4.299 — Apache License 2.0 — https://github.com/mozilla/pdf.js
+libraw/  libraw-wasm 1.6.0 — ISC；内含 LibRaw（LGPL-2.1 或 CDDL-1.0，任选）— https://www.libraw.org
+heif/    libheif-js 1.23.2 — LGPL-3.0；内含 libheif / libde265 — https://github.com/strukturag/libheif
+jxl/     @jsquash/jxl 1.3.0 — Apache License 2.0；内含 libjxl（BSD-3-Clause）
+quickjs/ quickjs-emscripten 0.32.0 — MIT；内含 QuickJS（MIT）
+relight/ ONNX Runtime Web 1.30.0 — MIT — https://github.com/microsoft/onnxruntime
+relight/mediapipe/ @mediapipe/tasks-vision 1.0.1 — Apache License 2.0 — https://github.com/google-ai-edge/mediapipe
+relight/face-landmarker.task  Google MediaPipe Face Landmarker float16/1 — Apache License 2.0 — https://storage.googleapis.com/mediapipe-assets/Model%20Card%20MediaPipe%20Face%20Mesh%20V2.pdf
+relight/depth-anything-v2-small-fp16.onnx  Depth Anything V2 Small — Apache-2.0 — https://huggingface.co/onnx-community/depth-anything-v2-small
+                       revision 4472b7362082ad9968fee890ca0f1e5aca36b93d；详见 relight/manifest.json 和各模型 LICENSE
+relight/moge-2-vits-normal.onnx  MoGe-2 ViT-S Normal — MIT; DINOv2 backbone Apache-2.0 — https://huggingface.co/Ruicheng/moge-2-vits-normal-onnx
+                       revision e50ffda41565591092adea54c6ac83d6212e1e23；详见 relight/manifest.json 和各模型 LICENSE
+relight/shadenet-fp16.onnx  ShadeNet-3.2-5M — Apache-2.0 — https://huggingface.co/singam96/ShadeNet-3.2-5M
+                       revision 5460d5b88c7279cf18b8d698a62497da27e5c267；详见 relight/manifest.json 和各模型 LICENSE
+LGPL 组件以独立文件动态加载，可被替换为任意兼容版本。

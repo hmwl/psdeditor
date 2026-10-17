@@ -1,0 +1,14 @@
+[
+  { "key": "换成 32 位以上随机串-基础档客户", "name": "客户A" },
+  { "key": "换成 32 位以上随机串-高级档客户", "name": "客户B", "plan": "advanced" },
+  {
+    "key": "换成 32 位以上随机串-定制客户",
+    "name": "客户C",
+    "plan": "basic",
+    "features": ["+fonts.map", "-op.contentAwareFill", "-mcp.tool.export_artboards"],
+    "rates": { "api.doc.edit": { "perMinute": 30, "perDay": 5000 }, "op.*": 600 },
+    "rpm": 120,
+    "concurrency": 2,
+    "maxUploadMB": 200
+  }
+]

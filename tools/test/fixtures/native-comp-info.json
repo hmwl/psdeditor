@@ -1,0 +1,33 @@
+{
+  "provenance": "Local Adobe Photoshop2026 saved parent after selecting GREEN ONLY from enabled properties popup",
+  "outer": {
+    "comp": 202,
+    "compInfo": {
+      "compID": -1,
+      "originalCompID": 202,
+      "compList": [
+        {
+          "__name": "",
+          "__classID": "null",
+          "Nm  ": "RED ONLY",
+          "Idnt": 101,
+          "__long": {
+            "Idnt": true
+          },
+          "comment": ""
+        },
+        {
+          "__name": "",
+          "__classID": "null",
+          "Nm  ": "GREEN ONLY",
+          "Idnt": 202,
+          "__long": {
+            "Idnt": true
+          },
+          "comment": ""
+        }
+      ]
+    }
+  },
+  "sourceSHA": "b96eb7a9177a9d20620720b1a0155860d03bdd9520b878a63e587917416ab449"
+}

@@ -1,0 +1,49 @@
+{
+  "default": "basic",
+  "session": "advanced",
+  "anon": "advanced",
+  "plans": {
+    "basic": {
+      "title": "基础",
+      "desc": "全部端点 / 编辑 op / MCP 工具；不含自传字体等高级能力（能力类功能 id 默认只进高级档）",
+      "features": [
+        "api.*",
+        "op.*",
+        "mcp",
+        "mcp.tool.*"
+      ],
+      "limits": {
+        "rpm": 60
+      },
+      "rates": {
+        "api.render": {
+          "perMinute": 20,
+          "perDay": 2000
+        },
+        "api.*": {
+          "perMonth": 100000
+        },
+        "op.contentAwareFill": 10
+      }
+    },
+    "advanced": {
+      "title": "高级",
+      "desc": "基础档全部能力 + 全部高级能力（目前是自传字体），更高的频率",
+      "inherits": "basic",
+      "features": [
+        "*"
+      ],
+      "limits": {
+        "rpm": 240,
+        "concurrency": 4,
+        "maxUploadMB": 500
+      },
+      "rates": {
+        "api.render": {
+          "perMinute": 120
+        },
+        "op.contentAwareFill": 60
+      }
+    }
+  }
+}

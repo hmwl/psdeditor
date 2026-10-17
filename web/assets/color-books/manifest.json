@@ -1,0 +1,125 @@
+{
+  "source": "/Applications/Adobe Photoshop 2026/Presets/Color Books",
+  "books": [
+    {
+      "id": 3000,
+      "title": "ANPA 颜色",
+      "file": "anpa-color.acb",
+      "count": 300,
+      "pageSize": 6,
+      "pageOffset": 5,
+      "model": "lab",
+      "sha256": "6e57d76231a44b9526580c1dc83e0eee65792032e2d02829f8b7204408aeef0a"
+    },
+    {
+      "id": 3012,
+      "title": "DIC 颜色参考",
+      "file": "dic-color-guide.acb",
+      "count": 1280,
+      "pageSize": 5,
+      "pageOffset": 2,
+      "model": "lab",
+      "sha256": "744c44a6d3d3deec658ffaef065d5d531d0c5f7231a9db37cfaa3af1f96a9607"
+    },
+    {
+      "id": 3001,
+      "title": "FOCOLTONE",
+      "file": "focoltone.acb",
+      "count": 860,
+      "pageSize": 5,
+      "pageOffset": 2,
+      "model": "cmyk",
+      "sha256": "62d80f797da1194bd4ffc6bfeb628f28c3f07b025cd39f1530eeb3bcbf8a7f13"
+    },
+    {
+      "id": 3024,
+      "title": "HKS E 印刷色",
+      "file": "hks-e-process.acb",
+      "count": 86,
+      "pageSize": 6,
+      "pageOffset": 1,
+      "model": "cmyk",
+      "sha256": "2decee4dfa31a1e7249cbdd3e66f63e95cf2c5057f57b6b1dc9d885a169aa914"
+    },
+    {
+      "id": 3008,
+      "title": "HKS E",
+      "file": "hks-e.acb",
+      "count": 98,
+      "pageSize": 5,
+      "pageOffset": 1,
+      "model": "lab",
+      "sha256": "b0a9c0299182acb13617033d8435ca499fbde303be016d0e07473bf493670289"
+    },
+    {
+      "id": 3025,
+      "title": "HKS K 印刷色",
+      "file": "hks-k-process.acb",
+      "count": 86,
+      "pageSize": 6,
+      "pageOffset": 1,
+      "model": "cmyk",
+      "sha256": "f649f069456f6e672aa768f88927b3472b7ee77299e58e286c43cc815350fe31"
+    },
+    {
+      "id": 3009,
+      "title": "HKS K",
+      "file": "hks-k.acb",
+      "count": 100,
+      "pageSize": 5,
+      "pageOffset": 1,
+      "model": "lab",
+      "sha256": "5aaf7cd88581673fa92bf5cdcaf13047efaaaa48127087a0fcaaa9fcd0c96ba9"
+    },
+    {
+      "id": 3026,
+      "title": "HKS N 印刷色",
+      "file": "hks-n-process.acb",
+      "count": 86,
+      "pageSize": 6,
+      "pageOffset": 1,
+      "model": "cmyk",
+      "sha256": "1653ba6706072fa9be8fa81633f1764b6891e0745129c904a42cb10c21174438"
+    },
+    {
+      "id": 3010,
+      "title": "HKS N",
+      "file": "hks-n.acb",
+      "count": 98,
+      "pageSize": 5,
+      "pageOffset": 1,
+      "model": "lab",
+      "sha256": "ab86024b7c2c5c46ae3575882ec7b02dc6ec51bddc0fe3c3154320e92104a406"
+    },
+    {
+      "id": 3027,
+      "title": "HKS Z 印刷色",
+      "file": "hks-z-process.acb",
+      "count": 86,
+      "pageSize": 6,
+      "pageOffset": 1,
+      "model": "cmyk",
+      "sha256": "ef8ddc339b874e09850f5efeee8f688f3fa67bf3ccd7ae5d8ba2359ff4aa3411"
+    },
+    {
+      "id": 3011,
+      "title": "HKS Z",
+      "file": "hks-z.acb",
+      "count": 59,
+      "pageSize": 5,
+      "pageOffset": 1,
+      "model": "lab",
+      "sha256": "27e965655e617c2ee9bf340855d3156d83a50f9b8ecd2fb17c39723a79ba46af"
+    },
+    {
+      "id": 3007,
+      "title": "TRUMATCH",
+      "file": "trumatch.acb",
+      "count": 2104,
+      "pageSize": 8,
+      "pageOffset": 0,
+      "model": "cmyk",
+      "sha256": "5483207ba3bf73c302d51d9b4aed300284bea0e8706ec7a9c75f211285b1d24f"
+    }
+  ]
+}

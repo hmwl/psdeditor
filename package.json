@@ -1,0 +1,41 @@
+{
+  "name": "psd-editor",
+  "private": true,
+  "version": "0.13.1",
+  "type": "module",
+  "description": "PSD 智能对象替换工具",
+  "scripts": {
+    "icons": "node tools/gen-icons.js",
+    "lint": "eslint .",
+    "imports": "node tools/app-imports.js",
+    "vendor": "node tools/vendor-sync.js",
+    "dev": "PSD_EDITOR_DEV=1 PSD_EDITOR_AUTH=off node --watch server/index.js",
+    "start": "npm --prefix server start",
+    "test": "node tools/test/run.mjs",
+    "audit": "npm --prefix server run audit:prod",
+    "test:browser": "node tools/test/run-browser.mjs"
+  },
+  "devDependencies": {
+    "@jitl/quickjs-wasmfile-release-asyncify": "^0.32.0",
+    "@jsquash/jxl": "^1.3.0",
+    "@mediapipe/tasks-vision": "1.0.1",
+    "esbuild": "^0.28.2",
+    "eslint": "^9.39.5",
+    "espree": "^11.2.0",
+    "globals": "^17.12.0",
+    "javascript-obfuscator": "^5.6.0",
+    "jsdom": "^26.1.0",
+    "libheif-js": "^1.23.2",
+    "libraw-wasm": "^1.6.0",
+    "onnxruntime-web": "1.30.0",
+    "pdfjs-dist": "^6.4.299",
+    "quickjs-emscripten-core": "^0.32.0"
+  },
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "bin": {
+    "psd_editor": "bin/psd_editor.js"
+  },
+  "license": "MIT"
+}

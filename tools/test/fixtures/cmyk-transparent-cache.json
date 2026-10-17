@@ -1,0 +1,1433 @@
+{
+  "authority": "Photoshop 2026 live Action Manager save of owned CMYK documents; not REA MCP runtime evidence",
+  "date": "2026-10-13",
+  "root": "/var/folders/z7/s2pbrc555_xbdkmq48p2y0k80000gn/T/psd_editor-cmyk-transparent-vhmfyb",
+  "scope": "8/16-bit FOGRA39 12 colored tiles, whole-layer opacity 64/128/192; raw inverted CMYK merged channels and merged alpha",
+  "rule": "merged inverted CMYK = max - (max - unassociated) * alpha / max (white matte); native display remains unassociated",
+  "stats": [
+    {
+      "name": "cmyk-8-64",
+      "sourceSha256": "102164168e16da0b6cf749ecbfb8037a07bf78b4b1d46852b508d4d12aa2bd9a",
+      "psSha256": "cf7336374ffd623ccaf5d08ab13f48e691c2afb0628da47f696c21967f10e3f2",
+      "maxWhiteMatteError": 0,
+      "maxAlphaError": 0,
+      "maxUnassociatedError": 191,
+      "maxWriterVsPS": 0
+    },
+    {
+      "name": "cmyk-8-128",
+      "sourceSha256": "102164168e16da0b6cf749ecbfb8037a07bf78b4b1d46852b508d4d12aa2bd9a",
+      "psSha256": "8a18b073b6da0ed111e8d58337cf3a777206301fe69821e122331070644c069e",
+      "maxWhiteMatteError": 0,
+      "maxAlphaError": 0,
+      "maxUnassociatedError": 127,
+      "maxWriterVsPS": 0
+    },
+    {
+      "name": "cmyk-8-192",
+      "sourceSha256": "102164168e16da0b6cf749ecbfb8037a07bf78b4b1d46852b508d4d12aa2bd9a",
+      "psSha256": "1c7561e6a5544643a583ab63e9612fd92398f9031a28dfac27a79a973c8f20c1",
+      "maxWhiteMatteError": 0,
+      "maxAlphaError": 0,
+      "maxUnassociatedError": 63,
+      "maxWriterVsPS": 0
+    },
+    {
+      "name": "cmyk-16-64",
+      "sourceSha256": "65583f7a815931992adec9ae7c1b07fe9dccd1b124c49ee779ad6cbc8b7a78d3",
+      "psSha256": "4f74d7bdae5eff939628027a9ee5da063546bdeb4d122cc12f1edac9afa70609",
+      "maxWhiteMatteError": 1,
+      "maxAlphaError": 0,
+      "maxUnassociatedError": 49087,
+      "maxWriterVsPS": 1
+    },
+    {
+      "name": "cmyk-16-128",
+      "sourceSha256": "65583f7a815931992adec9ae7c1b07fe9dccd1b124c49ee779ad6cbc8b7a78d3",
+      "psSha256": "ce183106161e3ea23e3f121792b4ca82093712663c5240c87bbfaa05c8567348",
+      "maxWhiteMatteError": 1,
+      "maxAlphaError": 1,
+      "maxUnassociatedError": 32640,
+      "maxWriterVsPS": 1
+    },
+    {
+      "name": "cmyk-16-192",
+      "sourceSha256": "65583f7a815931992adec9ae7c1b07fe9dccd1b124c49ee779ad6cbc8b7a78d3",
+      "psSha256": "dd53ae4834bfacd3799cd87dcf1e8b7c60d177bb768d46be09b6d6bac5e4f8e3",
+      "maxWhiteMatteError": 2,
+      "maxAlphaError": 1,
+      "maxUnassociatedError": 16192,
+      "maxWriterVsPS": 2
+    }
+  ],
+  "rows": [
+    {
+      "depth": 8,
+      "opacity": 64,
+      "tile": 0,
+      "unassociated": [
+        255,
+        255,
+        255,
+        255
+      ],
+      "alpha": 64,
+      "ps": [
+        255,
+        255,
+        255,
+        255
+      ],
+      "psAlpha": 64
+    },
+    {
+      "depth": 8,
+      "opacity": 64,
+      "tile": 1,
+      "unassociated": [
+        255,
+        255,
+        255,
+        0
+      ],
+      "alpha": 64,
+      "ps": [
+        255,
+        255,
+        255,
+        191
+      ],
+      "psAlpha": 64
+    },
+    {
+      "depth": 8,
+      "opacity": 64,
+      "tile": 2,
+      "unassociated": [
+        255,
+        255,
+        255,
+        128
+      ],
+      "alpha": 64,
+      "ps": [
+        255,
+        255,
+        255,
+        223
+      ],
+      "psAlpha": 64
+    },
+    {
+      "depth": 8,
+      "opacity": 64,
+      "tile": 3,
+      "unassociated": [
+        0,
+        255,
+        255,
+        255
+      ],
+      "alpha": 64,
+      "ps": [
+        191,
+        255,
+        255,
+        255
+      ],
+      "psAlpha": 64
+    },
+    {
+      "depth": 8,
+      "opacity": 64,
+      "tile": 4,
+      "unassociated": [
+        255,
+        0,
+        255,
+        255
+      ],
+      "alpha": 64,
+      "ps": [
+        255,
+        191,
+        255,
+        255
+      ],
+      "psAlpha": 64
+    },
+    {
+      "depth": 8,
+      "opacity": 64,
+      "tile": 5,
+      "unassociated": [
+        255,
+        255,
+        0,
+        255
+      ],
+      "alpha": 64,
+      "ps": [
+        255,
+        255,
+        191,
+        255
+      ],
+      "psAlpha": 64
+    },
+    {
+      "depth": 8,
+      "opacity": 64,
+      "tile": 6,
+      "unassociated": [
+        128,
+        153,
+        153,
+        255
+      ],
+      "alpha": 64,
+      "ps": [
+        223,
+        229,
+        229,
+        255
+      ],
+      "psAlpha": 64
+    },
+    {
+      "depth": 8,
+      "opacity": 64,
+      "tile": 7,
+      "unassociated": [
+        128,
+        153,
+        153,
+        128
+      ],
+      "alpha": 64,
+      "ps": [
+        223,
+        229,
+        229,
+        223
+      ],
+      "psAlpha": 64
+    },
+    {
+      "depth": 8,
+      "opacity": 64,
+      "tile": 8,
+      "unassociated": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "alpha": 64,
+      "ps": [
+        191,
+        191,
+        191,
+        191
+      ],
+      "psAlpha": 64
+    },
+    {
+      "depth": 8,
+      "opacity": 64,
+      "tile": 9,
+      "unassociated": [
+        204,
+        179,
+        153,
+        102
+      ],
+      "alpha": 64,
+      "ps": [
+        242,
+        236,
+        229,
+        217
+      ],
+      "psAlpha": 64
+    },
+    {
+      "depth": 8,
+      "opacity": 64,
+      "tile": 10,
+      "unassociated": [
+        51,
+        204,
+        255,
+        255
+      ],
+      "alpha": 64,
+      "ps": [
+        204,
+        242,
+        255,
+        255
+      ],
+      "psAlpha": 64
+    },
+    {
+      "depth": 8,
+      "opacity": 64,
+      "tile": 11,
+      "unassociated": [
+        255,
+        255,
+        255,
+        230
+      ],
+      "alpha": 64,
+      "ps": [
+        255,
+        255,
+        255,
+        249
+      ],
+      "psAlpha": 64
+    },
+    {
+      "depth": 8,
+      "opacity": 128,
+      "tile": 0,
+      "unassociated": [
+        255,
+        255,
+        255,
+        255
+      ],
+      "alpha": 128,
+      "ps": [
+        255,
+        255,
+        255,
+        255
+      ],
+      "psAlpha": 128
+    },
+    {
+      "depth": 8,
+      "opacity": 128,
+      "tile": 1,
+      "unassociated": [
+        255,
+        255,
+        255,
+        0
+      ],
+      "alpha": 128,
+      "ps": [
+        255,
+        255,
+        255,
+        127
+      ],
+      "psAlpha": 128
+    },
+    {
+      "depth": 8,
+      "opacity": 128,
+      "tile": 2,
+      "unassociated": [
+        255,
+        255,
+        255,
+        128
+      ],
+      "alpha": 128,
+      "ps": [
+        255,
+        255,
+        255,
+        191
+      ],
+      "psAlpha": 128
+    },
+    {
+      "depth": 8,
+      "opacity": 128,
+      "tile": 3,
+      "unassociated": [
+        0,
+        255,
+        255,
+        255
+      ],
+      "alpha": 128,
+      "ps": [
+        127,
+        255,
+        255,
+        255
+      ],
+      "psAlpha": 128
+    },
+    {
+      "depth": 8,
+      "opacity": 128,
+      "tile": 4,
+      "unassociated": [
+        255,
+        0,
+        255,
+        255
+      ],
+      "alpha": 128,
+      "ps": [
+        255,
+        127,
+        255,
+        255
+      ],
+      "psAlpha": 128
+    },
+    {
+      "depth": 8,
+      "opacity": 128,
+      "tile": 5,
+      "unassociated": [
+        255,
+        255,
+        0,
+        255
+      ],
+      "alpha": 128,
+      "ps": [
+        255,
+        255,
+        127,
+        255
+      ],
+      "psAlpha": 128
+    },
+    {
+      "depth": 8,
+      "opacity": 128,
+      "tile": 6,
+      "unassociated": [
+        128,
+        153,
+        153,
+        255
+      ],
+      "alpha": 128,
+      "ps": [
+        191,
+        204,
+        204,
+        255
+      ],
+      "psAlpha": 128
+    },
+    {
+      "depth": 8,
+      "opacity": 128,
+      "tile": 7,
+      "unassociated": [
+        128,
+        153,
+        153,
+        128
+      ],
+      "alpha": 128,
+      "ps": [
+        191,
+        204,
+        204,
+        191
+      ],
+      "psAlpha": 128
+    },
+    {
+      "depth": 8,
+      "opacity": 128,
+      "tile": 8,
+      "unassociated": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "alpha": 128,
+      "ps": [
+        127,
+        127,
+        127,
+        127
+      ],
+      "psAlpha": 128
+    },
+    {
+      "depth": 8,
+      "opacity": 128,
+      "tile": 9,
+      "unassociated": [
+        204,
+        179,
+        153,
+        102
+      ],
+      "alpha": 128,
+      "ps": [
+        229,
+        217,
+        204,
+        178
+      ],
+      "psAlpha": 128
+    },
+    {
+      "depth": 8,
+      "opacity": 128,
+      "tile": 10,
+      "unassociated": [
+        51,
+        204,
+        255,
+        255
+      ],
+      "alpha": 128,
+      "ps": [
+        153,
+        229,
+        255,
+        255
+      ],
+      "psAlpha": 128
+    },
+    {
+      "depth": 8,
+      "opacity": 128,
+      "tile": 11,
+      "unassociated": [
+        255,
+        255,
+        255,
+        230
+      ],
+      "alpha": 128,
+      "ps": [
+        255,
+        255,
+        255,
+        242
+      ],
+      "psAlpha": 128
+    },
+    {
+      "depth": 8,
+      "opacity": 192,
+      "tile": 0,
+      "unassociated": [
+        255,
+        255,
+        255,
+        255
+      ],
+      "alpha": 192,
+      "ps": [
+        255,
+        255,
+        255,
+        255
+      ],
+      "psAlpha": 192
+    },
+    {
+      "depth": 8,
+      "opacity": 192,
+      "tile": 1,
+      "unassociated": [
+        255,
+        255,
+        255,
+        0
+      ],
+      "alpha": 192,
+      "ps": [
+        255,
+        255,
+        255,
+        63
+      ],
+      "psAlpha": 192
+    },
+    {
+      "depth": 8,
+      "opacity": 192,
+      "tile": 2,
+      "unassociated": [
+        255,
+        255,
+        255,
+        128
+      ],
+      "alpha": 192,
+      "ps": [
+        255,
+        255,
+        255,
+        159
+      ],
+      "psAlpha": 192
+    },
+    {
+      "depth": 8,
+      "opacity": 192,
+      "tile": 3,
+      "unassociated": [
+        0,
+        255,
+        255,
+        255
+      ],
+      "alpha": 192,
+      "ps": [
+        63,
+        255,
+        255,
+        255
+      ],
+      "psAlpha": 192
+    },
+    {
+      "depth": 8,
+      "opacity": 192,
+      "tile": 4,
+      "unassociated": [
+        255,
+        0,
+        255,
+        255
+      ],
+      "alpha": 192,
+      "ps": [
+        255,
+        63,
+        255,
+        255
+      ],
+      "psAlpha": 192
+    },
+    {
+      "depth": 8,
+      "opacity": 192,
+      "tile": 5,
+      "unassociated": [
+        255,
+        255,
+        0,
+        255
+      ],
+      "alpha": 192,
+      "ps": [
+        255,
+        255,
+        63,
+        255
+      ],
+      "psAlpha": 192
+    },
+    {
+      "depth": 8,
+      "opacity": 192,
+      "tile": 6,
+      "unassociated": [
+        128,
+        153,
+        153,
+        255
+      ],
+      "alpha": 192,
+      "ps": [
+        159,
+        178,
+        178,
+        255
+      ],
+      "psAlpha": 192
+    },
+    {
+      "depth": 8,
+      "opacity": 192,
+      "tile": 7,
+      "unassociated": [
+        128,
+        153,
+        153,
+        128
+      ],
+      "alpha": 192,
+      "ps": [
+        159,
+        178,
+        178,
+        159
+      ],
+      "psAlpha": 192
+    },
+    {
+      "depth": 8,
+      "opacity": 192,
+      "tile": 8,
+      "unassociated": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "alpha": 192,
+      "ps": [
+        63,
+        63,
+        63,
+        63
+      ],
+      "psAlpha": 192
+    },
+    {
+      "depth": 8,
+      "opacity": 192,
+      "tile": 9,
+      "unassociated": [
+        204,
+        179,
+        153,
+        102
+      ],
+      "alpha": 192,
+      "ps": [
+        217,
+        198,
+        178,
+        140
+      ],
+      "psAlpha": 192
+    },
+    {
+      "depth": 8,
+      "opacity": 192,
+      "tile": 10,
+      "unassociated": [
+        51,
+        204,
+        255,
+        255
+      ],
+      "alpha": 192,
+      "ps": [
+        101,
+        217,
+        255,
+        255
+      ],
+      "psAlpha": 192
+    },
+    {
+      "depth": 8,
+      "opacity": 192,
+      "tile": 11,
+      "unassociated": [
+        255,
+        255,
+        255,
+        230
+      ],
+      "alpha": 192,
+      "ps": [
+        255,
+        255,
+        255,
+        236
+      ],
+      "psAlpha": 192
+    },
+    {
+      "depth": 16,
+      "opacity": 64,
+      "tile": 0,
+      "unassociated": [
+        65535,
+        65535,
+        65535,
+        65535
+      ],
+      "alpha": 16448,
+      "ps": [
+        65535,
+        65535,
+        65535,
+        65535
+      ],
+      "psAlpha": 16448
+    },
+    {
+      "depth": 16,
+      "opacity": 64,
+      "tile": 1,
+      "unassociated": [
+        65535,
+        65535,
+        65535,
+        0
+      ],
+      "alpha": 16448,
+      "ps": [
+        65535,
+        65535,
+        65535,
+        49087
+      ],
+      "psAlpha": 16448
+    },
+    {
+      "depth": 16,
+      "opacity": 64,
+      "tile": 2,
+      "unassociated": [
+        65535,
+        65535,
+        65535,
+        32768
+      ],
+      "alpha": 16448,
+      "ps": [
+        65535,
+        65535,
+        65535,
+        57311
+      ],
+      "psAlpha": 16448
+    },
+    {
+      "depth": 16,
+      "opacity": 64,
+      "tile": 3,
+      "unassociated": [
+        0,
+        65535,
+        65535,
+        65535
+      ],
+      "alpha": 16448,
+      "ps": [
+        49087,
+        65535,
+        65535,
+        65535
+      ],
+      "psAlpha": 16448
+    },
+    {
+      "depth": 16,
+      "opacity": 64,
+      "tile": 4,
+      "unassociated": [
+        65535,
+        0,
+        65535,
+        65535
+      ],
+      "alpha": 16448,
+      "ps": [
+        65535,
+        49087,
+        65535,
+        65535
+      ],
+      "psAlpha": 16448
+    },
+    {
+      "depth": 16,
+      "opacity": 64,
+      "tile": 5,
+      "unassociated": [
+        65535,
+        65535,
+        0,
+        65535
+      ],
+      "alpha": 16448,
+      "ps": [
+        65535,
+        65535,
+        49087,
+        65535
+      ],
+      "psAlpha": 16448
+    },
+    {
+      "depth": 16,
+      "opacity": 64,
+      "tile": 6,
+      "unassociated": [
+        32768,
+        39321,
+        39321,
+        65535
+      ],
+      "alpha": 16448,
+      "ps": [
+        57311,
+        58955,
+        58955,
+        65535
+      ],
+      "psAlpha": 16448
+    },
+    {
+      "depth": 16,
+      "opacity": 64,
+      "tile": 7,
+      "unassociated": [
+        32768,
+        39321,
+        39321,
+        32768
+      ],
+      "alpha": 16448,
+      "ps": [
+        57311,
+        58955,
+        58955,
+        57311
+      ],
+      "psAlpha": 16448
+    },
+    {
+      "depth": 16,
+      "opacity": 64,
+      "tile": 8,
+      "unassociated": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "alpha": 16448,
+      "ps": [
+        49087,
+        49087,
+        49087,
+        49087
+      ],
+      "psAlpha": 16448
+    },
+    {
+      "depth": 16,
+      "opacity": 64,
+      "tile": 9,
+      "unassociated": [
+        52428,
+        45875,
+        39321,
+        26214
+      ],
+      "alpha": 16448,
+      "ps": [
+        62245,
+        60601,
+        58955,
+        55667
+      ],
+      "psAlpha": 16448
+    },
+    {
+      "depth": 16,
+      "opacity": 64,
+      "tile": 10,
+      "unassociated": [
+        13107,
+        52428,
+        65535,
+        65535
+      ],
+      "alpha": 16448,
+      "ps": [
+        52377,
+        62245,
+        65535,
+        65535
+      ],
+      "psAlpha": 16448
+    },
+    {
+      "depth": 16,
+      "opacity": 64,
+      "tile": 11,
+      "unassociated": [
+        65535,
+        65535,
+        65535,
+        58982
+      ],
+      "alpha": 16448,
+      "ps": [
+        65535,
+        65535,
+        65535,
+        63891
+      ],
+      "psAlpha": 16448
+    },
+    {
+      "depth": 16,
+      "opacity": 128,
+      "tile": 0,
+      "unassociated": [
+        65535,
+        65535,
+        65535,
+        65535
+      ],
+      "alpha": 32896,
+      "ps": [
+        65535,
+        65535,
+        65535,
+        65535
+      ],
+      "psAlpha": 32895
+    },
+    {
+      "depth": 16,
+      "opacity": 128,
+      "tile": 1,
+      "unassociated": [
+        65535,
+        65535,
+        65535,
+        0
+      ],
+      "alpha": 32896,
+      "ps": [
+        65535,
+        65535,
+        65535,
+        32640
+      ],
+      "psAlpha": 32895
+    },
+    {
+      "depth": 16,
+      "opacity": 128,
+      "tile": 2,
+      "unassociated": [
+        65535,
+        65535,
+        65535,
+        32768
+      ],
+      "alpha": 32896,
+      "ps": [
+        65535,
+        65535,
+        65535,
+        49087
+      ],
+      "psAlpha": 32895
+    },
+    {
+      "depth": 16,
+      "opacity": 128,
+      "tile": 3,
+      "unassociated": [
+        0,
+        65535,
+        65535,
+        65535
+      ],
+      "alpha": 32896,
+      "ps": [
+        32640,
+        65535,
+        65535,
+        65535
+      ],
+      "psAlpha": 32895
+    },
+    {
+      "depth": 16,
+      "opacity": 128,
+      "tile": 4,
+      "unassociated": [
+        65535,
+        0,
+        65535,
+        65535
+      ],
+      "alpha": 32896,
+      "ps": [
+        65535,
+        32640,
+        65535,
+        65535
+      ],
+      "psAlpha": 32895
+    },
+    {
+      "depth": 16,
+      "opacity": 128,
+      "tile": 5,
+      "unassociated": [
+        65535,
+        65535,
+        0,
+        65535
+      ],
+      "alpha": 32896,
+      "ps": [
+        65535,
+        65535,
+        32640,
+        65535
+      ],
+      "psAlpha": 32895
+    },
+    {
+      "depth": 16,
+      "opacity": 128,
+      "tile": 6,
+      "unassociated": [
+        32768,
+        39321,
+        39321,
+        65535
+      ],
+      "alpha": 32896,
+      "ps": [
+        49087,
+        52377,
+        52377,
+        65535
+      ],
+      "psAlpha": 32895
+    },
+    {
+      "depth": 16,
+      "opacity": 128,
+      "tile": 7,
+      "unassociated": [
+        32768,
+        39321,
+        39321,
+        32768
+      ],
+      "alpha": 32896,
+      "ps": [
+        49087,
+        52377,
+        52377,
+        49087
+      ],
+      "psAlpha": 32895
+    },
+    {
+      "depth": 16,
+      "opacity": 128,
+      "tile": 8,
+      "unassociated": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "alpha": 32896,
+      "ps": [
+        32640,
+        32640,
+        32640,
+        32640
+      ],
+      "psAlpha": 32895
+    },
+    {
+      "depth": 16,
+      "opacity": 128,
+      "tile": 9,
+      "unassociated": [
+        52428,
+        45875,
+        39321,
+        26214
+      ],
+      "alpha": 32896,
+      "ps": [
+        58955,
+        55667,
+        52377,
+        45797
+      ],
+      "psAlpha": 32895
+    },
+    {
+      "depth": 16,
+      "opacity": 128,
+      "tile": 10,
+      "unassociated": [
+        13107,
+        52428,
+        65535,
+        65535
+      ],
+      "alpha": 32896,
+      "ps": [
+        39219,
+        58955,
+        65535,
+        65535
+      ],
+      "psAlpha": 32895
+    },
+    {
+      "depth": 16,
+      "opacity": 128,
+      "tile": 11,
+      "unassociated": [
+        65535,
+        65535,
+        65535,
+        58982
+      ],
+      "alpha": 32896,
+      "ps": [
+        65535,
+        65535,
+        65535,
+        62245
+      ],
+      "psAlpha": 32895
+    },
+    {
+      "depth": 16,
+      "opacity": 192,
+      "tile": 0,
+      "unassociated": [
+        65535,
+        65535,
+        65535,
+        65535
+      ],
+      "alpha": 49344,
+      "ps": [
+        65535,
+        65535,
+        65535,
+        65535
+      ],
+      "psAlpha": 49343
+    },
+    {
+      "depth": 16,
+      "opacity": 192,
+      "tile": 1,
+      "unassociated": [
+        65535,
+        65535,
+        65535,
+        0
+      ],
+      "alpha": 49344,
+      "ps": [
+        65535,
+        65535,
+        65535,
+        16192
+      ],
+      "psAlpha": 49343
+    },
+    {
+      "depth": 16,
+      "opacity": 192,
+      "tile": 2,
+      "unassociated": [
+        65535,
+        65535,
+        65535,
+        32768
+      ],
+      "alpha": 49344,
+      "ps": [
+        65535,
+        65535,
+        65535,
+        40863
+      ],
+      "psAlpha": 49343
+    },
+    {
+      "depth": 16,
+      "opacity": 192,
+      "tile": 3,
+      "unassociated": [
+        0,
+        65535,
+        65535,
+        65535
+      ],
+      "alpha": 49344,
+      "ps": [
+        16192,
+        65535,
+        65535,
+        65535
+      ],
+      "psAlpha": 49343
+    },
+    {
+      "depth": 16,
+      "opacity": 192,
+      "tile": 4,
+      "unassociated": [
+        65535,
+        0,
+        65535,
+        65535
+      ],
+      "alpha": 49344,
+      "ps": [
+        65535,
+        16192,
+        65535,
+        65535
+      ],
+      "psAlpha": 49343
+    },
+    {
+      "depth": 16,
+      "opacity": 192,
+      "tile": 5,
+      "unassociated": [
+        65535,
+        65535,
+        0,
+        65535
+      ],
+      "alpha": 49344,
+      "ps": [
+        65535,
+        65535,
+        16192,
+        65535
+      ],
+      "psAlpha": 49343
+    },
+    {
+      "depth": 16,
+      "opacity": 192,
+      "tile": 6,
+      "unassociated": [
+        32768,
+        39321,
+        39321,
+        65535
+      ],
+      "alpha": 49344,
+      "ps": [
+        40863,
+        45797,
+        45797,
+        65535
+      ],
+      "psAlpha": 49343
+    },
+    {
+      "depth": 16,
+      "opacity": 192,
+      "tile": 7,
+      "unassociated": [
+        32768,
+        39321,
+        39321,
+        32768
+      ],
+      "alpha": 49344,
+      "ps": [
+        40863,
+        45797,
+        45797,
+        40863
+      ],
+      "psAlpha": 49343
+    },
+    {
+      "depth": 16,
+      "opacity": 192,
+      "tile": 8,
+      "unassociated": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "alpha": 49344,
+      "ps": [
+        16192,
+        16192,
+        16192,
+        16192
+      ],
+      "psAlpha": 49343
+    },
+    {
+      "depth": 16,
+      "opacity": 192,
+      "tile": 9,
+      "unassociated": [
+        52428,
+        45875,
+        39321,
+        26214
+      ],
+      "alpha": 49344,
+      "ps": [
+        55665,
+        50733,
+        45797,
+        35929
+      ],
+      "psAlpha": 49343
+    },
+    {
+      "depth": 16,
+      "opacity": 192,
+      "tile": 10,
+      "unassociated": [
+        13107,
+        52428,
+        65535,
+        65535
+      ],
+      "alpha": 49344,
+      "ps": [
+        26062,
+        55665,
+        65535,
+        65535
+      ],
+      "psAlpha": 49343
+    },
+    {
+      "depth": 16,
+      "opacity": 192,
+      "tile": 11,
+      "unassociated": [
+        65535,
+        65535,
+        65535,
+        58982
+      ],
+      "alpha": 49344,
+      "ps": [
+        65535,
+        65535,
+        65535,
+        60601
+      ],
+      "psAlpha": 49343
+    }
+  ]
+}

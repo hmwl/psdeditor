@@ -1,0 +1,25 @@
+[Unit]
+Description=PSD Editor server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www
+Group=www
+WorkingDirectory=/www/psd_editor-backend/server
+EnvironmentFile=-/www/psd_editor-backend/.env
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node index.js
+KillSignal=SIGTERM
+TimeoutStopSec=40
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=65535
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/www/psd_editor-backend/server/data
+
+[Install]
+WantedBy=multi-user.target

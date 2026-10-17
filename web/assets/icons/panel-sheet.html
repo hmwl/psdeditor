@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>面板图标一览 · PSD Editor</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 28px 32px 48px; background: #262626; color: #d6d6d6;
+         font: 13px/1.55 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  h1 { margin: 0 0 6px; font-size: 18px; font-weight: 600; color: #f0f0f0; }
+  h2 { margin: 30px 0 12px; font-size: 14px; font-weight: 600; color: #e4e4e4; }
+  p.lead { margin: 0 0 22px; color: #9a9a9a; max-width: 980px; }
+  p.lead code, .d, code { font-family: ui-monospace, Menlo, Consolas, monospace; }
+  p.lead code { color: #c8c8c8; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(232px, 1fr)); gap: 12px; }
+  .card { margin: 0; display: flex; gap: 14px; align-items: center; padding: 12px 14px;
+          background: #323232; border: 1px solid #3d3d3d; border-radius: 6px; }
+  
+  .art { flex: none; display: flex; align-items: center; gap: 14px; }
+  .art .at { display: block; image-rendering: auto; }
+  .cell { position: relative; display: block; width: 28px; height: 28px;
+          display: grid; place-items: center; background: #2c2c2c; border-radius: 3px; outline: 1px dashed #5c5c5c; outline-offset: -1px; }
+  .cell img { display: block; }
+  
+  .cell i { position: absolute; inset: 0; pointer-events: none;
+            background: linear-gradient(to right, transparent calc(50% - .5px), rgba(255,0,170,.75) 0, rgba(255,0,170,.75) calc(50% + .5px), transparent 0),
+                        linear-gradient(to bottom, transparent calc(50% - .5px), rgba(0,220,255,.55) 0, rgba(0,220,255,.55) calc(50% + .5px), transparent 0); }
+  figcaption { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  figcaption b { font-size: 13px; font-weight: 600; color: #f0f0f0; }
+  figcaption .id { font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: #8f8f8f; }
+  figcaption .k { font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: #6fa8dc; }
+  figcaption code { font-size: 11px; color: #8f8f8f; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  figcaption .d { font-size: 11px; color: #7d7d7d; }
+  footer { margin-top: 28px; color: #7d7d7d; font-size: 12px; max-width: 980px; }
+  footer code { color: #b0b0b0; }
+</style>
+</head>
+<body>
+  <h1>面板图标一览（24 张原稿 + 2 个列头按钮）</h1>
+  <p class="lead">
+    编辑器深色面板里用的 PS 原稿。每张卡片：左边是 <b>原稿 1:1</b>（<code>png/</code> 下已经按
+    <code>tools/crop-icons.js</code> 裁到墨迹边界，画布即图形），右边是<b>图标列里的实际渲染</b>
+    （虚线框＝图标格子 16px，<span style="color:#ff6ec7">十字</span>＝格子中心）。
+    <b>每张图标至少有一条边顶满格子、且重心压在十字上</b>，这就是「对齐」的判据。
+  </p>
+  <div class="grid">
+      <figure class="card">
+        <div class="art">
+          <img class="at" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABwAAAAaCAYAAACkVDyJAAACF0lEQVR42sTWwUtUURTH8ZnJjEbJyqIQTCQnsAjCFi2qTUvLsDBqk6ClQRbtKugPKBhqEQS2SIzIIJhciCEi0cagtIWBEi5UkqBAFFFStBy/F34Dt8vk67035YGPwvE5590359z7oul0OpIlTuIi9mIR7/AIXyIhI5ql4BU0YQVjKMJOzKEBE6EqmoKWcgygFwnlYriEQbQ61/tmVniVuptVfx8O4y5Szr29QAVeavVBYiGPH41Z/jD5h1wC58M8UVOw3lrhEd3AMXywrovjEJZwI+wKR6zEKM7iAubRg60qsl2PcyDXXVqFByh08h9VeDHXBU3swBl9ZwvoR5/HoyxBJX5hCDN+CvqJTbiNU+bzlPuJdjw2k+c2Tdi4g2p8Rbdu4DQuYxlP1hp8v8q1IaRQaOV34Q36Ebf/J08Dnh9wdZlxSqmrM/EdvajDK63UxFIs8r9jPR5pmBjHazXNc6dptqhLf/yLsbipIvZYPEWrOxZ/U9B8yAkc1e5jVtWJb851u3FQDfIJ00EGfyOS2sx/24RxS28CvsKrS5tU7DOaUYuHupF7KA6yl+635smNpHajGsxa+WYxh/JbP8eTKTjocdF7tDg5s0k/C3oAt62xwnMo1aO3T4o9+m2aY9jPCr0GO6nBvo4NypWhS/kDQV6iIh5nnJmnbWrzKb1IxfT93c/VAezO1zUcR4HeSzs0i753jVUBBgBjWeQ02sEPKQAAAABJRU5ErkJggg==" width="28" height="26" alt="">
+          <span class="cell"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABwAAAAaCAYAAACkVDyJAAACF0lEQVR42sTWwUtUURTH8ZnJjEbJyqIQTCQnsAjCFi2qTUvLsDBqk6ClQRbtKugPKBhqEQS2SIzIIJhciCEi0cagtIWBEi5UkqBAFFFStBy/F34Dt8vk67035YGPwvE5590359z7oul0OpIlTuIi9mIR7/AIXyIhI5ql4BU0YQVjKMJOzKEBE6EqmoKWcgygFwnlYriEQbQ61/tmVniVuptVfx8O4y5Szr29QAVeavVBYiGPH41Z/jD5h1wC58M8UVOw3lrhEd3AMXywrovjEJZwI+wKR6zEKM7iAubRg60qsl2PcyDXXVqFByh08h9VeDHXBU3swBl9ZwvoR5/HoyxBJX5hCDN+CvqJTbiNU+bzlPuJdjw2k+c2Tdi4g2p8Rbdu4DQuYxlP1hp8v8q1IaRQaOV34Q36Ebf/J08Dnh9wdZlxSqmrM/EdvajDK63UxFIs8r9jPR5pmBjHazXNc6dptqhLf/yLsbipIvZYPEWrOxZ/U9B8yAkc1e5jVtWJb851u3FQDfIJ00EGfyOS2sx/24RxS28CvsKrS5tU7DOaUYuHupF7KA6yl+635smNpHajGsxa+WYxh/JbP8eTKTjocdF7tDg5s0k/C3oAt62xwnMo1aO3T4o9+m2aY9jPCr0GO6nBvo4NypWhS/kDQV6iIh5nnJmnbWrzKb1IxfT93c/VAezO1zUcR4HeSzs0i753jVUBBgBjWeQ02sEPKQAAAABJRU5ErkJggg==" width="16" height="16" alt=""><i></i></span>
+        </div>
+        <figcaption>
+          <b>属性</b>
+          <span class="id">properties</span>
+          <span class="k">panel-properties</span>
+          <code>png/CxUI_Properties.png</code>
+          <span class="d">画布 28×26（已裁到墨迹，长边＝格子 16px）</span>
+        </figcaption>
+      </figure>
+      <figure class="card">
+        <div class="art">
+          <img class="at" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAB0AAAAdCAYAAABWk2cPAAACEklEQVR42s2XP0hcQRCHv1neQYqgXc7GE6zTiGBva6mVjSnEIoEgWEhASBGwsUuaBMQmvVda2FyX4ojYWAvGJlpYiEXgDieZy+y5vMj9eb4H+cFxx96+/W5nd+Y3J4wgVW0Ai8A8MAu8AAJwD1wD58AJ0BKRH8PWkyGwOWADWGB0tYF9ETkdC6qqz4HtPwss5b66AM6An8AtMAFMAS+BmdzcI2BPRO6GQlV1GvgINHzoF3AINEXkYkBUDLoMrADPfNhCvSkil4PCOa2qx6r63V+fVLU+Rmhtjbo/F9c49o08HlJVbSaTX3c6HaGA7DlVfZOs1fQj6ykkc7eTkB6IyOdaraYU12TyueHrP0D9lsZL863b7X4pSrJdZln2zs821ZJz+jvdSC7NbtEdDgCScoInfszDQxG5qghoWjBe8EoT1awQGLUYvLT1En9QHpYENM0Hr6V4pakaaJoNXrzx0lY10FQPyQ2+HefJLMu2CgB7pTfaE168Ry11b4HVgqmswf0Qd4tRga+eUKmughswbk9VA03nwR3fNOP2VCXQdGLQVjKwXDHQ1Are07R9YCXvnyUD28aL6bLv7+b4O9FHSwb2OZLs6ENibweWiiUDj0TkfR5qzv41MfIyZUe4Fpu0fufgA5vATcnAG2/O7h5rV/Cubd1/WVk7XM93g+Gfwvh3wpr3rU86Qw/p5f/b4Vf9X+Y3mw0QANKD4o8AAAAASUVORK5CYII=" width="29" height="29" alt="">
+          <span class="cell"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAB0AAAAdCAYAAABWk2cPAAACEklEQVR42s2XP0hcQRCHv1neQYqgXc7GE6zTiGBva6mVjSnEIoEgWEhASBGwsUuaBMQmvVda2FyX4ojYWAvGJlpYiEXgDieZy+y5vMj9eb4H+cFxx96+/W5nd+Y3J4wgVW0Ai8A8MAu8AAJwD1wD58AJ0BKRH8PWkyGwOWADWGB0tYF9ETkdC6qqz4HtPwss5b66AM6An8AtMAFMAS+BmdzcI2BPRO6GQlV1GvgINHzoF3AINEXkYkBUDLoMrADPfNhCvSkil4PCOa2qx6r63V+fVLU+Rmhtjbo/F9c49o08HlJVbSaTX3c6HaGA7DlVfZOs1fQj6ykkc7eTkB6IyOdaraYU12TyueHrP0D9lsZL863b7X4pSrJdZln2zs821ZJz+jvdSC7NbtEdDgCScoInfszDQxG5qghoWjBe8EoT1awQGLUYvLT1En9QHpYENM0Hr6V4pakaaJoNXrzx0lY10FQPyQ2+HefJLMu2CgB7pTfaE168Ry11b4HVgqmswf0Qd4tRga+eUKmughswbk9VA03nwR3fNOP2VCXQdGLQVjKwXDHQ1Are07R9YCXvnyUD28aL6bLv7+b4O9FHSwb2OZLs6ENibweWiiUDj0TkfR5qzv41MfIyZUe4Fpu0fufgA5vATcnAG2/O7h5rV/Cubd1/WVk7XM93g+Gfwvh3wpr3rU86Qw/p5f/b4Vf9X+Y3mw0QANKD4o8AAAAASUVORK5CYII=" width="16" height="16" alt=""><i></i></span>
+        </div>
+        <figcaption>
+          <b>调整</b>
+          <span class="id">adjustments</span>
+          <span class="k">panel-adjustments</span>
+          <code>png/PL_Adjustment.png</code>
+          <span class="d">画布 29×29（已裁到墨迹，长边＝格子 16px）</span>
+        </figcaption>
+      </figure>
+      <figure class="card">
+        <div class="art">
+          <img class="at" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACIAAAAgCAYAAAB3j6rJAAADPklEQVR42rVYTUhUURT+7qS+ZkwjR0JlqKAXImRk5KIskgKJQMrazqZdVNAiWrmMoHXQpoUtWlkEwSyKVmq5yWAWtaneqiaKyIRRRsefTu8M98Xt8ua+ex07cOHNveee9/md36eAoxBRC4BeAN0AOgHskEdLAH4C+AbggxBi1cWucATQL1dLgjqDeMfLFpCwBNEGYARA1pHAeQAvhRCLDQORIC5ZsGBi52kSmJSFO0YaAAF5d0Ta2hwQGQ9ZNC5ZacsdiBKcWyX9JlZMjPQ26JI4F/VuBkg3tl66NwOk8z8AqWuzyXCpAmBFVsx1uSLZLivqLgDb5N4GgAWpv6K9o0nRt68jRHQZwEflJfWEzzMK8I0EffZASQgRGF1DRF1ENAGAgexM4rlcLq+OjY194cXPFq5pBnCNiG4RUUcsI0TE1D1WmtgDAJ8NIDaGh4cXi8XiGv8eGBhonpqaamtvbzexyC8/JZ+XQ0ZvCyGWdUbuKSBY+kxFN5/PlyMQLPzMe3xmmTXpsFtf/8c1MiZ87dIRAF6ctcnJyeVCobCu7/MenxkSY6+210NEZ2uuiXGJKs8AvFU3qtUq+b4/XyqVYv/yXC4ngiDIep6nJ8I+9mDMlZqLmJGTdUCwXNBTbm5urlIPBAufsY62nZEMxwm7qD8CYpIrar0pFAprSamh6TAzpxNipwbkcILdVgBXI2amp6d/JwFRdJiJMzJtTbI/ZXCLKrsB3ARwtFKpJA5TUodjggOxzcJ+moN1xqVZVKvVcY4Bpn92dpaCIKhR7vu+GBoaEqOjo82Dg4MZz/MuOg3PRMQZ0+Vw567sJybhtD/nYHOBXRM4dtAOC51WR5tfGUjR8VKfhU6Po82AgTy3oNqq4ioVdI+DPS5ob1JCCAbxxOEi037IcJ5LAKrLDDe+qOkxkE8Ol8/XiZVWQwWNjQ0uO3+bnmRl3NFFeW3C49pxLKGC6i6ZiMYAoQ9GYRW8A+CApbEfYVV8xOUl/LQ8blm8IiYYxK/YCU0I8T3M6Rthu35oyU5GfjylEuZflYUXAO6rIIzfvnI8OCGb4gGl6C3JlH8F4LV0K+un5QfZQTnbpKNixU0ZwHv534HYeeUPuBUVYNVYkW8AAAAASUVORK5CYII=" width="34" height="32" alt="">
+          <span class="cell"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACIAAAAgCAYAAAB3j6rJAAADPklEQVR42rVYTUhUURT+7qS+ZkwjR0JlqKAXImRk5KIskgKJQMrazqZdVNAiWrmMoHXQpoUtWlkEwSyKVmq5yWAWtaneqiaKyIRRRsefTu8M98Xt8ua+ex07cOHNveee9/md36eAoxBRC4BeAN0AOgHskEdLAH4C+AbggxBi1cWucATQL1dLgjqDeMfLFpCwBNEGYARA1pHAeQAvhRCLDQORIC5ZsGBi52kSmJSFO0YaAAF5d0Ta2hwQGQ9ZNC5ZacsdiBKcWyX9JlZMjPQ26JI4F/VuBkg3tl66NwOk8z8AqWuzyXCpAmBFVsx1uSLZLivqLgDb5N4GgAWpv6K9o0nRt68jRHQZwEflJfWEzzMK8I0EffZASQgRGF1DRF1ENAGAgexM4rlcLq+OjY194cXPFq5pBnCNiG4RUUcsI0TE1D1WmtgDAJ8NIDaGh4cXi8XiGv8eGBhonpqaamtvbzexyC8/JZ+XQ0ZvCyGWdUbuKSBY+kxFN5/PlyMQLPzMe3xmmTXpsFtf/8c1MiZ87dIRAF6ctcnJyeVCobCu7/MenxkSY6+210NEZ2uuiXGJKs8AvFU3qtUq+b4/XyqVYv/yXC4ngiDIep6nJ8I+9mDMlZqLmJGTdUCwXNBTbm5urlIPBAufsY62nZEMxwm7qD8CYpIrar0pFAprSamh6TAzpxNipwbkcILdVgBXI2amp6d/JwFRdJiJMzJtTbI/ZXCLKrsB3ARwtFKpJA5TUodjggOxzcJ+moN1xqVZVKvVcY4Bpn92dpaCIKhR7vu+GBoaEqOjo82Dg4MZz/MuOg3PRMQZ0+Vw567sJybhtD/nYHOBXRM4dtAOC51WR5tfGUjR8VKfhU6Po82AgTy3oNqq4ioVdI+DPS5ob1JCCAbxxOEi037IcJ5LAKrLDDe+qOkxkE8Ol8/XiZVWQwWNjQ0uO3+bnmRl3NFFeW3C49pxLKGC6i6ZiMYAoQ9GYRW8A+CApbEfYVV8xOUl/LQ8blm8IiYYxK/YCU0I8T3M6Rthu35oyU5GfjylEuZflYUXAO6rIIzfvnI8OCGb4gGl6C3JlH8F4LV0K+un5QfZQTnbpKNixU0ZwHv534HYeeUPuBUVYNVYkW8AAAAASUVORK5CYII=" width="16" height="16" alt=""><i></i></span>
+        </div>
+        <figcaption>
+          <b>通道</b>
+          <span class="id">channels</span>
+          <span class="k">panel-channels</span>
+          <code>png/PL_Channels.png</code>
+          <span class="d">画布 34×32（已裁到墨迹，长边＝格子 16px）</span>
+        </figcaption>
+      </figure>
+      <figure class="card">
+        <div class="art">
+          <img class="at" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABwAAAAiCAYAAABMfblJAAAB10lEQVR42u2XsUoDQRCG/1k3toqihailDyBoG0ljE4gGX8MnsBRfwzKYQpAokqgIoqBIQAQLsVbUQqtgwHCOWTlhWebMXlyu0SnubmZ3b25mvt1JCBkJM1fMXSM7mTEXhYwlc4faM/8bABYdc4OI1oJHyMzDAArCUCEeC57SIoCcYM/FY+EcdjodAlC2TDcAbi19JZ4TxqHWehbAtGWqmdpZ+qTWei5kSu3o3gEcADg0pU2Y079DAZZjImoR0ROAa8u+wMwjISJ0YalZz3VnaxV/5VCA5bn70qYdLYDITqsvPMoTlj0i+vhWiOgVwGU/8CgPWIzsCnPqPdb4ORRguSKie2HtSUxuKniUByxSdCatLQBnDjylVA4FWNoAjn5Y33D0ZWZW3t1CgMWkbJ2Zk9YPOvoEgHkAF77tyS38EIB8yvO57OUwoQ09ejgYADBu6XlmHiWil14RurCcdxetevRLU7NtAFPWBxh4NhOhiaKIhHRu+eQvPhDcuUtJ8HwZlVIuLA8mwhR1M1vnTYAncVu40VXto8wjSuNsx+fkUQIsbacz+ErV6ZMGnjEpQheW/fgUSSVEZMpw6tBbkhyWhS/tVyq94CFkJMzc/Bs/9f//zISUO3P5BMqPkAmAwyv7AAAAAElFTkSuQmCC" width="28" height="34" alt="">
+          <span class="cell"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABwAAAAiCAYAAABMfblJAAAB10lEQVR42u2XsUoDQRCG/1k3toqihailDyBoG0ljE4gGX8MnsBRfwzKYQpAokqgIoqBIQAQLsVbUQqtgwHCOWTlhWebMXlyu0SnubmZ3b25mvt1JCBkJM1fMXSM7mTEXhYwlc4faM/8bABYdc4OI1oJHyMzDAArCUCEeC57SIoCcYM/FY+EcdjodAlC2TDcAbi19JZ4TxqHWehbAtGWqmdpZ+qTWei5kSu3o3gEcADg0pU2Y079DAZZjImoR0ROAa8u+wMwjISJ0YalZz3VnaxV/5VCA5bn70qYdLYDITqsvPMoTlj0i+vhWiOgVwGU/8CgPWIzsCnPqPdb4ORRguSKie2HtSUxuKniUByxSdCatLQBnDjylVA4FWNoAjn5Y33D0ZWZW3t1CgMWkbJ2Zk9YPOvoEgHkAF77tyS38EIB8yvO57OUwoQ09ejgYADBu6XlmHiWil14RurCcdxetevRLU7NtAFPWBxh4NhOhiaKIhHRu+eQvPhDcuUtJ8HwZlVIuLA8mwhR1M1vnTYAncVu40VXto8wjSuNsx+fkUQIsbacz+ErV6ZMGnjEpQheW/fgUSSVEZMpw6tBbkhyWhS/tVyq94CFkJMzc/Bs/9f//zISUO3P5BMqPkAmAwyv7AAAAAElFTkSuQmCC" width="16" height="16" alt=""><i></i></span>
+        </div>
+        <figcaption>
+          <b>字符</b>
+          <span class="id">character</span>
+          <span class="k">braces / panel-character</span>
+          <code>png/PL_Character.png</code>
+          <span class="d">画布 28×34（已裁到墨迹，长边＝格子 16px）</span>
+        </figcaption>
+      </figure>
+      <figure class="card">
+        <div class="art">
+          <img class="at" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACQAAAAhCAYAAACxzQkrAAACCUlEQVR42tVXPUtcQRQ9581sEbBVsEkRNqQPSjClSWORNigB/0CKSH6CrdgZsMgHFjEW6azSaCysFAvtdLE0iAks+IHF6DUDz2W4zK7vbd7smgsLe+7MvZy5c+7dWSKBicgqgGHl/kXy1V2xWQIyDyNkvA3na70lBGCmy7XqCTnnfL6xwHUB4DLAz/M9vSFkjJkEUAtcPwFsBdgaY9708sqmFP4A4PMde9IQioj5iOQxyT0A54F/SEQe9aJCWrDfg++bau1dUkIRMV8D+BrgjyrkWTtxZ4nEvEvy6haQPPxbwWYRcWeJxLwY2bNWRNxZAjGfkdyObP2kcFTcWQIxr8U2+Y4DcKLc7yslFBGzt4UOIT8UHhUREzpsxWIWAN9EpG1IBE8D+NKqZIJnRlk7ITnRqpCIrACoFwxuOOemarWatHlmXBXIQSWVQRF5TPLg9srqJU5Tt9YOADiNiLlJ8mWBqpp8clvVGG+1hvxr7qxDrnWFZwE8CNu9yIn8wBSRDQAvAveIJ+rXrJofpx1OphM31fQtY3MAxgMNt8TdTduvi8h28Fkpm4DkbwD7yv26qsFY7zJuXmEv7icp3tRFq7QD4I+e+n0jlNuSwk9tP9mQXAawnPpv0D+ZVd3Td0K+Qo37VCE652iMGegwkYtoYaSyK7PWSv7bFJ3I/biye2X/BaGyIq+0KW4AgyKrINs59zEAAAAASUVORK5CYII=" width="36" height="33" alt="">
+          <span class="cell"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACQAAAAhCAYAAACxzQkrAAACCUlEQVR42tVXPUtcQRQ9581sEbBVsEkRNqQPSjClSWORNigB/0CKSH6CrdgZsMgHFjEW6azSaCysFAvtdLE0iAks+IHF6DUDz2W4zK7vbd7smgsLe+7MvZy5c+7dWSKBicgqgGHl/kXy1V2xWQIyDyNkvA3na70lBGCmy7XqCTnnfL6xwHUB4DLAz/M9vSFkjJkEUAtcPwFsBdgaY9708sqmFP4A4PMde9IQioj5iOQxyT0A54F/SEQe9aJCWrDfg++bau1dUkIRMV8D+BrgjyrkWTtxZ4nEvEvy6haQPPxbwWYRcWeJxLwY2bNWRNxZAjGfkdyObP2kcFTcWQIxr8U2+Y4DcKLc7yslFBGzt4UOIT8UHhUREzpsxWIWAN9EpG1IBE8D+NKqZIJnRlk7ITnRqpCIrACoFwxuOOemarWatHlmXBXIQSWVQRF5TPLg9srqJU5Tt9YOADiNiLlJ8mWBqpp8clvVGG+1hvxr7qxDrnWFZwE8CNu9yIn8wBSRDQAvAveIJ+rXrJofpx1OphM31fQtY3MAxgMNt8TdTduvi8h28Fkpm4DkbwD7yv26qsFY7zJuXmEv7icp3tRFq7QD4I+e+n0jlNuSwk9tP9mQXAawnPpv0D+ZVd3Td0K+Qo37VCE652iMGegwkYtoYaSyK7PWSv7bFJ3I/biye2X/BaGyIq+0KW4AgyKrINs59zEAAAAASUVORK5CYII=" width="16" height="16" alt=""><i></i></span>
+        </div>
+        <figcaption>
+          <b>字符样式</b>
+          <span class="id">characterStyles</span>
+          <span class="k">panel-character-styles</span>
+          <code>png/PL_CharacterStyles.png</code>
+          <span class="d">画布 36×33（已裁到墨迹，长边＝格子 16px）</span>
+        </figcaption>
+      </figure>
+      <figure class="card">
+        <div class="art">
+          <img class="at" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACQAAAAaCAYAAADfcP5FAAADRElEQVR42r2XXYhVVRTHf//LjBPqGEXjYGCKMBRTfoD2ovT5pD6I+CAYCkLRi04EoxkkhRQEaSoE1ZD5YPiBn+CASKAPjvrQF04z1EsUMsNQYllizdhcXZ4V68LxdM/lXu6dWXC55+y99t5rr7X+/7WOqEPMrAAsB1YATwIzfBi4AfwMDAB9wKCku9XsqToN2g6srkJ1JDH4GHBC0j8TaVAvMKuGJX8BnwAn8zxWoD75tUb9B4E3gX1mNmsiDLpUYe4O8AWwFTgAFFNzC4CDiYcXNzpk84CjOdO7JR1K6a4F3sjo/Osek3ShIR6S5Egay5m+WIU3pwDvm1lnQwwys47YtJw8lXnvzNFrAXaa2bT/hSxC4DBeBDwCjAZkfwF+A26GalsC4fnAsgqX+hvYm+x3JXRfD57Kk6OSPlCK4LqA9fXmVZVSjMu2ZsZWl273FrBhkozxRH9R0gvARuBqjDcBK2VmzyWWfsjkyDlJ2zJpMtsZPEI/UAjPZOU7YFPyvypC2d8gg/rKIHUoctSlw920MKPzFbA5Re0jZuZjHwOL6zSoLadAPxSvDxQiudLyabbOSHLW7WmAh9aZ2aOZsZeBh+P5pnvoG+DZlMJwzmbDNR7uVf0z4NvwzMaA/xEz85z5PWjj6dSa/qZIqLRBTwCXyxzweOrZPXgYOJsgdDzWv5IiSe+JuiT1p0Lje34eBLkh5xLnC5IuRRKXpMvMpmfi3BrJXZJdkvZI+lHST5L2A1tS84NpYyLs4xXqnssfwJclHno3XPxfpjtXmJnHe6mZveSVOanY80pxTsrC8TJocQ/8EK+jOYeOVTCoR9LtphL0ovvbFXzgideds/B6hXb0evwv8uSVNJKZX56z7usE7afuK67RArwT+VFJ5ppZOfi2RJ9TquIfmdkSh7WZzTQzrwbP54Ble+mSKrPxMwmNv5dU4GkVjHLkdEu6FWvcAPfwyhqR6KT4WpBjfoNmZo8lczsCppX6475A2dKkV26v0RjPubcl/VlVxxgM6q3Iq9GKNEq8jekpFou9zc3NVnMLG+HwZFxTpumqRfwb7TRwxtHUkM8gM2sPZvX6NyfQ6Jw1NQWQW/Ebitbie68Gkq5Vc8Y9Fs8QVZHO7XEAAAAASUVORK5CYII=" width="36" height="26" alt="">
+          <span class="cell"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACQAAAAaCAYAAADfcP5FAAADRElEQVR42r2XXYhVVRTHf//LjBPqGEXjYGCKMBRTfoD2ovT5pD6I+CAYCkLRi04EoxkkhRQEaSoE1ZD5YPiBn+CASKAPjvrQF04z1EsUMsNQYllizdhcXZ4V68LxdM/lXu6dWXC55+y99t5rr7X+/7WOqEPMrAAsB1YATwIzfBi4AfwMDAB9wKCku9XsqToN2g6srkJ1JDH4GHBC0j8TaVAvMKuGJX8BnwAn8zxWoD75tUb9B4E3gX1mNmsiDLpUYe4O8AWwFTgAFFNzC4CDiYcXNzpk84CjOdO7JR1K6a4F3sjo/Osek3ShIR6S5Egay5m+WIU3pwDvm1lnQwwys47YtJw8lXnvzNFrAXaa2bT/hSxC4DBeBDwCjAZkfwF+A26GalsC4fnAsgqX+hvYm+x3JXRfD57Kk6OSPlCK4LqA9fXmVZVSjMu2ZsZWl273FrBhkozxRH9R0gvARuBqjDcBK2VmzyWWfsjkyDlJ2zJpMtsZPEI/UAjPZOU7YFPyvypC2d8gg/rKIHUoctSlw920MKPzFbA5Re0jZuZjHwOL6zSoLadAPxSvDxQiudLyabbOSHLW7WmAh9aZ2aOZsZeBh+P5pnvoG+DZlMJwzmbDNR7uVf0z4NvwzMaA/xEz85z5PWjj6dSa/qZIqLRBTwCXyxzweOrZPXgYOJsgdDzWv5IiSe+JuiT1p0Lje34eBLkh5xLnC5IuRRKXpMvMpmfi3BrJXZJdkvZI+lHST5L2A1tS84NpYyLs4xXqnssfwJclHno3XPxfpjtXmJnHe6mZveSVOanY80pxTsrC8TJocQ/8EK+jOYeOVTCoR9LtphL0ovvbFXzgideds/B6hXb0evwv8uSVNJKZX56z7usE7afuK67RArwT+VFJ5ppZOfi2RJ9TquIfmdkSh7WZzTQzrwbP54Ble+mSKrPxMwmNv5dU4GkVjHLkdEu6FWvcAPfwyhqR6KT4WpBjfoNmZo8lczsCppX6475A2dKkV26v0RjPubcl/VlVxxgM6q3Iq9GKNEq8jekpFou9zc3NVnMLG+HwZFxTpumqRfwb7TRwxtHUkM8gM2sPZvX6NyfQ6Jw1NQWQW/Ebitbie68Gkq5Vc8Y9Fs8QVZHO7XEAAAAASUVORK5CYII=" width="16" height="16" alt=""><i></i></span>
+        </div>
+        <figcaption>
+          <b>颜色</b>
+          <span class="id">color</span>
+          <span class="k">panel-color</span>
+          <code>png/PL_Color.png</code>
+          <span class="d">画布 36×26（已裁到墨迹，长边＝格子 16px）</span>
+        </figcaption>
+      </figure>
+      <figure class="card">
+        <div class="art">
+          <img class="at" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAaCAYAAADWm14/AAAAoUlEQVR42u2WQQrCMBBF/9RYKupetx6o5/QsvUN7CbuoKHyJ/IIMFtyYbiYQHjOE/BeyGSN5BXABYCi/+krh9xXCp5ydVDQAWgAjgIN6R3Ev+v5cn1y9xLM7nzOZPoxGM7uRnGv/JZW4cZzE7QJr8SE+v1262gqBEAiBEAiBEAiBEAiB9Ic77Ue+h08j2Wksbwo/PmfW+QsGADsZldx5Wh5e8zM2lFf0yrUAAAAASUVORK5CYII=" width="32" height="26" alt="">
+          <span class="cell"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAaCAYAAADWm14/AAAAoUlEQVR42u2WQQrCMBBF/9RYKupetx6o5/QsvUN7CbuoKHyJ/IIMFtyYbiYQHjOE/BeyGSN5BXABYCi/+krh9xXCp5ydVDQAWgAjgIN6R3Ev+v5cn1y9xLM7nzOZPoxGM7uRnGv/JZW4cZzE7QJr8SE+v1262gqBEAiBEAiBEAiBEAiB9Ic77Ue+h08j2Wksbwo/PmfW+QsGADsZldx5Wh5e8zM2lFf0yrUAAAAASUVORK5CYII=" width="16" height="16" alt=""><i></i></span>
+        </div>
+        <figcaption>
+          <b>渐变</b>
+          <span class="id">gradients</span>
+          <span class="k">panel-gradients</span>
+          <code>png/PL_GradientsPresets.png</code>
+          <span class="d">画布 32×26（已裁到墨迹，长边＝格子 16px）</span>
+        </figcaption>
+      </figure>
+      <figure class="card">
+        <div class="art">
+          <img class="at" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACQAAAAWCAYAAACosj4+AAAA2ElEQVR42u2U3QnDMAyEFaO8dQwvkHG6VOboFl2gI3iLPtpwJSWBJji25Z+QQA/yYIzF3ScpRJUE4DF91tqupA7XMDOb0N+CzDcieufWUjVI9H2PWgT5CBKSd0qSJIWET5J33GoWqgz1lASAeKaWELOeAIxz7i4hM9cp27Jfohvp7BlbnEkTpRL1EAzW4ZYzEyBYvvYpSSUE9zrDBUmHSLt270PbHDK02hZP8TGSY8whFyOkG8zWltzqzHS8xtCZE3o+SH+WJeoAvOhEUnQy/Q1d0pA5kR/zAffss8/9Gi3RAAAAAElFTkSuQmCC" width="36" height="22" alt="">
+          <span class="cell"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACQAAAAWCAYAAACosj4+AAAA2ElEQVR42u2U3QnDMAyEFaO8dQwvkHG6VOboFl2gI3iLPtpwJSWBJji25Z+QQA/yYIzF3ScpRJUE4DF91tqupA7XMDOb0N+CzDcieufWUjVI9H2PWgT5CBKSd0qSJIWET5J33GoWqgz1lASAeKaWELOeAIxz7i4hM9cp27Jfohvp7BlbnEkTpRL1EAzW4ZYzEyBYvvYpSSUE9zrDBUmHSLt270PbHDK02hZP8TGSY8whFyOkG8zWltzqzHS8xtCZE3o+SH+WJeoAvOhEUnQy/Q1d0pA5kR/zAffss8/9Gi3RAAAAAElFTkSuQmCC" width="16" height="16" alt=""><i></i></span>
+        </div>
+        <figcaption>
+          <b>直方图</b>
+          <span class="id">histogram</span>
+          <span class="k">panel-histogram</span>
+          <code>png/PL_Histogram.png</code>
+          <span class="d">画布 36×22（已裁到墨迹，长边＝格子 16px）</span>
+        </figcaption>
+      </figure>
+      <figure class="card">
+        <div class="art">
+          <img class="at" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAB0AAAAiCAYAAACjv9J3AAABtElEQVR42sWXTU7DMBCF30uzhAPAGnEAeg2ypxwADgAHaA8Ae8Kan33Z0wNQ9lRdlwMk22aoKwcZ102t1A4jRYosJ19mPPNmQhF5BXCCZpuTvEAgSzyA8NzjbalxnwEoHXveEdhMaEmysDeISOMLROQZwKkn75bkJAnw4b7AkQLWZ9qFKeDYTKROgV1AvwFMmhLpfVfStLAjAHcArmxP5x4Pz/cAn4nIHyiXyyWTJDloeqqqqrLX68mWkvmwlqYA+o6tlyRna0/Vy1R9Nl3bgA67J3mtwRs1+uvpvtpreDomOdJrxwCeVud56PI2lPZOa+DaE3IB4MUV4lDam28BqLWB5W3frtPSdZ67QkAyd+3Ta292CanQxxaHsat2o0LrEnE18dj2+R9Q22axtXcDqBKsE+017tfZnFZVNfDR3jY0ETE1uKizOdW6WkQKZ2aKRV3Paay5dzWwqdnp3JDJPOrcKyJK+oZ18pgdJmbJ3OgpUQGHtkymoWmrshvqsE71nFs0zUj7wlRIH/RclJtnGAUqIpkevlQbfNzVndIAQDUlfJHM2vzLtO0kiza/ip1bF9q7YT/sI6OKL2/jEAAAAABJRU5ErkJggg==" width="29" height="34" alt="">
+          <span class="cell"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAB0AAAAiCAYAAACjv9J3AAABtElEQVR42sWXTU7DMBCF30uzhAPAGnEAeg2ypxwADgAHaA8Ae8Kan33Z0wNQ9lRdlwMk22aoKwcZ102t1A4jRYosJ19mPPNmQhF5BXCCZpuTvEAgSzyA8NzjbalxnwEoHXveEdhMaEmysDeISOMLROQZwKkn75bkJAnw4b7AkQLWZ9qFKeDYTKROgV1AvwFMmhLpfVfStLAjAHcArmxP5x4Pz/cAn4nIHyiXyyWTJDloeqqqqrLX68mWkvmwlqYA+o6tlyRna0/Vy1R9Nl3bgA67J3mtwRs1+uvpvtpreDomOdJrxwCeVud56PI2lPZOa+DaE3IB4MUV4lDam28BqLWB5W3frtPSdZ67QkAyd+3Ta292CanQxxaHsat2o0LrEnE18dj2+R9Q22axtXcDqBKsE+017tfZnFZVNfDR3jY0ETE1uKizOdW6WkQKZ2aKRV3Paay5dzWwqdnp3JDJPOrcKyJK+oZ18pgdJmbJ3OgpUQGHtkymoWmrshvqsE71nFs0zUj7wlRIH/RclJtnGAUqIpkevlQbfNzVndIAQDUlfJHM2vzLtO0kiza/ip1bF9q7YT/sI6OKL2/jEAAAAABJRU5ErkJggg==" width="16" height="16" alt=""><i></i></span>
+        </div>
+        <figcaption>
+          <b>历史记录</b>
+          <span class="id">history</span>
+          <span class="k">history / panel-history</span>
+          <code>png/PL_History.png</code>
+          <span class="d">画布 29×34（已裁到墨迹，长边＝格子 16px）</span>
+        </figcaption>
+      </figure>
+      <figure class="card">
+        <div class="art">
+          <img class="at" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACEAAAAhCAYAAABX5MJvAAACaklEQVR42s2YP0+UQRDGf7PRAqyg0AavsiAmhAQw4RMYQncF9wX8AGJhaWVCe/gJSKjIUdgZIpWNIeHuGhJDYXVcowVXqQUJ463MJpPz/uyJ93JPctm8++7OM+/szuyzJ2RCVQOwCqwDS0AJmAdi/zVwCbSAM+AEaIjIdY5tySB/AGwBFeAh+fgO1IBDEfnxz06o6ibwCpjr8/on8A24Au4Dj4DZPuM6QFVEPozlhKrOAG+A5z2vmt3lOAJOReSiz7zHwLPucmwAKz2vPwJvReTXSCdUNX71u24on7ruOrArIudj7KFFYBtYc91fupF5KSKdYRNnVHVfVev2+6yqZW6BON/sJJv7FumBE3bc4E+qusx/QLRj9pLtnYGbsCcCyzlpq6olS98cR3xENv9KQ1U9dgPKmQ7s2fi9TEfKjuPY0p80cculYV1E3mdEecGKFtYujCxKN3br9jhnvAT7goobu5u51G2rjljbzpzn7Vci/z0rxakSNnPTMJZkVX1hEWhnl2iRc1VtWh2JvKvBzoKEo3F2fSQWkVauAwN41oNb14jTMVPvwDbZwZhOeJ6lYKfhn7OgXykegSc9bW4EL+zsiSgFO46xw6hIJL754NL0qmAnEl9IggQ7jotE4rsOpogwPVAkEt9lMEkWMWt6YOIwniSAWsFVPUyQFAHPcxZMlCZsFOSE5zmJTjRMlEasmCKa5FIsOukXeRvBSm7NjduecBS8/VrkTzXi0FRxxNptJd0wPeE0Z8d4bwqV3QuqbvzrTGn3tacdqqyiXddV7XsfuXONeZdqeyruHdN5A5uau+hU3cqL+n/iN48i0B3QjxrIAAAAAElFTkSuQmCC" width="33" height="33" alt="">
+          <span class="cell"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACEAAAAhCAYAAABX5MJvAAACaklEQVR42s2YP0+UQRDGf7PRAqyg0AavsiAmhAQw4RMYQncF9wX8AGJhaWVCe/gJSKjIUdgZIpWNIeHuGhJDYXVcowVXqQUJ463MJpPz/uyJ93JPctm8++7OM+/szuyzJ2RCVQOwCqwDS0AJmAdi/zVwCbSAM+AEaIjIdY5tySB/AGwBFeAh+fgO1IBDEfnxz06o6ibwCpjr8/on8A24Au4Dj4DZPuM6QFVEPozlhKrOAG+A5z2vmt3lOAJOReSiz7zHwLPucmwAKz2vPwJvReTXSCdUNX71u24on7ruOrArIudj7KFFYBtYc91fupF5KSKdYRNnVHVfVev2+6yqZW6BON/sJJv7FumBE3bc4E+qusx/QLRj9pLtnYGbsCcCyzlpq6olS98cR3xENv9KQ1U9dgPKmQ7s2fi9TEfKjuPY0p80cculYV1E3mdEecGKFtYujCxKN3br9jhnvAT7goobu5u51G2rjljbzpzn7Vci/z0rxakSNnPTMJZkVX1hEWhnl2iRc1VtWh2JvKvBzoKEo3F2fSQWkVauAwN41oNb14jTMVPvwDbZwZhOeJ6lYKfhn7OgXykegSc9bW4EL+zsiSgFO46xw6hIJL754NL0qmAnEl9IggQ7jotE4rsOpogwPVAkEt9lMEkWMWt6YOIwniSAWsFVPUyQFAHPcxZMlCZsFOSE5zmJTjRMlEasmCKa5FIsOukXeRvBSm7NjduecBS8/VrkTzXi0FRxxNptJd0wPeE0Z8d4bwqV3QuqbvzrTGn3tacdqqyiXddV7XsfuXONeZdqeyruHdN5A5uau+hU3cqL+n/iN48i0B3QjxrIAAAAAElFTkSuQmCC" width="16" height="16" alt=""><i></i></span>
+        </div>
+        <figcaption>
+          <b>信息</b>
+          <span class="id">info</span>
+          <span class="k">panel-info</span>
+          <code>png/PL_Info.png</code>
+          <span class="d">画布 33×33（已裁到墨迹，长边＝格子 16px）</span>
+        </figcaption>
+      </figure>
+      <figure class="card">
+        <div class="art">
+          <img class="at" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACIAAAAhCAYAAAC803lsAAADHElEQVR42sWYX4hVZRTFf+veq02KiUJ/SPEviUZF4EMR1WME+iDogygZ6CRGvkSUZGY6ZQUJIRKG+iAqIvoi4sOoCQo+CP6JCBIDZSKUomjKSlJmZnm+2APHo3PnzJ17xw33Pty7+c761rf22vs7YhhhexLwFtAG7JB0sdG11CCACrA4QDwQP/cBu4Cdkm61HIjtKdlD1wPPDpByJfvaIOmHlgAJFpYAb+ZYGCgSO3uBr8uyo5IgpqVdAk8NkcCfgp3vhwXEdhVYCqwCRjeow8TOvmDnvyEDsT0zWJhDc+JnoEPSt6WABAuvA28Ao2huGNgPfFVkRwUQs4APm8jCQHEV+FjSuTuA2K4ByzP6VmQJVUYuDgJbJd2Q7QmJqkxQs7g/cQ1YXQkG2rh/kZ49qiLp97DrPVFqIxlHgEWSLhfF+nSU7NQWA/gtY2GTpNP1yjcZ18qsZyzL6r7SAhCHgS8l/V3W0J4MdmY0CcCvUbJnGrH4xE57GNxwyvpQsPDvkCze9gxJVwpGt6GBEr8WLJzNrTW9t7e3q1arOZ9YKQB4zPZW4IDtjbbH/49W+jE0sz1z3t4hmNXifhC2x9pek36vVqs7Yq65k5Genh5Vq9UFwNvAmNz/f2Rd91NJJ3Ngn4jBaE6d5rYpb9+2n4/W8Wgu72YY6X5JfclZH8oGnc+A5+rsrhP4QtJfdRrjXQ0tsRCbW1Bn7e+ANQnI9KwydgMPDkL1n5kLfi7pm8Ko8BEwrtjibb8IrAUeGWTdNMG19ze9ycAnJSewEwGoOzdC1vpHQtsJ1DvA/BJrJe2tS4WhwhzSHh24UoKdzZI6C2J/OTv797PjebjEXLInP9Pey1mfCXYeL7GjU0nMSe/Au8CrJY1tvaTzZXwkiew9YF6Jha8HkIklco+lwijaexlnfSWoHjdMe/8ndNXZ8HXCdqr9DmBugyAuxFH80ox7TRLva3G5qpUEkI5rWxJlMqymXjltzw4hTxsktQv4QNKlVt5928ItFw6QcgDYIunmiMx4tl+yfdz2ufgctf3CiL6WyIGZGP3G8X6ku9G1bgMLnC5BpTwhtwAAAABJRU5ErkJggg==" width="34" height="33" alt="">
+          <span class="cell"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACIAAAAhCAYAAAC803lsAAADHElEQVR42sWYX4hVZRTFf+veq02KiUJ/SPEviUZF4EMR1WME+iDogygZ6CRGvkSUZGY6ZQUJIRKG+iAqIvoi4sOoCQo+CP6JCBIDZSKUomjKSlJmZnm+2APHo3PnzJ17xw33Pty7+c761rf22vs7YhhhexLwFtAG7JB0sdG11CCACrA4QDwQP/cBu4Cdkm61HIjtKdlD1wPPDpByJfvaIOmHlgAJFpYAb+ZYGCgSO3uBr8uyo5IgpqVdAk8NkcCfgp3vhwXEdhVYCqwCRjeow8TOvmDnvyEDsT0zWJhDc+JnoEPSt6WABAuvA28Ao2huGNgPfFVkRwUQs4APm8jCQHEV+FjSuTuA2K4ByzP6VmQJVUYuDgJbJd2Q7QmJqkxQs7g/cQ1YXQkG2rh/kZ49qiLp97DrPVFqIxlHgEWSLhfF+nSU7NQWA/gtY2GTpNP1yjcZ18qsZyzL6r7SAhCHgS8l/V3W0J4MdmY0CcCvUbJnGrH4xE57GNxwyvpQsPDvkCze9gxJVwpGt6GBEr8WLJzNrTW9t7e3q1arOZ9YKQB4zPZW4IDtjbbH/49W+jE0sz1z3t4hmNXifhC2x9pek36vVqs7Yq65k5Genh5Vq9UFwNvAmNz/f2Rd91NJJ3Ngn4jBaE6d5rYpb9+2n4/W8Wgu72YY6X5JfclZH8oGnc+A5+rsrhP4QtJfdRrjXQ0tsRCbW1Bn7e+ANQnI9KwydgMPDkL1n5kLfi7pm8Ko8BEwrtjibb8IrAUeGWTdNMG19ze9ycAnJSewEwGoOzdC1vpHQtsJ1DvA/BJrJe2tS4WhwhzSHh24UoKdzZI6C2J/OTv797PjebjEXLInP9Pey1mfCXYeL7GjU0nMSe/Au8CrJY1tvaTzZXwkiew9YF6Jha8HkIklco+lwijaexlnfSWoHjdMe/8ndNXZ8HXCdqr9DmBugyAuxFH80ox7TRLva3G5qpUEkI5rWxJlMqymXjltzw4hTxsktQv4QNKlVt5928ItFw6QcgDYIunmiMx4tl+yfdz2ufgctf3CiL6WyIGZGP3G8X6ku9G1bgMLnC5BpTwhtwAAAABJRU5ErkJggg==" width="16" height="16" alt=""><i></i></span>
+        </div>
+        <figcaption>
+          <b>图层</b>
+          <span class="id">layers</span>
+          <span class="k">layers-3 / panel-layers</span>
+          <code>png/PL_Layers.png</code>
+          <span class="d">画布 34×33（已裁到墨迹，长边＝格子 16px）</span>
+        </figcaption>
+      </figure>
+      <figure class="card">
+        <div class="art">
+          <img class="at" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACIAAAAgCAYAAAB3j6rJAAABBklEQVR42u2YMQ6CQBBF/5jdxMJjeBFr4gEsLG28jQ0NjZXxAtZcgCN4CygUCWMku8lmQ4Huhl0MUw1MwnxmJ48ZiJmvANA0zU5KyRjZdH4BYN05QqwAlGOKaNuWdH5i5gIR2AKRmDD8LYAqgIbcFlIRURmgWeM6mih7pK9sEsARQKJu3QCkRPTyER8sRD1kb1xr/+Qp3isk142jLDPexLSEmR/ad4gfJseRGsDSKq0+57PyXeKXwRxh5tQqsd2MLvGnyRHzW7MJBLQifo745IMr0Lzx4RchmiOZTz78xTxSe+KD+zzigw/fziMzR6Jt1miEzHvNvNdMZq/5VOSufktUgTR0+d8jPr3+cXRbowAAAABJRU5ErkJggg==" width="34" height="32" alt="">
+          <span class="cell"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACIAAAAgCAYAAAB3j6rJAAABBklEQVR42u2YMQ6CQBBF/5jdxMJjeBFr4gEsLG28jQ0NjZXxAtZcgCN4CygUCWMku8lmQ4Huhl0MUw1MwnxmJ48ZiJmvANA0zU5KyRjZdH4BYN05QqwAlGOKaNuWdH5i5gIR2AKRmDD8LYAqgIbcFlIRURmgWeM6mih7pK9sEsARQKJu3QCkRPTyER8sRD1kb1xr/+Qp3isk142jLDPexLSEmR/ad4gfJseRGsDSKq0+57PyXeKXwRxh5tQqsd2MLvGnyRHzW7MJBLQifo745IMr0Lzx4RchmiOZTz78xTxSe+KD+zzigw/fziMzR6Jt1miEzHvNvNdMZq/5VOSufktUgTR0+d8jPr3+cXRbowAAAABJRU5ErkJggg==" width="16" height="16" alt=""><i></i></span>
+        </div>
+        <figcaption>
+          <b>测量记录</b>
+          <span class="id">measurementLog</span>
+          <span class="k">panel-measurement-log</span>
+          <code>png/PL_Logging.png</code>
+          <span class="d">画布 34×32（已裁到墨迹，长边＝格子 16px）</span>
+        </figcaption>
+      </figure>
+      <figure class="card">
+        <div class="art">
+          <img class="at" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAB4AAAAiCAYAAABIiGl0AAACrUlEQVR42r1X3Y3iMBD2JOaNB5DiIN6ggmM7gA6OCm63gqMDoILdqwCugqWD3auAXAXhDeVHCg88IOLEl1nFJy6bmCSEsxTkYDufZ75vZmxCKjbf97/6vm97nvdGbmhanUVCiAEADIrGgyAYuK77WBk4CIJO0YI4jncSvGhOFEVzAFg5jrMpDRwEwSiKoq3v+6u8Ba1Wayf7+/1+kEeFEOIx3eSsNDDnfIzW4GLP8+bZ8W63e5B9XdfzPPOMPwkV636/vysNzBh7SdYt09dFHjgAfHxQ07R/LEZeJQVhGC5rqc7zPAQV+CQq/pYZG6NLbdvuZP7f4nzHcRa3KB4tWKfAqzLzkXPXdV+yG6pr+Yw00DBSkDZpBJA7N6QliT7UyVj+RyntUhmzl2ptykLO+eslYNJ/F0L8RCwqBz3PswDAEkL8JoRYjLF3hRXPlNKlarM4lgj0LyBGyuU3wXVdOy/9AcDUMIxNAbDAzVFKJypwFBuldJBnBKTqHRFC8BkDwBfsCyEeTNO0FMCkDHhRg5qCERevtcC1BnQ04py/qQrLvSwutBzLI4oXRRvH8S+cI+kDVVkscl8B8CfwtFK9ZkR7EEJYWiZFjjBUoiiyz+fz7Fa3h2GI4fmEsYubSus4jnWgKLuksfxQ0WKl4DCHt9vtEQB0IMcdn4K9BvBVtWu6riPAIQWcMMYmKtCm1A4lci4qc4U8maa5rmCxkrKrccw5/55yP69reV49165Zm9Ag1b2s63M8v2XBlcB4TE0X7qSbmwLXVDcGeUwlhEybqNHpyfXDg1R1W5DHVMaYVebDcRwve73e4uZcjfX0dDodhsPh4VocCyF+mKZZOts1UiQAYGMYRiU6aAO8Wcfj8em/3BYvQHdRFE2zVNwVOAWdqO5HjTfXdbd5N8Uq7Q9IT+N/RMFD6QAAAABJRU5ErkJggg==" width="30" height="34" alt="">
+          <span class="cell"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAB4AAAAiCAYAAABIiGl0AAACrUlEQVR42r1X3Y3iMBD2JOaNB5DiIN6ggmM7gA6OCm63gqMDoILdqwCugqWD3auAXAXhDeVHCg88IOLEl1nFJy6bmCSEsxTkYDufZ75vZmxCKjbf97/6vm97nvdGbmhanUVCiAEADIrGgyAYuK77WBk4CIJO0YI4jncSvGhOFEVzAFg5jrMpDRwEwSiKoq3v+6u8Ba1Wayf7+/1+kEeFEOIx3eSsNDDnfIzW4GLP8+bZ8W63e5B9XdfzPPOMPwkV636/vysNzBh7SdYt09dFHjgAfHxQ07R/LEZeJQVhGC5rqc7zPAQV+CQq/pYZG6NLbdvuZP7f4nzHcRa3KB4tWKfAqzLzkXPXdV+yG6pr+Yw00DBSkDZpBJA7N6QliT7UyVj+RyntUhmzl2ptykLO+eslYNJ/F0L8RCwqBz3PswDAEkL8JoRYjLF3hRXPlNKlarM4lgj0LyBGyuU3wXVdOy/9AcDUMIxNAbDAzVFKJypwFBuldJBnBKTqHRFC8BkDwBfsCyEeTNO0FMCkDHhRg5qCERevtcC1BnQ04py/qQrLvSwutBzLI4oXRRvH8S+cI+kDVVkscl8B8CfwtFK9ZkR7EEJYWiZFjjBUoiiyz+fz7Fa3h2GI4fmEsYubSus4jnWgKLuksfxQ0WKl4DCHt9vtEQB0IMcdn4K9BvBVtWu6riPAIQWcMMYmKtCm1A4lci4qc4U8maa5rmCxkrKrccw5/55yP69reV49165Zm9Ag1b2s63M8v2XBlcB4TE0X7qSbmwLXVDcGeUwlhEybqNHpyfXDg1R1W5DHVMaYVebDcRwve73e4uZcjfX0dDodhsPh4VocCyF+mKZZOts1UiQAYGMYRiU6aAO8Wcfj8em/3BYvQHdRFE2zVNwVOAWdqO5HjTfXdbd5N8Uq7Q9IT+N/RMFD6QAAAABJRU5ErkJggg==" width="16" height="16" alt=""><i></i></span>
+        </div>
+        <figcaption>
+          <b>动作</b>
+          <span class="id">actions</span>
+          <span class="k">panel-actions</span>
+          <code>png/PL_Modern_Actions.png</code>
+          <span class="d">画布 30×34（已裁到墨迹，长边＝格子 16px）</span>
+        </figcaption>
+      </figure>
+      <figure class="card">
+        <div class="art">
+          <img class="at" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACYAAAAmCAYAAACoPemuAAAC5ElEQVR42u1Yv2vTQRT/vOay1bGhQqZiOrXWse1QdVD/ARWsmz9KQbp0cHF2KWkGi1BauooUh+4u2sFmcBBaAoGOgqJju+XIM1ffV87rfX/mAil6EC73vXfvPrnve5/7vACBGjO/NZ9Op0Mh/KkQTgTMlTOHSo0COOnX50gIYOVymRG4jWBI28UCxsx3mLnOzJVBbWx8M/O62SvPid0CcAPA1iDAic8tANcB3PbZUMrCKoCvAJaI6IfH7jKAWQATAB7I43e9720AB0T0vahvyvCrzjlg5nkz7oGYSjmcQwDbRPQpD6hEYDGOngNYBrBgmf0E0JLXYpoBUQMwZtnsA9gEsJYFVCowDzi7NQHsaK2/GB5j5s/y/KbW+lQpNQPgMYA5Z10qqDzBOmk2tj4PPTbR3CXn+aKzdjIkjy0743tZslVs7qf4KgZMAj2KqYa8imoalXjisyFTC+Kz7xNbimKKiN7IOBFcTPaZtQeOz2LAhKciStg5y5bfQZsELokStqWfYubxfk5sNqIEk31/UtkDzlqzEUcJWutDoRd4sjUXsAnpW6608YCzT8xLCeKj5fj285hRnZHIG6J2PLSyh7TWVCqVRmPmnwG4K9fMC898RWLKzUzzClekd9tLAPNy2b/2bdrtds3NoThOozNzW77WzDVjx5lk4roVU1ULVDT3V5yZ2kApVZNhm4hOigZ/U/oxpdS1JJ6y1qzEUYlSatq63JuFs5KIvvVe5ZEMH2WULkk890T6I/HdF/NHHDVnLuRMIs9PwosSW3B4r5jskVNqOBrsHChb9kSxEyOZ9oloNZS62HTGu1n0lNjspvgqrC4qojzttsrMG8w84/tLwDxj5qvM/MrYOtNrWSTTxZPWGYqRpwCmU364yeitYMVIjvJtXFSCr3xr+ighDzgfsLro872sBW+c5k+owvfEvp4n+N/3KvEPwaqZeJ77KHsNruU5sf9/Q/1TwFRAX8dScJyGcPYLa07je8KYUnYAAAAASUVORK5CYII=" width="38" height="38" alt="">
+          <span class="cell"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACYAAAAmCAYAAACoPemuAAAC5ElEQVR42u1Yv2vTQRT/vOay1bGhQqZiOrXWse1QdVD/ARWsmz9KQbp0cHF2KWkGi1BauooUh+4u2sFmcBBaAoGOgqJju+XIM1ffV87rfX/mAil6EC73vXfvPrnve5/7vACBGjO/NZ9Op0Mh/KkQTgTMlTOHSo0COOnX50gIYOVymRG4jWBI28UCxsx3mLnOzJVBbWx8M/O62SvPid0CcAPA1iDAic8tANcB3PbZUMrCKoCvAJaI6IfH7jKAWQATAB7I43e9720AB0T0vahvyvCrzjlg5nkz7oGYSjmcQwDbRPQpD6hEYDGOngNYBrBgmf0E0JLXYpoBUQMwZtnsA9gEsJYFVCowDzi7NQHsaK2/GB5j5s/y/KbW+lQpNQPgMYA5Z10qqDzBOmk2tj4PPTbR3CXn+aKzdjIkjy0743tZslVs7qf4KgZMAj2KqYa8imoalXjisyFTC+Kz7xNbimKKiN7IOBFcTPaZtQeOz2LAhKciStg5y5bfQZsELokStqWfYubxfk5sNqIEk31/UtkDzlqzEUcJWutDoRd4sjUXsAnpW6608YCzT8xLCeKj5fj285hRnZHIG6J2PLSyh7TWVCqVRmPmnwG4K9fMC898RWLKzUzzClekd9tLAPNy2b/2bdrtds3NoThOozNzW77WzDVjx5lk4roVU1ULVDT3V5yZ2kApVZNhm4hOigZ/U/oxpdS1JJ6y1qzEUYlSatq63JuFs5KIvvVe5ZEMH2WULkk890T6I/HdF/NHHDVnLuRMIs9PwosSW3B4r5jskVNqOBrsHChb9kSxEyOZ9oloNZS62HTGu1n0lNjspvgqrC4qojzttsrMG8w84/tLwDxj5qvM/MrYOtNrWSTTxZPWGYqRpwCmU364yeitYMVIjvJtXFSCr3xr+ighDzgfsLro872sBW+c5k+owvfEvp4n+N/3KvEPwaqZeJ77KHsNruU5sf9/Q/1TwFRAX8dScJyGcPYLa07je8KYUnYAAAAASUVORK5CYII=" width="16" height="16" alt=""><i></i></span>
+        </div>
+        <figcaption>
+          <b>导航器</b>
+          <span class="id">navigator</span>
+          <span class="k">panel-navigator</span>
+          <code>png/PL_Navigator.png</code>
+          <span class="d">画布 38×38（已裁到墨迹，长边＝格子 16px）</span>
+        </figcaption>
+      </figure>
+      <figure class="card">
+        <div class="art">
+          <img class="at" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABsAAAAeCAYAAADdGWXmAAAApklEQVR42u3T0Q2CMBSF4XObdhMXcBCXYQBHYA5HYAgTF2AL+9h4jA8mqNCA6b3h4Z5XCF+T/gjJC4AD9DcKySuMFmA4xxyrLlaedQBuf3zzCKDfiqGUklNK3CKRy6/7T+2BeCD7DGQawAlAboHNBvIVQBaRewusjzFW65ocYE1kg9WdDQDOwQoSkUewgrTT/4A0sR9IC5uFNLBFqDVWhd7YaAG99gSwVU0tE0RJQgAAAABJRU5ErkJggg==" width="27" height="30" alt="">
+          <span class="cell"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABsAAAAeCAYAAADdGWXmAAAApklEQVR42u3T0Q2CMBSF4XObdhMXcBCXYQBHYA5HYAgTF2AL+9h4jA8mqNCA6b3h4Z5XCF+T/gjJC4AD9DcKySuMFmA4xxyrLlaedQBuf3zzCKDfiqGUklNK3CKRy6/7T+2BeCD7DGQawAlAboHNBvIVQBaRewusjzFW65ocYE1kg9WdDQDOwQoSkUewgrTT/4A0sR9IC5uFNLBFqDVWhd7YaAG99gSwVU0tE0RJQgAAAABJRU5ErkJggg==" width="16" height="16" alt=""><i></i></span>
+        </div>
+        <figcaption>
+          <b>注释</b>
+          <span class="id">notes</span>
+          <span class="k">notes</span>
+          <code>png/PL_Notes.png</code>
+          <span class="d">画布 27×30（已裁到墨迹，长边＝格子 16px）</span>
+        </figcaption>
+      </figure>
+      <figure class="card">
+        <div class="art">
+          <img class="at" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABYAAAAeCAYAAAAo5+5WAAAA6UlEQVR42u2VrQpCMRSAv6O7RWyCj2A0KNg12MRi8TmsBrPZaBcE8RFMmnwEg2DwAbzJXZhODEOu4s9mul84h23sYxuHM+EBY0wV6AINoAzk+ZydOMICMATaeEAc6RSofOHoALEzXtmg7oPRl1JLLCIn5+a3nDPG1IAWnskBPQJgxfVQ4lIosQ4lPoYSr0OJF7b8vItFZA/MQpzYMrn2iI13sYicgQEw931iK9ciMgb6wBI4/NzdXqG1FqVUMWVpdc/Nhya0dbvbU6IoshVzSvkQ3nuKUFWRiTNxJv6nWP2wd2dDkiRx2vwFkbQ4PNACslQAAAAASUVORK5CYII=" width="22" height="30" alt="">
+          <span class="cell"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABYAAAAeCAYAAAAo5+5WAAAA6UlEQVR42u2VrQpCMRSAv6O7RWyCj2A0KNg12MRi8TmsBrPZaBcE8RFMmnwEg2DwAbzJXZhODEOu4s9mul84h23sYxuHM+EBY0wV6AINoAzk+ZydOMICMATaeEAc6RSofOHoALEzXtmg7oPRl1JLLCIn5+a3nDPG1IAWnskBPQJgxfVQ4lIosQ4lPoYSr0OJF7b8vItFZA/MQpzYMrn2iI13sYicgQEw931iK9ciMgb6wBI4/NzdXqG1FqVUMWVpdc/Nhya0dbvbU6IoshVzSvkQ3nuKUFWRiTNxJv6nWP2wd2dDkiRx2vwFkbQ4PNACslQAAAAASUVORK5CYII=" width="16" height="16" alt=""><i></i></span>
+        </div>
+        <figcaption>
+          <b>段落</b>
+          <span class="id">paragraph</span>
+          <span class="k">panel-paragraph</span>
+          <code>png/PL_Paragraph.png</code>
+          <span class="d">画布 22×30（已裁到墨迹，长边＝格子 16px）</span>
+        </figcaption>
+      </figure>
+      <figure class="card">
+        <div class="art">
+          <img class="at" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAB8AAAAiCAYAAACnSgJKAAABR0lEQVR42uWWr07EQBCHv2m3BHECBAZsFRoFApCEkCAh4SHwhGB4FARPgK0CdY9QCwZ5VWTL0JKSXJq7C7ttb3PwE7vtprNfdjp/VvCUqq4DJ8AhsAtsAuKwRS6e4H3gFtiig8QDfFpNd0DkYHYGFFPvWT0YR/AOcOMIrlWIyGRqn+/ZdZMrYI2e5Ao/oEe5wrdDwgkJfwsJfw4JfwA+gsBF5LWqDffAZ5CAE5En4Bp47wo3PkYi8qKq501jOWoay4azJ4dMJVUdN4/HrfI6Xrk871VGVR+rFEp/ewGw1l4mSaJ9nTx1+D41xox6O/mCht9W1rvb5zX8GZH7xwLOwyZreSEXkYtQJ0//jdtdlNeDtbaYtT4ofF4s/KybBYG0lNqeh/rnUpalRFE06lLNRGTPK+DiOK59PRm6mq38vX0p8Nw1l330Ba6dWCVFFElaAAAAAElFTkSuQmCC" width="31" height="34" alt="">
+          <span class="cell"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAB8AAAAiCAYAAACnSgJKAAABR0lEQVR42uWWr07EQBCHv2m3BHECBAZsFRoFApCEkCAh4SHwhGB4FARPgK0CdY9QCwZ5VWTL0JKSXJq7C7ttb3PwE7vtprNfdjp/VvCUqq4DJ8AhsAtsAuKwRS6e4H3gFtiig8QDfFpNd0DkYHYGFFPvWT0YR/AOcOMIrlWIyGRqn+/ZdZMrYI2e5Ao/oEe5wrdDwgkJfwsJfw4JfwA+gsBF5LWqDffAZ5CAE5En4Bp47wo3PkYi8qKq501jOWoay4azJ4dMJVUdN4/HrfI6Xrk871VGVR+rFEp/ewGw1l4mSaJ9nTx1+D41xox6O/mCht9W1rvb5zX8GZH7xwLOwyZreSEXkYtQJ0//jdtdlNeDtbaYtT4ofF4s/KybBYG0lNqeh/rnUpalRFE06lLNRGTPK+DiOK59PRm6mq38vX0p8Nw1l330Ba6dWCVFFElaAAAAAElFTkSuQmCC" width="16" height="16" alt=""><i></i></span>
+        </div>
+        <figcaption>
+          <b>段落样式</b>
+          <span class="id">paragraphStyles</span>
+          <span class="k">panel-paragraph-styles</span>
+          <code>png/PL_ParagraphStyles.png</code>
+          <span class="d">画布 31×34（已裁到墨迹，长边＝格子 16px）</span>
+        </figcaption>
+      </figure>
+      <figure class="card">
+        <div class="art">
+          <img class="at" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACoAAAAeCAYAAABaKIzgAAACN0lEQVR42t2Xv4sTQRTHP2+zUYvY+KNREIWojZyCjZUcKgiCf0C0t9TOSsXOShAbCy2sRBDsBIuD2OiJp4U2ihyChXKIjRpBzGa/7sAIMWw2m8tMER8sQ5iZ9755P77znkm6D7Qpl9UsyzrNZlNElkk4kopNJ+00TVuxQfb7fZuII7JHakXE7UvVQUsieyRYREzSS+ZAEuZE6uToaaBX8gcvAieBj8B14OaY+1eBc8AO4DlwxWVLybnuJI+uVuy7Ylgzsx/DH3DBg1wCzpjZszF63P1HQKc4vwwcAS4BP0t0VuIgyzKXp5vLPl8ko9XdcXkt6ZqkZLigqu4X5zdKuuPvni8ryHE48jy3aSlol6RlSfckbVgHhW2VtCRpRdKBmK/HDUkvJO2dQccp79W7ZRELAfKQN3B5Rj2JpAde19EY9HS2KIQMuDUTcZvlwO0hneGAStoOLDoKMbOvAQLkqOgbcLhIgd0hPXrMOQN4GOQ5NHM8+tj/PBES6HHge0H+rwKm/ZMhJ8wOVNKmwpMLwFOfX6HkNfDLNS6SWiE8uuCf2pWQLGJmv4E3HsPBEED3+fVtBGp+59f9IYC2PS19iAD0vV/3hADqup4vZjaIAPSTX3eGALoNWIv0Kn/265aJOT3tNBhqKp1kZzAYdNI0ValHa02DAWagOnYajUZrbIc/Mg2OdvbdUPFej52qUaTnO++/oYrVPdayMzfD3X8xhXYjhntqO0npxFc9lfYCAay0k+f5P3b+AFWBXJVwjkhoAAAAAElFTkSuQmCC" width="42" height="30" alt="">
+          <span class="cell"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACoAAAAeCAYAAABaKIzgAAACN0lEQVR42t2Xv4sTQRTHP2+zUYvY+KNREIWojZyCjZUcKgiCf0C0t9TOSsXOShAbCy2sRBDsBIuD2OiJp4U2ihyChXKIjRpBzGa/7sAIMWw2m8tMER8sQ5iZ9755P77znkm6D7Qpl9UsyzrNZlNElkk4kopNJ+00TVuxQfb7fZuII7JHakXE7UvVQUsieyRYREzSS+ZAEuZE6uToaaBX8gcvAieBj8B14OaY+1eBc8AO4DlwxWVLybnuJI+uVuy7Ylgzsx/DH3DBg1wCzpjZszF63P1HQKc4vwwcAS4BP0t0VuIgyzKXp5vLPl8ko9XdcXkt6ZqkZLigqu4X5zdKuuPvni8ryHE48jy3aSlol6RlSfckbVgHhW2VtCRpRdKBmK/HDUkvJO2dQccp79W7ZRELAfKQN3B5Rj2JpAde19EY9HS2KIQMuDUTcZvlwO0hneGAStoOLDoKMbOvAQLkqOgbcLhIgd0hPXrMOQN4GOQ5NHM8+tj/PBES6HHge0H+rwKm/ZMhJ8wOVNKmwpMLwFOfX6HkNfDLNS6SWiE8uuCf2pWQLGJmv4E3HsPBEED3+fVtBGp+59f9IYC2PS19iAD0vV/3hADqup4vZjaIAPSTX3eGALoNWIv0Kn/265aJOT3tNBhqKp1kZzAYdNI0ValHa02DAWagOnYajUZrbIc/Mg2OdvbdUPFej52qUaTnO++/oYrVPdayMzfD3X8xhXYjhntqO0npxFc9lfYCAay0k+f5P3b+AFWBXJVwjkhoAAAAAElFTkSuQmCC" width="16" height="16" alt=""><i></i></span>
+        </div>
+        <figcaption>
+          <b>路径</b>
+          <span class="id">paths</span>
+          <span class="k">spline / panel-paths</span>
+          <code>png/PL_Paths.png</code>
+          <span class="d">画布 42×30（已裁到墨迹，长边＝格子 16px）</span>
+        </figcaption>
+      </figure>
+      <figure class="card">
+        <div class="art">
+          <img class="at" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAaCAYAAADWm14/AAABZ0lEQVR42u1WS2rDQAx9CqarlF6iF/Gi2fUqWRUCPoCh0IP0DC0l3TdH8CWKvcrmlQHZGGW+DsVdVCAwM3qWRm/0bCH5CuAe61gnJE9Y0TaRvTOAFkCtbu1R11uNLcUnC7gBsAcwiEjv2R/X9xpbik8WkDSS8psUfLsWighDAbrXamwx3lllOB1Mi5k6gYi8kXwHsPVQlMRXHk6LTRP111LwQPJDfee7dOZ5MPdhV4i/KOAJwJ1647lgI9chbpsS/NS9iBDVlpLxpTa5rn+V4Me81QKuveskF+GrjFl3fB60tXbMnt0ULMRnC1ETAIe4zsWnC7hW6XLwmwzOFitdAn8xBefZR2XQW8zZSaJKR/JzFpODP9oOvITm3D27kTLOXJ3w4ec8ndRvXaUh3jKUDiX4Me+cgjr2LYi1OPNCWvzW6sDRiMk05x4Ot+p9jk4E8MkpmOY8cdKkTsTw/39Ef+K3vFsxf/cDWGAxCDWlmtAAAAAASUVORK5CYII=" width="32" height="26" alt="">
+          <span class="cell"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAaCAYAAADWm14/AAABZ0lEQVR42u1WS2rDQAx9CqarlF6iF/Gi2fUqWRUCPoCh0IP0DC0l3TdH8CWKvcrmlQHZGGW+DsVdVCAwM3qWRm/0bCH5CuAe61gnJE9Y0TaRvTOAFkCtbu1R11uNLcUnC7gBsAcwiEjv2R/X9xpbik8WkDSS8psUfLsWighDAbrXamwx3lllOB1Mi5k6gYi8kXwHsPVQlMRXHk6LTRP111LwQPJDfee7dOZ5MPdhV4i/KOAJwJ1647lgI9chbpsS/NS9iBDVlpLxpTa5rn+V4Me81QKuveskF+GrjFl3fB60tXbMnt0ULMRnC1ETAIe4zsWnC7hW6XLwmwzOFitdAn8xBefZR2XQW8zZSaJKR/JzFpODP9oOvITm3D27kTLOXJ3w4ec8ndRvXaUh3jKUDiX4Me+cgjr2LYi1OPNCWvzW6sDRiMk05x4Ot+p9jk4E8MkpmOY8cdKkTsTw/39Ef+K3vFsxf/cDWGAxCDWlmtAAAAAASUVORK5CYII=" width="16" height="16" alt=""><i></i></span>
+        </div>
+        <figcaption>
+          <b>图案</b>
+          <span class="id">patterns</span>
+          <span class="k">panel-patterns</span>
+          <code>png/PL_PatternsPresets.png</code>
+          <span class="d">画布 32×26（已裁到墨迹，长边＝格子 16px）</span>
+        </figcaption>
+      </figure>
+      <figure class="card">
+        <div class="art">
+          <img class="at" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACEAAAAeCAYAAACiyHcXAAACt0lEQVR42r2XXWiOYRjHf9e7sZE5kI/IFkOaWr4dyPey5ERKkxb5CmvDOJTSHKs5kJxJnLI4sFA+DsjXiRwRiUXZyRxgPvf33ut66zXv9t7P3teuerq7n+d6ruf//K/PGyJF0hyKLJL6r1jlakkPJM3+HyBSkfqHgNHAUf6DpCLQLgFW+HaZpFUjCkKSAYcH3G6VNGokmdgA1Ay4VwU0RICPFhvCUIiBy8DUHI8/A5vNrEfSOAcbXDYXmOQ6X4HXwBOg08ze5ArMfCC253BFtnQA3ekPBb2xET98B2g3sw9RICSNB64CFZGMvgCuAY+A92b2U1JgZD6wBqh3139Jmz9hZndjQBwBGiM+/i1to83MbuWJkUrgGLAU6AOOm9nNDIhUjhemAVsjGSgHPuYNPLMuoBm45N88KWneUNnRApQmCO6DURlg1mdmp4Erbr8NKPkHhKOrT5jmCyWtTKB/CngHzAQ25WKidZj1pkVSKpKRH8A53zb8BcLL8aJhgpgFbEygfzv9w5/SMRIaYlXKAZR4kypEmiSVRbLxy9M5yIIME8E3MwoEMSVfOR8gL32tTEkK1e5AkXrRLkmxBa4nk+aBiR3AhCKBCJV2Z6RuxnX9Ed1IcWWbs5tPKn3tLjWzvDkuaXJ6oLkO9AJ1nmaFyuJMbMTmduiWr4AxwNoizJbV3vZDu3+WSvBuh697PKULkb2+3gC+J0FfJqlT0lNJ+wpgYbXbeChpevTIn8PAY0nrhwGgVtI9t7E/0bljgKGmLCC7Y+dJSXVp4Pf93TPBpcMG4Qab3Vi4LkhaPlgDk1QjqT1L/6yk8uzDjxXg23VhQvIChTekMNR2+T4z3lX5PvSLi6GDmtnvqEE3EkiFT2FbgImDqIXoD+PfeTN7m2jaTggm2AkH5lpnIOXMhNry3Mx6BzuLBvkDVHZxkXMyurAAAAAASUVORK5CYII=" width="33" height="30" alt="">
+          <span class="cell"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACEAAAAeCAYAAACiyHcXAAACt0lEQVR42r2XXWiOYRjHf9e7sZE5kI/IFkOaWr4dyPey5ERKkxb5CmvDOJTSHKs5kJxJnLI4sFA+DsjXiRwRiUXZyRxgPvf33ut66zXv9t7P3teuerq7n+d6ruf//K/PGyJF0hyKLJL6r1jlakkPJM3+HyBSkfqHgNHAUf6DpCLQLgFW+HaZpFUjCkKSAYcH3G6VNGokmdgA1Ay4VwU0RICPFhvCUIiBy8DUHI8/A5vNrEfSOAcbXDYXmOQ6X4HXwBOg08ze5ArMfCC253BFtnQA3ekPBb2xET98B2g3sw9RICSNB64CFZGMvgCuAY+A92b2U1JgZD6wBqh3139Jmz9hZndjQBwBGiM+/i1to83MbuWJkUrgGLAU6AOOm9nNDIhUjhemAVsjGSgHPuYNPLMuoBm45N88KWneUNnRApQmCO6DURlg1mdmp4Erbr8NKPkHhKOrT5jmCyWtTKB/CngHzAQ25WKidZj1pkVSKpKRH8A53zb8BcLL8aJhgpgFbEygfzv9w5/SMRIaYlXKAZR4kypEmiSVRbLxy9M5yIIME8E3MwoEMSVfOR8gL32tTEkK1e5AkXrRLkmxBa4nk+aBiR3AhCKBCJV2Z6RuxnX9Ed1IcWWbs5tPKn3tLjWzvDkuaXJ6oLkO9AJ1nmaFyuJMbMTmduiWr4AxwNoizJbV3vZDu3+WSvBuh697PKULkb2+3gC+J0FfJqlT0lNJ+wpgYbXbeChpevTIn8PAY0nrhwGgVtI9t7E/0bljgKGmLCC7Y+dJSXVp4Pf93TPBpcMG4Qab3Vi4LkhaPlgDk1QjqT1L/6yk8uzDjxXg23VhQvIChTekMNR2+T4z3lX5PvSLi6GDmtnvqEE3EkiFT2FbgImDqIXoD+PfeTN7m2jaTggm2AkH5lpnIOXMhNry3Mx6BzuLBvkDVHZxkXMyurAAAAAASUVORK5CYII=" width="16" height="16" alt=""><i></i></span>
+        </div>
+        <figcaption>
+          <b>形状</b>
+          <span class="id">shapes</span>
+          <span class="k">panel-shapes</span>
+          <code>png/PL_ShapesPresets.png</code>
+          <span class="d">画布 33×30（已裁到墨迹，长边＝格子 16px）</span>
+        </figcaption>
+      </figure>
+      <figure class="card">
+        <div class="art">
+          <img class="at" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACEAAAAjCAYAAAAaLGNkAAADJ0lEQVR42u1XXWiOYRi+Lr6xz/xvs3Iyf/kZJvO3pMiBIpwoB5RSknNFK4okSiJHDigHTqRJIgdCOSJbkzYHW8pKNmYjY3+23d677q9ur/f79r7aPjvw1Nrz3M/zvO/1Xvd1/3xExBCRXcjjmIBxMP6DGFcgUjHO9AL4CuAngAIARQCm5wtEG4C3JL9ERM8UAJUASkcDBLOEaBnJj7kuioje3TAaQCI1MRIAOyMAmvKiCRGpALAZwBwAPwDcJtlqQLpFpB/A5DEBISIqwpMAdoS2ngFo9UfHMkRrIgDoCxtDQAvHxB0iosrf7UzXAhE+BJAm2ePsgwBeAFgKoEMZ8vsmXg3peQDmJ3XHXjd/SvJqDnF+sr9s+9+VPRHR/ytjuUNE1LbJmR6MSi4g31nSi2ZCRBY4VhYBmGrzYc2UIrImpIt2m3eR7At9xCQAJZn7JNvdtjI28w+AIqIp+HG2xDXCuE/yVIhFdV2VmR6RrHH7iwEsiXLHioQAht18q4ik3fqIA9AcPPd06G5pNnc0WCRMVPUDuOLovG4saRRkaNdCdhNAMQCtIVs0ckSkOoiOgxk3ATjqXaWlIHj27EgQJHutUsJcU+ITE8nmCPHWAjhsy50iUhd8xBljVAEfJ9nmzqvGVsdNVsvcXL+4Jcu9O/YyHesAXAQwy9bnSTY4ACk7UxAXRIWbt5AcyBJun81NmWdk7t0ieTeUrKpctCUGMVKFbA2tuwFcCtk0EsqS1o7lcUCIyEYAh0LmaUa7H0WJCpiIFFu5zgnCEts5u6uJ67nb3h863py0inpR9kTQrQA0xC67L7wRCO6sK+fVIrLQaUdd9CFJFfXF5Q3J4Yh0fAHAXDO90uxIckhEXgJYb/Z9Fq4ZIPUA6nO49jcmvB4aI/rJEwBWmanDcsGQre+549uNsWRNjb3Eg3gdOnfANTiaP46R7HT7TwB8s7kytidxty0i5YE7ap19G8kux0TauW7QsmyY1kKXkAaCwtUfB4C6IxWhh/cegPm1N0a/0Ofqy1/1mJU5XJG336K+aanLOwhTcvm/BKGd1YygQ1prqu8k2ZRPACrMXxt8FdPfj0Y6AAAAAElFTkSuQmCC" width="33" height="35" alt="">
+          <span class="cell"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACEAAAAjCAYAAAAaLGNkAAADJ0lEQVR42u1XXWiOYRi+Lr6xz/xvs3Iyf/kZJvO3pMiBIpwoB5RSknNFK4okSiJHDigHTqRJIgdCOSJbkzYHW8pKNmYjY3+23d677q9ur/f79r7aPjvw1Nrz3M/zvO/1Xvd1/3xExBCRXcjjmIBxMP6DGFcgUjHO9AL4CuAngAIARQCm5wtEG4C3JL9ERM8UAJUASkcDBLOEaBnJj7kuioje3TAaQCI1MRIAOyMAmvKiCRGpALAZwBwAPwDcJtlqQLpFpB/A5DEBISIqwpMAdoS2ngFo9UfHMkRrIgDoCxtDQAvHxB0iosrf7UzXAhE+BJAm2ePsgwBeAFgKoEMZ8vsmXg3peQDmJ3XHXjd/SvJqDnF+sr9s+9+VPRHR/ytjuUNE1LbJmR6MSi4g31nSi2ZCRBY4VhYBmGrzYc2UIrImpIt2m3eR7At9xCQAJZn7JNvdtjI28w+AIqIp+HG2xDXCuE/yVIhFdV2VmR6RrHH7iwEsiXLHioQAht18q4ik3fqIA9AcPPd06G5pNnc0WCRMVPUDuOLovG4saRRkaNdCdhNAMQCtIVs0ckSkOoiOgxk3ATjqXaWlIHj27EgQJHutUsJcU+ITE8nmCPHWAjhsy50iUhd8xBljVAEfJ9nmzqvGVsdNVsvcXL+4Jcu9O/YyHesAXAQwy9bnSTY4ACk7UxAXRIWbt5AcyBJun81NmWdk7t0ieTeUrKpctCUGMVKFbA2tuwFcCtk0EsqS1o7lcUCIyEYAh0LmaUa7H0WJCpiIFFu5zgnCEts5u6uJ67nb3h863py0inpR9kTQrQA0xC67L7wRCO6sK+fVIrLQaUdd9CFJFfXF5Q3J4Yh0fAHAXDO90uxIckhEXgJYb/Z9Fq4ZIPUA6nO49jcmvB4aI/rJEwBWmanDcsGQre+549uNsWRNjb3Eg3gdOnfANTiaP46R7HT7TwB8s7kytidxty0i5YE7ap19G8kux0TauW7QsmyY1kKXkAaCwtUfB4C6IxWhh/cegPm1N0a/0Ofqy1/1mJU5XJG336K+aanLOwhTcvm/BKGd1YygQ1prqu8k2ZRPACrMXxt8FdPfj0Y6AAAAAElFTkSuQmCC" width="16" height="16" alt=""><i></i></span>
+        </div>
+        <figcaption>
+          <b>样式</b>
+          <span class="id">styles</span>
+          <span class="k">panel-styles</span>
+          <code>png/PL_StylesPresets.png</code>
+          <span class="d">画布 33×35（已裁到墨迹，长边＝格子 16px）</span>
+        </figcaption>
+      </figure>
+      <figure class="card">
+        <div class="art">
+          <img class="at" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAaCAYAAADWm14/AAAA+ElEQVR42u2UMQqDMBSGY+k9pNBbeAMvoLPgIRy8geAxLO56AseOjm7vAJpEVGg15QVacIhxC4W8JQ4f/D/C9ztCiAch5E7MXOcIIZ7E4F2/HwAA27a9VaDrujd88zyHZVmUXJIkkovjGMZxVHJFUdx2BTB8XdeXrjGGT9Ok5TCcc67lLsTw2QLGCxjX0Pgf+GmYZRnM86z0Nk1T6W0URYd+l2UpuTAMgXOu5Kqq2u8Ahp/1mzGm5TCcUmp3wBawO3B+B4IgOPS2rmvpre/7wBhTck3TSM7zPKCUKrm2bfc7cNZbDB+GQctheN/3dgdsgf/Ygc5gfvcBDy6i82QQzj4AAAAASUVORK5CYII=" width="32" height="26" alt="">
+          <span class="cell"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAaCAYAAADWm14/AAAA+ElEQVR42u2UMQqDMBSGY+k9pNBbeAMvoLPgIRy8geAxLO56AseOjm7vAJpEVGg15QVacIhxC4W8JQ4f/D/C9ztCiAch5E7MXOcIIZ7E4F2/HwAA27a9VaDrujd88zyHZVmUXJIkkovjGMZxVHJFUdx2BTB8XdeXrjGGT9Ok5TCcc67lLsTw2QLGCxjX0Pgf+GmYZRnM86z0Nk1T6W0URYd+l2UpuTAMgXOu5Kqq2u8Ahp/1mzGm5TCcUmp3wBawO3B+B4IgOPS2rmvpre/7wBhTck3TSM7zPKCUKrm2bfc7cNZbDB+GQctheN/3dgdsgf/Ygc5gfvcBDy6i82QQzj4AAAAASUVORK5CYII=" width="16" height="16" alt=""><i></i></span>
+        </div>
+        <figcaption>
+          <b>色板</b>
+          <span class="id">swatches</span>
+          <span class="k">panel-swatches</span>
+          <code>png/PL_SwatchesPresets.png</code>
+          <span class="d">画布 32×26（已裁到墨迹，长边＝格子 16px）</span>
+        </figcaption>
+      </figure>
+      <figure class="card">
+        <div class="art">
+          <img class="at" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACIAAAAoCAYAAACb3CikAAABJ0lEQVR42u2WMUrEQBSGv38zgoVY2lm5pQew9QD2XkCwFTyGYCt4AfEMC7YWW1rGC1iJm0JwyJNIimVlN5OYmFmYHxKYmTfDx7zHm19skJmdA9eE6UbSAx01aVh/BGYB58zq2M5SU4CZ7QC3wMmakGfgStLXoCA1zC5wBxyvLL0Al5I++aMUGmhm+8A9cFRPvQIXkj74b5nZgZnN6++wz7Mnra5Pelsavo8GMqQSyK+0m1nVDacjc+QVyDy21JwBp2ONl0EKSYuxxlGmZtRidSs5KwI2PfUdX5Zl4TbkcN17M0h86qwJJIEkkAQyhEOL4fXNY7mRaXJoUTu0PIZilfdeWZbttdjU1qE16sehOecqC7UI3dTWoaXOuvUgrkuFVz/vfdEnyDdY+5IaevAX5gAAAABJRU5ErkJggg==" width="34" height="40" alt="">
+          <span class="cell"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACIAAAAoCAYAAACb3CikAAABJ0lEQVR42u2WMUrEQBSGv38zgoVY2lm5pQew9QD2XkCwFTyGYCt4AfEMC7YWW1rGC1iJm0JwyJNIimVlN5OYmFmYHxKYmTfDx7zHm19skJmdA9eE6UbSAx01aVh/BGYB58zq2M5SU4CZ7QC3wMmakGfgStLXoCA1zC5wBxyvLL0Al5I++aMUGmhm+8A9cFRPvQIXkj74b5nZgZnN6++wz7Mnra5Pelsavo8GMqQSyK+0m1nVDacjc+QVyDy21JwBp2ONl0EKSYuxxlGmZtRidSs5KwI2PfUdX5Zl4TbkcN17M0h86qwJJIEkkAQyhEOL4fXNY7mRaXJoUTu0PIZilfdeWZbttdjU1qE16sehOecqC7UI3dTWoaXOuvUgrkuFVz/vfdEnyDdY+5IaevAX5gAAAABJRU5ErkJggg==" width="16" height="16" alt=""><i></i></span>
+        </div>
+        <figcaption>
+          <b>时间轴</b>
+          <span class="id">timeline</span>
+          <span class="k">panel-timeline</span>
+          <code>png/PL_Timeline.png</code>
+          <span class="d">画布 34×40（已裁到墨迹，长边＝格子 16px）</span>
+        </figcaption>
+      </figure>
+      <figure class="card">
+        <div class="art">
+          <img class="at" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACUAAAAiCAYAAADYmxC7AAADH0lEQVR42s2XX2iNcRjHP8/Z8Z8I2QhFa0kulHJjNC5QpvyL7MJINolaLFLKFErZcsuVkqTkYkNN0mooa3eE5oIL/xUyEjt5vA+/d737OTs75+w92546Z6ffn3effr/n+T7fV/Cip6dHksnkPGABMA54ATwSkR6GKCT8oaolwBZgLVDirfsQfDWISEfcAKpaBXSKSFcvlKqOB/YDm4Bkhv0/gZ0i8jxGoIYAqBL4BtSEYAlgGbAESA3wjDHAgQIAWUwELqjqpD7X5xbOAGa7zyqg3HuWga8UkR+DBDoEbPeGu4KTqvoPyttoSX4ZmOtN1YnIvUFCtbnT6QUCakWkO7y+9BXw7zRepZkqHyRQRSagjCflHtAKTPOGvwMbReRTHkBlljsOymBagBtRIIukqlrVlQLvgXeu/O2U1qQBspgQVOJRVT0iIr/zBGoRkRP93pKqWkVV53ETlhcnReRLnEAh1CjglKu2XMP05RpwVUQ+xgHUm1OpVEqKiopMybcF/2SRt+ZXoPSPgwS/AxQDW1378aXiNnApKq75AKVN9IhW2dxX630ikorMTwV2Bf1wMzDa2259codVbr5Ag1Xk6SaCqvpAVTtV9ZaqFocnZFrkxo8z1OHg6lR1/ogASpfUPpAVknMgIwqoSVU7gmbbGFzxUvNr3r6xqprImOh5ApnLaIwmtZOaM8AKb/lLJyNWMKtdUZmBvBvsPysinyXPVlHvjJnZjfXBcJg7vVWmqknnBHZ7vS5TdP31bHm4xIORobfATB/I2zMlaF37rF+muZmbwH3n6da5sXOSA1DUlPkxoA6p6kLgcEScr4vI6cj8MWBDIOBPEzEAZZWbIvLEO+V2b8lD97c0EQOQRaVL9oHAzO6ElmexN10R9tNkDEAW3S5Js4lWVwDVzpM/cxUamsd2iQHIol5E2rJMhcnARWBOmmmTiz0SA1DOzdaB7QWWO9P42unUFWvmMtRA2UTCA6rJAchyqKnQr+2zgOYcgGp9w1+IkyobCUAZ3/uGC8iH6spCiwoO1AdKRN44Tz2sQP2+VqtqszNr9jnvimDI4g/Rk60Yit/3YgAAAABJRU5ErkJggg==" width="37" height="34" alt="">
+          <span class="cell"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACUAAAAiCAYAAADYmxC7AAADH0lEQVR42s2XX2iNcRjHP8/Z8Z8I2QhFa0kulHJjNC5QpvyL7MJINolaLFLKFErZcsuVkqTkYkNN0mooa3eE5oIL/xUyEjt5vA+/d737OTs75+w92546Z6ffn3effr/n+T7fV/Cip6dHksnkPGABMA54ATwSkR6GKCT8oaolwBZgLVDirfsQfDWISEfcAKpaBXSKSFcvlKqOB/YDm4Bkhv0/gZ0i8jxGoIYAqBL4BtSEYAlgGbAESA3wjDHAgQIAWUwELqjqpD7X5xbOAGa7zyqg3HuWga8UkR+DBDoEbPeGu4KTqvoPyttoSX4ZmOtN1YnIvUFCtbnT6QUCakWkO7y+9BXw7zRepZkqHyRQRSagjCflHtAKTPOGvwMbReRTHkBlljsOymBagBtRIIukqlrVlQLvgXeu/O2U1qQBspgQVOJRVT0iIr/zBGoRkRP93pKqWkVV53ETlhcnReRLnEAh1CjglKu2XMP05RpwVUQ+xgHUm1OpVEqKiopMybcF/2SRt+ZXoPSPgwS/AxQDW1378aXiNnApKq75AKVN9IhW2dxX630ikorMTwV2Bf1wMzDa2259codVbr5Ag1Xk6SaCqvpAVTtV9ZaqFocnZFrkxo8z1OHg6lR1/ogASpfUPpAVknMgIwqoSVU7gmbbGFzxUvNr3r6xqprImOh5ApnLaIwmtZOaM8AKb/lLJyNWMKtdUZmBvBvsPysinyXPVlHvjJnZjfXBcJg7vVWmqknnBHZ7vS5TdP31bHm4xIORobfATB/I2zMlaF37rF+muZmbwH3n6da5sXOSA1DUlPkxoA6p6kLgcEScr4vI6cj8MWBDIOBPEzEAZZWbIvLEO+V2b8lD97c0EQOQRaVL9oHAzO6ElmexN10R9tNkDEAW3S5Js4lWVwDVzpM/cxUamsd2iQHIol5E2rJMhcnARWBOmmmTiz0SA1DOzdaB7QWWO9P42unUFWvmMtRA2UTCA6rJAchyqKnQr+2zgOYcgGp9w1+IkyobCUAZ3/uGC8iH6spCiwoO1AdKRN44Tz2sQP2+VqtqszNr9jnvimDI4g/Rk60Yit/3YgAAAABJRU5ErkJggg==" width="16" height="16" alt=""><i></i></span>
+        </div>
+        <figcaption>
+          <b>工具预设</b>
+          <span class="id">toolPresets</span>
+          <span class="k">panel-tool-presets</span>
+          <code>png/PL_ToolPresets.png</code>
+          <span class="d">画布 37×34（已裁到墨迹，长边＝格子 16px）</span>
+        </figcaption>
+      </figure>
+  </div>
+
+  <h2>列头的折叠 / 展开按钮</h2>
+  <p class="lead">
+    面板列与图标列顶上的 <code>.col-toggle</code> 用的是 PS 原稿的一对双箭头，由
+    <code>panels.js</code> 的 <code>colToggleGlyph()</code> 按状态换：收起态 « 、展开态 »。
+    这两张原稿画布 36×36 而图形只占中间 24×20，所以长边顶不满 16px 的格子 —— 这是原稿自带的
+    内边距，两张**一样**，不影响对齐。
+  </p>
+  <div class="grid">
+      <figure class="card">
+        <div class="art">
+          <img class="at" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABHNCSVQICAgIfAhkiAAAAAlwSFlzAAAdhwAAHYcBj+XxZQAAARlJREFUWIXtlTtKxFAYRr/PgOgG3IHbEEUt3IFLERmcZhSmdgVibauChYqNgruxHo+FGfCRZHIfExDvgTThcP8TSP5IhUKh8EcBtoAr4BLYzO2HxuwDL8BrfV3k8ldiYiRNJFVfbq/n8oOCWg6fSTrP4QcFAbsNh79LGtt+SvXnOCDmrOHwE9u3qX5Q0JAxC4OGjukMArYlTfX7hRzZvkv1Y4KuJW30PTzUbyN4Dy2brqCpPp9yTiVpUu+WHH5YkO1HSccNQ06Bg1S/de4ioePLGdu+SfWDg4aO6hU0ZFTvoHpI28/yyPZ9qh8c1DHkTdKe7VmqH7yH6kU30vevae3HwGg/GmAHeACegcPcfmxUBawuyy8UCv+CD7XPGbRpQtJuAAAAAElFTkSuQmCC" width="36" height="36" alt="">
+          <span class="cell"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABHNCSVQICAgIfAhkiAAAAAlwSFlzAAAdhwAAHYcBj+XxZQAAARlJREFUWIXtlTtKxFAYRr/PgOgG3IHbEEUt3IFLERmcZhSmdgVibauChYqNgruxHo+FGfCRZHIfExDvgTThcP8TSP5IhUKh8EcBtoAr4BLYzO2HxuwDL8BrfV3k8ldiYiRNJFVfbq/n8oOCWg6fSTrP4QcFAbsNh79LGtt+SvXnOCDmrOHwE9u3qX5Q0JAxC4OGjukMArYlTfX7hRzZvkv1Y4KuJW30PTzUbyN4Dy2brqCpPp9yTiVpUu+WHH5YkO1HSccNQ06Bg1S/de4ioePLGdu+SfWDg4aO6hU0ZFTvoHpI28/yyPZ9qh8c1DHkTdKe7VmqH7yH6kU30vevae3HwGg/GmAHeACegcPcfmxUBawuyy8UCv+CD7XPGbRpQtJuAAAAAElFTkSuQmCC" width="16" height="16" alt=""><i></i></span>
+        </div>
+        <figcaption>
+          <b>面板列／图标列「展开面板」</b>
+          <span class="k">chevron-double-left</span>
+          <code>png/ChevronDoubleLeft.png</code>
+          <span class="d">画布 36×36（原稿留着内边距，图形 24×20，故长边顶不到格子）</span>
+        </figcaption>
+      </figure>
+      <figure class="card">
+        <div class="art">
+          <img class="at" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABHNCSVQICAgIfAhkiAAAAAlwSFlzAAAdhwAAHYcBj+XxZQAAATBJREFUWIXtk0tKA0EURc+zgxhwHS5DEclAXIEuxIEIOkhEcKY78DPM2IGC6EjBjbgHk+vACoRoV9VLt42DutDQdB/qHqj3oKSkpOSfRtKGpDtJY0lbmfxt4Df/QuhG0nt43iQNEvy1h6/LSuRff+69AoaJEi/vFroEJo6SKyfvEzKzF+AI+FwoGUnabcrX9qYASTvACOjNfZ4CJ2Z235R3C3UtlSXUpVS2UCgZAEO+Z2OWCXBoZs9NebdQpOTDzPba4GNr7/Jsi3cJRa7gog3eJRSGdPHwKXBaMz8ufhbP2p/9cnhsw7J5l1CXMkmhrmWiQpK2gXN+DuSxmT005V1CknrAI7CeKePiY6nbsgpYcxzu5f2RdCDpVdJTuI4Uv+/hl5ValVSlyeX4kpKSEuALGAcZvQJ68yAAAAAASUVORK5CYII=" width="36" height="36" alt="">
+          <span class="cell"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABHNCSVQICAgIfAhkiAAAAAlwSFlzAAAdhwAAHYcBj+XxZQAAATBJREFUWIXtk0tKA0EURc+zgxhwHS5DEclAXIEuxIEIOkhEcKY78DPM2IGC6EjBjbgHk+vACoRoV9VLt42DutDQdB/qHqj3oKSkpOSfRtKGpDtJY0lbmfxt4Df/QuhG0nt43iQNEvy1h6/LSuRff+69AoaJEi/vFroEJo6SKyfvEzKzF+AI+FwoGUnabcrX9qYASTvACOjNfZ4CJ2Z235R3C3UtlSXUpVS2UCgZAEO+Z2OWCXBoZs9NebdQpOTDzPba4GNr7/Jsi3cJRa7gog3eJRSGdPHwKXBaMz8ufhbP2p/9cnhsw7J5l1CXMkmhrmWiQpK2gXN+DuSxmT005V1CknrAI7CeKePiY6nbsgpYcxzu5f2RdCDpVdJTuI4Uv+/hl5ValVSlyeX4kpKSEuALGAcZvQJ68yAAAAAASUVORK5CYII=" width="16" height="16" alt=""><i></i></span>
+        </div>
+        <figcaption>
+          <b>面板列／图标列「折叠为图标」</b>
+          <span class="k">chevron-double-right</span>
+          <code>png/ChevronDoubleRight.png</code>
+          <span class="d">画布 36×36（原稿留着内边距，图形 24×20，故长边顶不到格子）</span>
+        </figcaption>
+      </figure>
+  </div>
+
+  <footer>
+    重新生成：<code>node tools/gen-panel-sheet.js</code>（数据来自 <code>map.json</code> 与
+    <code>panels.js</code> 的 <code>PANEL_ICONS</code> / <code>PANEL_TITLES</code>，改完重跑即可）。
+    重新裁墨迹：<code>node tools/crop-icons.js</code>；编译产物：<code>node tools/gen-icons.js</code>。
+  </footer>
+</body>
+</html>

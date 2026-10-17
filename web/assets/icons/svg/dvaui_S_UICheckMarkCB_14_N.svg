@@ -1,0 +1,11 @@
+<svg id="Ui_Icons" data-name="Ui Icons" xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 28 28">
+  <defs>
+    <style>
+      .fill {
+        fill-rule: evenodd;
+        opacity: 0.65;
+      }
+    </style>
+  </defs>
+  <path id="Checkmark" class="fill" d="M11.576,22A2,2,0,0,1,10,21.23l-4.576-6a2,2,0,1,1,3.08106-2.5509q.03676.04441.07094.0909l3,3.982L19.424,6.77a2,2,0,0,1,3.22294,2.36911q-.03416.04645-.07094.09089l-9.424,12A2,2,0,0,1,11.576,22Z"/>
+</svg>

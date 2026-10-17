@@ -1,0 +1,27 @@
+<svg id="Layer_1" data-name="Layer 1" xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+  <defs>
+    <style>
+      .cls-1 {
+        fill: #707070;
+      }
+    </style>
+  </defs>
+  <title>S_Copy_Sm_N@2x</title>
+  <rect class="cls-1" x="28" y="18" width="2" height="2"/>
+  <rect class="cls-1" x="28" y="14" width="2" height="2"/>
+  <rect class="cls-1" x="28" y="10" width="2" height="2"/>
+  <rect class="cls-1" x="28" y="6" width="2" height="2"/>
+  <rect class="cls-1" x="28" y="2" width="2" height="2"/>
+  <rect class="cls-1" x="24" y="2" width="2" height="2"/>
+  <rect class="cls-1" x="20" y="2" width="2" height="2"/>
+  <rect class="cls-1" x="16" y="2" width="2" height="2"/>
+  <rect class="cls-1" x="12" y="2" width="2" height="2"/>
+  <rect class="cls-1" x="12" y="6" width="2" height="2"/>
+  <rect class="cls-1" x="12" y="10" width="2" height="2"/>
+  <rect class="cls-1" x="12" y="14" width="2" height="2"/>
+  <rect class="cls-1" x="12" y="18" width="2" height="2"/>
+  <rect class="cls-1" x="16" y="18" width="2" height="2"/>
+  <rect class="cls-1" x="20" y="18" width="2" height="2"/>
+  <rect class="cls-1" x="24" y="18" width="2" height="2"/>
+  <path class="cls-1" d="M10,12H3a1,1,0,0,0-1,1V29a1,1,0,0,0,1,1H19a1,1,0,0,0,1-1V22H10Z"/>
+</svg>
