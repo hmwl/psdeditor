@@ -775,7 +775,7 @@ R('image.crop', () => {
     const P = PREF.all(), has = k => !changed || changed.some(c => c === '*' || c === k || c.startsWith(k + '.'));
     if (has('tools.shiftToolSwitch')) tools.setShiftSwitch(P.tools.shiftToolSwitch !== false);
     if (changed && has('performance.gpu')) gpuApplyPref();
-    if (has('guides')) {
+    if (has('guides') && gridOpts) {
       gridOpts.every = Math.max(1, unitPx(+P.guides.gridEvery || 64, P.guides.gridUnit || 'px'));
       gridOpts.sub = Math.max(1, +P.guides.gridSub || 4);
       gridOpts.color = hexA(P.guides.gridColor, .75);

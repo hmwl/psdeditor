@@ -67,8 +67,9 @@ import {
   beginStroke, emitDab, endStroke, selCovFn, strokeSetup, strokeTo, syncBrushSwatches,
 } from './38-brush-engine.js';
 import {
-  adjBrushOpts, applyBrushPreset, applyBrushRecord, beginEraserStroke, bsPanelOpen, currentBrushRecord, effFlow,
-  effOpacity, renderBrushSettings, renderPresetList, setBrushSize, syncBrushControls,
+  adjBrushOpts, applyBrushPreset, applyBrushRecord, beginEraserStroke, beginPencilStroke, bsPanelOpen,
+  currentBrushRecord, effFlow, effOpacity, renderBrushSettings, renderPresetList, setBrushSize,
+  syncBrushControls,
 } from './39-brush-options.js';
 import { adjDefaults, adjRender, adjState, openAdjustLazy, renderAdjustDialog } from './41-image-adjust.js';
 import { panelPathSubs } from './44-vector-path.js';
@@ -183,7 +184,7 @@ export const ACT_EXEC = {
       if (p.fg) set_fgRGB(p.fg.slice()); if (p.bg) set_bgRGB(p.bg.slice());
       const ev = { pointerId: 1, shiftKey: false, altKey: false, metaKey: false, ctrlKey: false, clientX: 0, clientY: 0 };
       const pt0 = { x: p.pts[0][0], y: p.pts[0][1], p: p.pts[0][2] };
-      const S = docTool === 'eraser' ? beginEraserStroke(pt0, ev) : BRUSHOP_TOOLS.has(docTool) ? beginBrushOpStroke(pt0, ev) : beginStroke(pt0, { tool: docTool });
+      const S = docTool === 'eraser' ? beginEraserStroke(pt0, ev) : docTool === 'pencil' ? beginPencilStroke(pt0) : BRUSHOP_TOOLS.has(docTool) ? beginBrushOpStroke(pt0, ev) : beginStroke(pt0, { tool: docTool });
       if (!S) throw new Error(($('#err').textContent || '这把工具现在用不了').replace(/^.*?用不了：/, ''));
       set_curStroke(S);
       for (let i = 1; i < p.pts.length; i++) strokeTo(S, { x: p.pts[i][0], y: p.pts[i][1], p: p.pts[i][2] });

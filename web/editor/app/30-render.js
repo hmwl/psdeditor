@@ -1418,6 +1418,12 @@ function gpuLayerOverride(i, base){
   }
   const plainPixels = !t.quad && !hasRenderableEffects(base.effects, doc.patterns) && !hasRenderableFill(base.fill, base.vectorMask, doc.patterns)
     && !vectorStrokeRenderParams(base.vectorStroke, base.vectorMask) && !hasRenderableVectorMask(base.vectorMask);
+  if (plainPixels && !base.rgba && base.lazyPreview && (base.lazyChannels || base.lazyCompressedChannels)) {
+    const p = base.lazyPreview, d = lazyTileState(base), sx = t.w / p.width, sy = t.h / p.height;
+    const fx = t.flipX ? -1 : 1, fy = t.flipY ? -1 : 1, a = (t.rot || 0) * Math.PI / 180, co = Math.cos(a), si = Math.sin(a);
+    const cx = t.x + t.w / 2, cy = t.y + t.h / 2, u0 = -t.w / 2 * fx, v0 = -t.h / 2 * fy;
+    return { ...base, rgba: p.data, width: p.width, height: p.height, bounds: { left: 0, top: 0, right: p.width, bottom: p.height }, gpuXform: [co * sx * fx, si * sx * fx, -si * sy * fy, co * sy * fy, cx + co * u0 - si * v0, cy + si * u0 + co * v0], gpuDetailTiles: d };
+  }
   const px = text ? { data: text.rgba, w: text.bounds.right - text.bounds.left, h: text.bounds.bottom - text.bounds.top, b: text.bounds }
     : (base.rgba && base.width > 0 && base.height > 0 ? { data: base.rgba, w: base.width, h: base.height, b: base.bounds } : null);
   if (plainPixels && px && px.w > 0 && px.h > 0) {

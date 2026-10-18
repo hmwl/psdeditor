@@ -794,6 +794,7 @@ export function beginEraserStroke(pt, ev){
 
 export function layerPixelAt(pt){
   const pp = pixelPaint[selLayer], dl = doc && doc.layers[selLayer]; if (!dl) return null;
+  if (pp?.sparse) return null;
   const data = pp ? pp.rgba : dl.rgba, w = pp ? pp.w : dl.width, h = pp ? pp.h : dl.height; if (!data || !w) return null;
   const map = paintMap(selLayer, w, h, pp ? pp.left : dl.bounds.left, pp ? pp.top : dl.bounds.top); if (!map) return null;
   const iv = map.inv, x = Math.floor(iv[0] * pt.x + iv[2] * pt.y + iv[4]), y = Math.floor(iv[1] * pt.x + iv[3] * pt.y + iv[5]);

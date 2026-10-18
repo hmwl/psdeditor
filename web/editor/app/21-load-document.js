@@ -650,7 +650,7 @@ async function initDocumentBody(buf, label, opts = {}){
   const largePixels = psdW * psdH > 64e6;
   const decodePool = largePixels || (buf.byteLength || 0) > 24 * 1048576 ? await decodePoolLazy(largePixels) : null;
   activeDecodePool = decodePool;
-  set_doc(await parsePsdRaster(buf, { lazyTiles: psdW * psdH > 64e6, keepPlanes: 'mask', keepNativePlanes: bufView.getUint16(22) > 8 || bufView.getUint16(24) === 4, decodePool, reuse: sig => { const v = reusePool.get(sig); if (v) reusePool.delete(sig); return v || null; } }));
+  set_doc(await parsePsdRaster(buf, { lazyTiles: psdW * psdH > 64e6, keepPlanes: 'mask', keepNativePlanes: bufView.getUint16(22) > 8 || bufView.getUint16(24) === 4, decodePool, reuse: reusePool.size ? sig => { const v = reusePool.get(sig); if (v) reusePool.delete(sig); return v || null; } : null }));
   doc.editorDocUID = DOCS.openingUid();
   if (prevLazyRaster && (prevLazyRasterFile || prevLazyRasterImage) && doc.layers.length) {
     

@@ -29,6 +29,7 @@
     "libraw-wasm": "^1.6.0",
     "onnxruntime-web": "1.30.0",
     "pdfjs-dist": "^6.4.299",
+    "playwright": "^1.64.1",
     "quickjs-emscripten-core": "^0.32.0"
   },
   "engines": {

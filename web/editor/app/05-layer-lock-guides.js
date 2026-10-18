@@ -133,6 +133,7 @@ export function rasterKindOf(idx){
 }
 
 export function renderLayerAlone(idx){
+  if (doc?.layers?.[idx]?.lazyChannels || doc?.layers?.[idx]?.lazyCompressedChannels) return null;
   const src = previewCompositeDoc(doc);
   if (!src || !src.layers || !src.layers[idx] || !docW || !docH) return null;
   const one = { ...src, layers: [{ ...src.layers[idx], opacity: 255, fillOpacity: 255,
@@ -168,6 +169,7 @@ export async function rasterizeLayerUI(idx, opts = {}){
   const kind = rasterKindOf(idx);
   const dl = doc.layers[idx];
   if (!kind || !dl) { $('#notice').textContent = '这一层已经是普通像素图层了。'; return false; }
+  if (!dl.rgba && (dl.lazyChannels || dl.lazyCompressedChannels)) { $('#notice').textContent = '超大懒加载图层暂不能整层栅格化；请先在目标区域用画笔或分块滤镜处理。'; return false; }
   const what = RASTER_KIND[kind];
   if (!opts.silent) {
     const go = await confirmDialog(

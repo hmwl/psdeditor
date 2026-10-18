@@ -100,7 +100,7 @@ function edgeSet(triangles){const edges=new Set();for(const [a,b,c]of triangles)
 
 export function buildPerspectiveDomain(input){
   const spec=describePerspectiveDomain(input),minAngle=input.minAngle??20,maxArea=input.maxArea??spec.maxArea;
-  const maxPoints=input.maxPoints??4096,maxPasses=input.maxPasses??64,maxTriangles=input.maxTriangles??20000;
+  const maxPoints=input.maxPoints??4096,maxPasses=input.maxPasses??256,maxTriangles=input.maxTriangles??20000;
   if(!Number.isFinite(maxArea)||!(maxArea>0) || !(minAngle>0&&minAngle<=20) || !Number.isInteger(maxPoints)||maxPoints<4||maxPoints>8192 || !Number.isInteger(maxPasses)||maxPasses<1||maxPasses>256 || !Number.isInteger(maxTriangles)||maxTriangles<2||maxTriangles>65536)throw new Error('Invalid exterior refinement limits; native a0 behavior is not established');
   const points=[],ids=new Map();
   const insert=p=>{const k=pointKey(p);if(ids.has(k))return ids.get(k);const near=points.findIndex(q=>dist2(p,q)<spec.domainArea*1e-24);if(near>=0)return near;if(points.length>=maxPoints)throw new Error('Perspective exterior mesh point cap exceeded');const i=points.length;points.push({...p});ids.set(k,i);return i;};

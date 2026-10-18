@@ -1951,6 +1951,38 @@ export function quickExportPng(){
   const name = (docName || 'Untitled').replace(/\.[^.]+$/, '').replace(/[\\/:*?"<>|]/g, '_');
   return runExport(name, { format: 'png', perArtboard: false });
 }
+let pngCrcTable = null;
+function pngCrc(bytes){
+  if(!pngCrcTable){pngCrcTable=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xedb88320^(c>>>1):c>>>1;pngCrcTable[n]=c>>>0;}}
+  let c=0xffffffff;for(const b of bytes)c=pngCrcTable[(c^b)&255]^(c>>>8);return (c^0xffffffff)>>>0;
+}
+function pngChunk(type,data){
+  const t=new TextEncoder().encode(type), body=new Uint8Array(t.length+data.length);body.set(t);body.set(data,t.length);
+  const out=new Uint8Array(12+data.length),dv=new DataView(out.buffer);dv.setUint32(0,data.length);out.set(t,4);out.set(data,8);dv.setUint32(8+data.length,pngCrc(body));return out;
+}
+async function writeLazyPng(layer, index){
+  const [{ decodeLazyTile, readLazyImageTile }]=await Promise.all([import('./21-load-document.js')]);
+  if(typeof CompressionStream!=='function')throw new Error('当前浏览器没有流式 PNG 压缩支持');
+  const W=docW,H=docH,parts=[Uint8Array.from([137,80,78,71,13,10,26,10])],ih=new Uint8Array(13),idv=new DataView(ih.buffer);
+  idv.setUint32(0,W);idv.setUint32(4,H);ih[8]=8;ih[9]=6;parts.push(pngChunk('IHDR',ih));
+  const cs=new CompressionStream('deflate'),writer=cs.writable.getWriter(),chunks=[];
+  const readDone=(async()=>{const r=cs.readable.getReader();for(;;){const q=await r.read();if(q.done)break;chunks.push(q.value);}})();
+  const tiles=new Map(),tileSize=256;
+  const tileAt=async(x,y)=>{const key=`${x}:${y}`,hit=tiles.get(key);if(hit)return hit;const edit=pixelPaint[index]?.sparse?.tiles?.get(key);if(edit){tiles.set(key,edit);return edit;}let tile;
+    if(layer.lazyImage||layer.lazyRasterFile)tile=await readLazyImageTile(layer,x,y,tileSize);
+    else {await decodeLazyTile(index,x,y,tileSize);tile=layer.lazyHighTiles?.get(key)||null;}
+    if(!tile)throw new Error('大图瓦片读取失败');tiles.set(key,tile);return tile;
+  };
+  try{
+    for(let y0=0;y0<H;y0+=tileSize){const rows=Math.min(tileSize,H-y0),raw=new Uint8Array(rows*(1+W*4)),band=[];
+      for(let x0=0;x0<W;x0+=tileSize)band.push([x0,await tileAt(x0,y0)]);
+      for(let y=0;y<rows;y++){const ro=y*(1+W*4);for(const [x0,t] of band){const w=Math.min(tileSize,W-x0),srcY=Math.min(t.height-1,y+y0-t.y);raw[ro+1+x0*4]=0;for(let x=0;x<w;x++){const si=(srcY*t.width+x)*4,di=ro+1+(x0+x)*4;raw[di]=t.data[si];raw[di+1]=t.data[si+1];raw[di+2]=t.data[si+2];raw[di+3]=t.data[si+3];}}}
+      await writer.write(raw);
+    }
+    await writer.close();await readDone;const compressed=new Uint8Array(chunks.reduce((n,c)=>n+c.length,0));let at=0;for(const c of chunks){compressed.set(c,at);at+=c.length;}parts.push(pngChunk('IDAT',compressed));
+    parts.push(pngChunk('IEND',new Uint8Array(0)));return new Blob(parts,{type:'image/png'});
+  }catch(e){try{await writer.abort(e);}catch{}throw e;}
+}
 async function runLazyRasterExport(fileName, opts, layer){
   const fmt = opts.format || $('#exportFormat').value, source = doc?.lazyRasterFile, idx = doc?.layers?.indexOf(layer) ?? -1;
   const pp = idx >= 0 ? pixelPaint[idx] : null, edited = !!pp?.sparse?.tiles?.size;
@@ -1990,6 +2022,17 @@ async function runLazyRasterExport(fileName, opts, layer){
 }
 async function runExport(fileName, opts = {}){
   if(!origBuffer){ $('#err').textContent='先打开一个 PSD'; return; }
+  const fmt = opts.format || $('#exportFormat').value;
+  const lazyPsd = doc?.layers?.find(l => l?.lazyChannels || l?.lazyCompressedChannels);
+  const lazySimple = lazyPsd && doc.layers.length === 1 && !lazyPsd.rgba && lazyPsd.bounds?.left === 0 && lazyPsd.bounds?.top === 0
+    && lazyPsd.bounds?.right === docW && lazyPsd.bounds?.bottom === docH && !lazyPsd.hidden && (lazyPsd.opacity ?? 255) === 255
+    && !lazyPsd.effects && !lazyPsd.mask && !lazyPsd.vectorMask && !Object.keys(layerTransforms).some(i => transformChanged(+i));
+  // shortcut: one simple layer only; upgrade to a streaming compositor for multi-layer PNG.
+  if(fmt === 'png' && docW * docH > 64e6 && lazySimple){
+    setWaitCursor(true, '正在按瓦片导出 PNG…');
+    try { const blob=await writeLazyPng(lazyPsd,doc.layers.indexOf(lazyPsd)),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=fileName+'.png';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);$('#info').textContent=`已按瓦片导出原始尺寸 ${docW} × ${docH} 的 PNG`;return true; }
+    catch(e){ $('#err').textContent='导出失败：'+e.message;return false; } finally { setWaitCursor(false); }
+  }
   const lazyRaster = doc?.layers?.find(l => l?.lazyRasterSource);
   if (lazyRaster) { try { return await runLazyRasterExport(fileName, opts, lazyRaster); } catch (e) { $('#err').textContent = '导出失败：' + e.message; return false; } }
   setWaitCursor(true, '正在导出文档…');
@@ -2006,7 +2049,6 @@ async function runExport(fileName, opts = {}){
     if (notes.skipped.length) warns.push('以下项目未能写回：\n· ' + notes.skipped.join('\n· '));
     let srcNote = notes.srcNotes.length ? '；' + notes.srcNotes.join('；') : '';
     
-    const fmt = opts.format || $('#exportFormat').value;
     const wantCmyk = $('#modeSel').value === 'cmyk';
     if(notes.tiled&&(fmt!=='psd'||wantCmyk))throw new Error('此超大文档目前支持分层 PSD/PSB 写回，该图像格式的流式导出仍待接入');
     let cmyk = wantCmyk && fmt !== 'png' && fmt !== 'webp';   

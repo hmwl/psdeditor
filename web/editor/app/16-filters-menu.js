@@ -32,6 +32,7 @@ export let fltState = null, fltRAF = 0;
 export let lastFilter = null;                    
 export function set_lastFilter(v) { return (lastFilter = v); }   
 const FLT_PROXY_MAX = 1 << 19;            
+const TILE_FILTERS = new Set(['solarize', 'replaceColor', 'hsbHsl']);
 
 export const fltKinds = () => (FLTM ? FLTM.FILTER_TYPES : []);
 export const fltSpec = k => (FLTM && FLTM.FILTERS[k]) || null;
@@ -305,11 +306,20 @@ function fltFinish(S, out){
   return true;
 }
 
-export function applyFilterNow(kind, params){
+export async function applyFilterNow(kind, params){
   const why = filterGuard();
   if (why) { $('#err').textContent = '滤镜用不了：' + why; return false; }
   if (!FLTM) { kick(FILTER); $('#err').textContent = '滤镜用不了：' + FILTER.statusText(); return false; }
   if (!fltSpec(kind)) { $('#err').textContent = `没有「${kind}」这个滤镜`; return false; }
+  const lazyLayer = doc?.layers?.[selLayer];
+  if (TILE_FILTERS.has(kind) && lazyLayer && (lazyLayer.lazyChannels || lazyLayer.lazyCompressedChannels)) {
+    // shortcut: point-wise filters only; neighborhood filters still need halo-aware tiles.
+    const { layerPixelJob } = await import('./14-edit-misc.js');
+    const model = { ...FLTM.filterDefaults(kind), ...(params || {}) };
+    const out = await layerPixelJob(`滤镜 · ${fltLabel(kind)}`, ({ base, w, h }) => FLTM.applyFilter(kind, base, w, h, fltParams(kind, model)), { tile: true });
+    if (out !== false) { lastFilter = { kind, params: { ...model } }; actRecord('filter', { kind, params: { ...model } }); }
+    return out;
+  }
   const pp = ensurePixelPaint(selLayer);
   if (!pp) { $('#err').textContent = '滤镜用不了：这一层拿不到像素'; return false; }
   fltState = { idx: selLayer, kind, pp, base: Uint8ClampedArray.from(pp.rgba), proxy: null, proxySel: null,

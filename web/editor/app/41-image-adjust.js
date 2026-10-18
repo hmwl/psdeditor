@@ -385,7 +385,24 @@ function adjSchedule(){
 
 
 const ADJ_IMMEDIATE = new Set(['invert', 'desaturate']);
-export const openAdjustLazy = type => runLazy(ADJUST, '图像调整', () => {
+export const openAdjustLazy = type => runLazy(ADJUST, '图像调整', async () => {
+  const lazy = doc?.layers?.[selLayer];
+  if (ADJ_IMMEDIATE.has(type) && lazy && (lazy.lazyChannels || lazy.lazyCompressedChannels)) {
+    const { layerPixelJob } = await import('./14-edit-misc.js');
+    const ok = await layerPixelJob(`图像调整 · ${adjLabel(type)}`, ({ base, w, h, cov }) => {
+      const out = new Uint8ClampedArray(base);
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const o = (y * w + x) * 4, a = cov ? cov(x, y) : 1;
+        if (a <= 0) continue;
+        let r = base[o], g = base[o + 1], b = base[o + 2];
+        if (type === 'invert') { r = 255 - r; g = 255 - g; b = 255 - b; }
+        else { const mx = Math.max(r, g, b), mn = Math.min(r, g, b), v = (mx + mn + 1) >> 1; r = g = b = v; }
+        out[o] = Math.round(base[o] + (r - base[o]) * a); out[o + 1] = Math.round(base[o + 1] + (g - base[o + 1]) * a); out[o + 2] = Math.round(base[o + 2] + (b - base[o + 2]) * a);
+      }
+      return out;
+    }, { tile: true });
+    if (ok !== false) return ok;
+  }
   const st = openAdjustDialog(type);
   if (st && ADJ_IMMEDIATE.has(type)) $('#adjOk').onclick();
   return st;

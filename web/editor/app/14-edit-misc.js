@@ -43,18 +43,46 @@ const blendFormOpts = () => BLEND_KEYS.map(k => [k, BLEND_LABELS[k] || k]);
 export const hexToRGB = h => [1, 3, 5].map(i => parseInt(String(h).slice(i, i + 2), 16) || 0);
 
 
-export function layerPixelJob(label, compute){
+export function layerPixelJob(label, compute, options = {}){
   if (!doc || li) return false;
   const brt = $('#brTarget'); const prevT = brt ? brt.value : null;
   if (brt) brt.value = 'pixels';
   const guard = paintGuard();
   if (brt) brt.value = prevT;
   if (guard) { $('#err').textContent = label + '用不了：' + guard; return false; }
-  const idx = selLayer, pp = ensurePixelPaint(idx);
+  const idx = selLayer, pp = ensurePixelPaint(idx, { sparse: !!options.tile });
   if (!pp) { $('#err').textContent = label + '用不了：这一层没有可改的像素'; return false; }
   const map = paintMap(idx, pp.w, pp.h, pp.left, pp.top);
   if (!map) { $('#err').textContent = label + '用不了：' + PAINT_WARP_WHY; return false; }
   const M = map.M, sc = selCovFn();
+  if (pp.sparse) {
+    return (async () => {
+    // shortcut: tile-safe operations only; upgrade to halo tiles for neighborhood filters.
+    const tx = pp.sparse.tileSize || 256;
+    const tr = pp.sparse.begin(); let patches = [];
+    try {
+      for (let y = 0; y < pp.h; y += tx) for (let x = 0; x < pp.w; x += tx) {
+        const rect = { x, y, w: Math.min(tx, pp.w - x), h: Math.min(tx, pp.h - y) };
+        await tr.prepare(rect);
+        for (const ctx of tr.contexts(rect)) {
+          const base = new Uint8ClampedArray(ctx.base), docXY = (sx, sy) => [
+            Math.floor(M[0] * (sx + ctx.x + .5) + M[2] * (sy + ctx.y + .5) + M[4]),
+            Math.floor(M[1] * (sx + ctx.x + .5) + M[3] * (sy + ctx.y + .5) + M[5]),
+          ], cov = sc ? (sx, sy) => { const [dx, dy] = docXY(sx, sy); return sc(dx, dy) / 255; } : null;
+          const out = compute({ base, w: ctx.width, h: ctx.height, docXY, cov, idx, pp });
+          if (!out || out.length !== base.length) { tr.rollback(); return false; }
+          if (!sameBytes(base, out)) { ctx.rgba.set(out); tr.dirty(ctx.key, { x0: 0, y0: 0, x1: ctx.width - 1, y1: ctx.height - 1 }); }
+        }
+      }
+      patches = tr.finish();
+    } catch (e) { tr.rollback(); $('#err').textContent = label + '失败：' + humanEditError(e && e.message || e); return false; }
+    if (!patches.length) { $('#notice').textContent = `「${label}」没有改变任何像素。`; return false; }
+    brushHistory.undo.push({ kind: 'sparsePixels', idx, patches });
+    if (brushHistory.undo.length > histCap('brush')) brushHistory.undo.shift();
+    brushHistory.redo.length = 0; histPush(label, 'brush'); commitPixelPaint(idx);
+    renderPreviewOnly(); updateUndoButtons(); lastPixelJob = { label, idx }; $('#err').textContent = ''; shell.status(label); return true;
+    })();
+  }
   const docXY = (sx, sy) => [Math.floor(M[0] * (sx + 0.5) + M[2] * (sy + 0.5) + M[4]), Math.floor(M[1] * (sx + 0.5) + M[3] * (sy + 0.5) + M[5])];
   const cov = sc ? (sx, sy) => { const [dx, dy] = docXY(sx, sy); return sc(dx, dy) / 255; } : null;
   const base = Uint8ClampedArray.from(pp.rgba);
@@ -113,7 +141,7 @@ export async function fillWith(v){
   if (v.contents === 'contentAware') { const ok = await contentAwareFillNow(); if (ok !== false) actRecord('fill', { using: 'contentAware' }); return ok; }
   const col = { fg: fgRGB, bg: bgRGB, black: [0, 0, 0], gray: [128, 128, 128], white: [255, 255, 255], color: hexToRGB(v.color || '#000000') }[v.contents] || fgRGB;
   const r = await layerPixelJob('填充', ({ base, w, h, cov }) =>
-    blendFill(base, w, h, () => col, cov ? (x, y) => cov(x, y) : () => 1, v.mode || 'norm', (v.opacity ?? 100) / 100, !!v.preserve));
+    blendFill(base, w, h, () => col, cov ? (x, y) => cov(x, y) : () => 1, v.mode || 'norm', (v.opacity ?? 100) / 100, !!v.preserve), { tile: true });
   if (r !== false) actRecord('fill', { using: v.contents, color: v.contents === 'color' ? hexToRGB(v.color) : undefined, mode: v.mode || 'norm', opacity: v.opacity ?? 100, preserve: !!v.preserve });
   return r;
 }
@@ -175,7 +203,7 @@ export async function editStrokeDialog(){
   return layerPixelJob('描边', ({ base, w, h, docXY }) => blendFill(base, w, h, () => col, (x, y) => {
     const [dx, dy] = docXY(x, y), i = dx - m.x, j = dy - m.y;
     return (i < 0 || j < 0 || i >= m.w || j >= m.h) ? 0 : m.a[j * m.w + i];
-  }, v.mode, v.opacity / 100, v.preserve));
+  }, v.mode, v.opacity / 100, v.preserve), { tile: true });
 }
 
 

@@ -57,6 +57,7 @@ function layerSampler(idx){
       || { M: [1, 0, 0, 1, pp.left, pp.top], inv: [1, 0, 0, 1, -pp.left, -pp.top] };
     return { rgba: pp.rgba, w: pp.w, h: pp.h, M: map.M, inv: map.inv };
   }
+  if (doc?.layers?.[idx]?.lazyChannels || doc?.layers?.[idx]?.lazyCompressedChannels) return null;
   
   const full = renderLayerAlone(idx);
   if (!full) return null;
@@ -77,6 +78,9 @@ export function compositeNowRGBA(){
 
 export function copyPixelsUI(merged){
   if (!doc || li || selLayer < 0) return false;
+  if (merged ? doc.layers.some(l => l?.lazyChannels || l?.lazyCompressedChannels) : (doc.layers[selLayer]?.lazyChannels || doc.layers[selLayer]?.lazyCompressedChannels)) {
+    $('#notice').textContent = '超大懒加载图层暂不支持整层复制；请先缩小选区到分块编辑范围。'; return false;
+  }
   if (merged) {
     
     const sb = selection ? selectionBounds(selection) : null;
@@ -299,6 +303,7 @@ export async function mergeLayersUI(kind){
     involved = blocks.filter(b => !doc.layers[b[b.length - 1]].hidden);   
   }
   if (involved.length < 2 && kind !== 'flatten') { $('#notice').textContent = '至少需要两个图层才能合并。'; return false; }
+  if (involved.flat().some(i => doc.layers[i]?.lazyChannels || doc.layers[i]?.lazyCompressedChannels)) { $('#notice').textContent = '超大懒加载图层暂不支持合并或拼合，以免整层展开。'; return false; }
   const targetBlock = involved[0];
   const targetHead = targetBlock[targetBlock.length - 1];
   const targetNode = view.nodes[targetHead];

@@ -50,7 +50,7 @@ import {
 } from './31-selection-brush.js';
 import { syncAnts, syncGizmoCursor } from './32-cursors-select-options.js';
 import { BRUSHOP_TOOLS, beginBrushOpStroke } from './37-local-pixel-tools.js';
-import { beginEraserStroke, endPaintGesture, paintGest, stylusState } from './39-brush-options.js';
+import { beginEraserStroke, beginPencilStroke, endPaintGesture, paintGest, stylusState } from './39-brush-options.js';
 import { syncBrushPanel } from './40-options-bar-wiring.js';
 import { drawGizmo } from './46-smart-filter-panel.js';
 import { alphaPaintBuffer, alphaWriteWhy, markAlphaPainted } from './52-alpha-text-menu.js';
@@ -215,6 +215,8 @@ export function ensurePixelPaint(idx,{sparse:allowSparse=false}={}){
   const emptyNew = !dl.rgba && !dl.mask && !dl.vectorMask && dl.width === 0 && dl.height === 0
     && !dl.bounds.top && !dl.bounds.left && !dl.bounds.bottom && !dl.bounds.right;
   if(allowSparse&&emptyNew&&doc.depth===8&&doc.mode===3&&doc.width>0&&doc.height>0){
+    dl.width = doc.width; dl.height = doc.height;
+    dl.bounds = { top: 0, left: 0, bottom: doc.height, right: doc.width };
     const sparse=createSparsePixels({width:doc.width,height:doc.height,readTile:(x,y,w,h)=>({x,y,width:w,height:h,data:new Uint8ClampedArray(w*h*4)})}),root=lazyTileState(dl,doc.editorDocUID);
     root.edits=sparse.descriptor;
     const pp={sparse,root,w:doc.width,h:doc.height,left:0,top:0,clean:true,emptySource:true,ownerID:doc.editorDocUID};
@@ -815,7 +817,7 @@ export function set_lastPaintPt(v) { return (lastPaintPt = v); }
 
 export function strokeLineTo(pt, keepOpen){
   const from = lastPaintPt;
-  const S = docTool === 'eraser' ? beginEraserStroke({ x: from.x, y: from.y }, null) : BRUSHOP_TOOLS.has(docTool) ? beginBrushOpStroke({x:from.x,y:from.y},{}) : beginStroke({ x: from.x, y: from.y }, { tool: docTool });
+  const S = docTool === 'eraser' ? beginEraserStroke({ x: from.x, y: from.y }, null) : docTool === 'pencil' ? beginPencilStroke({ x: from.x, y: from.y }) : BRUSHOP_TOOLS.has(docTool) ? beginBrushOpStroke({x:from.x,y:from.y},{}) : beginStroke({ x: from.x, y: from.y }, { tool: docTool });
   if (!S) { syncBrushPanel(); return false; }
   strokeTo(S, pt);
   if (keepOpen) { scheduleStrokeRepaint(S); return S; }

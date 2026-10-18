@@ -89,7 +89,8 @@ import {
   ALT_EYEDROP, beginStroke, brushTarget, lastPaintPt, scheduleStrokeRepaint, strokeLineTo,
 } from './38-brush-engine.js';
 import {
-  adjBrushDown, beginEraserStroke, drawPaintExtras, installBrushGestures, paintPressure, startPaintGesture,
+  adjBrushDown, beginEraserStroke, beginPencilStroke, drawPaintExtras, installBrushGestures, paintPressure,
+  startPaintGesture,
 } from './39-brush-options.js';
 import { drawSmView, syncBrushBarFor, syncBrushPanel } from './40-options-bar-wiring.js';
 import { PATH_EDIT_TOOLS, drawPathGizmo, pathToolDown } from './45-path-tools.js';
@@ -951,7 +952,7 @@ export function canvasPointerDown(ev, pt){
         if (S) { try { gizmo.setPointerCapture(ev.pointerId); } catch {} startPaintGesture(S, ev, pt); }
         return;
       }
-      const S = docTool === 'eraser' ? beginEraserStroke(pt, ev) : BRUSHOP_TOOLS.has(docTool) ? beginBrushOpStroke(pt, ev) : beginStroke(pt, { tool: docTool });
+      const S = docTool === 'eraser' ? beginEraserStroke(pt, ev) : docTool === 'pencil' ? beginPencilStroke(pt) : BRUSHOP_TOOLS.has(docTool) ? beginBrushOpStroke(pt, ev) : beginStroke(pt, { tool: docTool });
       if (S && ACTP && ACTP.toolRecording && ACTP.toolRecording()) { S.recPts = [[Math.round(pt.x * 10) / 10, Math.round(pt.y * 10) / 10, pt.p !== undefined ? pt.p : 1]]; S.recTool = docTool; }   
       if (S) { try { gizmo.setPointerCapture(ev.pointerId); } catch {} startPaintGesture(S, ev, pt); scheduleStrokeRepaint(S); }
       else { syncBrushPanel(); syncBrushOpBar(); }

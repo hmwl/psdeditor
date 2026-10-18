@@ -183,8 +183,8 @@ import {
   syncBrushSwatches,
 } from './38-brush-engine.js';
 import {
-  adjBrushOpts, applyBrushPreset, applyBrushRecord, currentBrushRecord, endSymEdit, layerPixelAt,
-  renderBrushSettings, startSymEdit, symEdit, syncBrushControls,
+  adjBrushOpts, applyBrushPreset, applyBrushRecord, beginPencilStroke, currentBrushRecord, endSymEdit,
+  layerPixelAt, renderBrushSettings, startSymEdit, symEdit, syncBrushControls,
 } from './39-brush-options.js';
 import { openSelectAndMask, resetColors, swapColors, syncBrushPanel } from './40-options-bar-wiring.js';
 import {
@@ -414,7 +414,7 @@ window.__psd_editor = {
     stroke(pts, o = {}){
       if (!pts || !pts.length) return false;
       const ev = { pointerId: 1, shiftKey: !!o.shift, altKey: !!o.alt, clientX: pts[0][0], clientY: pts[0][1] };
-      const S = BRUSHOP_TOOLS.has(docTool) ? beginBrushOpStroke({ x: pts[0][0], y: pts[0][1] }, ev) : beginStroke({ x: pts[0][0], y: pts[0][1] });
+      const S = docTool === 'pencil' ? beginPencilStroke({ x: pts[0][0], y: pts[0][1] }) : BRUSHOP_TOOLS.has(docTool) ? beginBrushOpStroke({ x: pts[0][0], y: pts[0][1] }, ev) : beginStroke({ x: pts[0][0], y: pts[0][1] });
       if (!S) return false;
       for (let i = 1; i < pts.length; i++) strokeTo(S, { x: pts[i][0], y: pts[i][1] });
       S.forced = true; endStroke();
