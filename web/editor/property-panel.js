@@ -1,4 +1,10 @@
 
+export function propertyPixelField(control) {
+  const field = document.createElement('span'); field.className = 'prop-pixel-field';
+  const unit = document.createElement('span'); unit.className = 'pp-unit'; unit.textContent = '像素';
+  field.append(control, unit); return field;
+}
+
 export function isShapeLayer(layer) {
   return !!(layer && !layer.isSmartObject && !layer.text && layer.vectorMask
     && (layer.adjustment?.kind === 'fill' || layer.fill || layer.vectorStroke));

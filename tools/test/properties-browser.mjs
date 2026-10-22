@@ -50,6 +50,44 @@ try {
   assert.equal(result.smartFields.title, '嵌入的智能对象'); assert.equal(result.smartFields.widthTag, 'OUTPUT');
   assert.equal(result.smartFields.align, false); assert.equal(result.smartFields.subject, false);
   assert.match(result.smartFields.quick, /编辑内容/); assert.deepEqual(errors, []);
+  await page.getByRole('tab', { name: '属性', exact: true }).click();
+  await page.locator('#props [data-transform="x"]').waitFor({ state: 'visible' });
+  const geometry = await page.locator('#props .prop-transform-grid').evaluate(grid => {
+    const rect = key => { const r = grid.querySelector(`[data-transform="${key}"]`).getBoundingClientRect(); return { x: r.x, y: r.y }; };
+    return { w: rect('w'), h: rect('h'), x: rect('x'), y: rect('y') };
+  });
+  assert.ok(Math.abs(geometry.w.y - geometry.x.y) <= 1); assert.ok(Math.abs(geometry.h.y - geometry.y.y) <= 1);
+  assert.equal(geometry.w.x, geometry.h.x); assert.equal(geometry.x.x, geometry.y.x);
+  assert.ok(geometry.h.y > geometry.w.y, 'PS transform layout is W/X above H/Y');
+  await page.locator('.lpf-btn[data-kind="smart"]').click();
+  await page.evaluate(() => window.__psd_editor.actions.run('select.deselectLayers'));
+  await page.getByRole('button', { name: '创建新组', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('#props')?.dataset.context === 'group');
+  assert.equal(await page.locator('#propTabs').isVisible(), false, 'A group without masks has no empty property toolbar');
+  if (process.env.PROPERTIES_SCREENSHOT_DIR) await page.locator('#panelProps').screenshot({ path: process.env.PROPERTIES_SCREENSHOT_DIR + '/browser-group.png' });
+  await page.evaluate(() => window.__psd_editor.selectLayers([1, 2]));
+  const blank = await page.locator('#layerList').boundingBox();
+  assert.equal(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.id, { x: blank.x + 80, y: blank.y + blank.height - 8 }), 'layerList', 'The test must click actual empty space, never a row');
+  const selectionBefore = await page.evaluate(async () => (await import('/editor/app/03-history.js')).histLog.cursor);
+  await page.mouse.click(blank.x + 80, blank.y + blank.height - 8);
+  assert.equal(await page.locator('#layerList .lrow.sel').count(), 0, 'Clicking empty layer-list space clears selection');
+  assert.equal(await page.locator('#props').getAttribute('data-context'), 'document');
+  assert.equal(await page.locator('#hdrOpacity').isDisabled(), true);
+  assert.equal(await page.locator('#hdrFill').isDisabled(), true);
+  assert.equal(await page.locator('#props [data-attr="doc-resolution"]').evaluate(el => el.tagName), 'OUTPUT');
+  assert.equal(await page.evaluate(async () => (await import('/editor/app/03-history.js')).histLog.cursor), selectionBefore, 'Deselecting does not edit the document');
+  if (process.env.PROPERTIES_SCREENSHOT_DIR) await page.locator('#panelProps').screenshot({ path: process.env.PROPERTIES_SCREENSHOT_DIR + '/browser-document.png' });
+  await page.locator('[data-attr="doc-proportions"]').click();
+  await page.locator('[data-attr="doc-width"]').fill('400');
+  await page.locator('[data-attr="doc-width"]').press('Tab');
+  await page.waitForFunction(() => window.__psd_editor.state.doc.width === 400 && window.__psd_editor.state.doc.height === 300);
+  await page.evaluate(() => window.__psd_editor.actions.run('edit.undo'));
+  await page.waitForFunction(() => window.__psd_editor.state.doc.width === 200 && window.__psd_editor.state.doc.height === 150);
+  await page.locator('#layerList .lrow[data-layer-index="1"] .lname').click();
+  assert.equal(await page.locator('#props').getAttribute('data-context'), 'smart');
+  assert.equal(await page.locator('#hdrOpacity').isDisabled(), false);
+  if (process.env.PROPERTIES_SCREENSHOT_DIR) await page.locator('#panelProps').screenshot({ path: process.env.PROPERTIES_SCREENSHOT_DIR + '/browser-smart.png' });
+  await page.locator('.lpf-btn[data-kind="smart"]').click();
   const resetFixtures = JSON.parse(fs.readFileSync(new URL('./fixtures/smart-properties-native.json', import.meta.url), 'utf8'));
   const beforeBytes = inflateRawSync(Buffer.from(resetFixtures.cases.find(c => c.name.includes('300')).inputDeflateRawBase64, 'base64'));
   await page.evaluate(async bytes => {
@@ -151,9 +189,19 @@ try {
   assert.deepEqual(await frameStroke(), { ...strokeExpected, enabled: false });
   assert.equal(await page.locator('[data-attr="frame-stroke-width"]').isEnabled(), false);
   const compInput = inflateRawSync(Buffer.from(resetFixtures.compInput.deflateRawBase64, 'base64'));
-  await page.evaluate(async bytes => {
-    const F = window.__psd_editor; await F.initDocument(Uint8Array.from(bytes).buffer, 'comp-probe.psd'); F.refreshAll(true); F.selectLayers([0]);
+  const compGate = await page.evaluate(async bytes => {
+    const F = window.__psd_editor, buffer = Uint8Array.from(bytes).buffer;
+    const M = await import('/editor/smart-object-properties.js'), { api } = await import('/editor/app/01-boot.js');
+    const { soRenderImage } = await import('/editor/app/21-load-document.js');
+    const [resolved] = await api.resolveAll([M.smartPropertyFragment(buffer, 0)]);
+    const restricted = !!(resolved.layerInfo.proWarp?.length || resolved.layerInfo.proWarpKinds?.length);
+    let error = '';
+    if (restricted) try { soRenderImage(0, null, { layerInfo: resolved.layerInfo }); } catch (e) { error = e.message; }
+    const plain = M.resetSmartObjectPlacement(buffer, 0).buffer;
+    await F.initDocument(plain, 'comp-probe.psd'); F.refreshAll(true); F.selectLayers([0]);
+    return { restricted, error };
   }, [...compInput]);
+  if (compGate.restricted) assert.match(compGate.error, /Pro 版变形/);
   await page.waitForFunction(() => document.querySelector('[data-attr="so-layer-comp"]')?.disabled === false);
   const compSnapshot = () => page.evaluate(async () => {
     const F = window.__psd_editor, built = await F.buildPsdBuffer({ fast: true });

@@ -5,11 +5,12 @@
 
 import './42-adjust-panels.js';   
 import { actions } from '../actions.js';
-import { $, ADJM, ADJUST, ADJ_ALL, icon, kick } from './01-boot.js';
-import { brushHistory, doc, layerEdits, layerTree, selection } from './02-doc-state.js';
+import { $, ADJM, ADJUST, ADJ_ALL, applyAdjustment, icon, kick } from './01-boot.js';
+import { brushHistory, doc, docH, docW, layerEdits, layerTree, selection } from './02-doc-state.js';
 import {
   PP, actRecord, beginLayerEdit, endLayerEdit, histCap, histPush, pushDocHistory, set_docHistLock,
 } from './03-history.js';
+import { bakeLayerTiles, layerPixelJob, selectionCoversAll } from './14-edit-misc.js';
 import { buildAdjEyeRow, openGradientEditor } from './15-gradient-bucket-eyedropper.js';
 import {
   layerCanvasCache, renderLayerPanel, selLayer, selLayers, set_selLayer, thumbCache,
@@ -22,10 +23,10 @@ import { gradClone, gradModelCss, gradNewModel, rgbHex, setLayerVisible } from '
 import { mkEl } from './28-layer-props-transform.js';
 import { EV, beginDragAdjust, scrubHitOf, startScrub } from './29-scrubby-live.js';
 import { applyPreviewArrayOps, renderPreviewOnly, renderStaticLayers, setPreviewPath } from './30-render.js';
-import { commitPixelPaint, cutRect, diffBox } from './38-brush-engine.js';
+import { commitPixelPaint, diffBox, sparsePixelHistory } from './38-brush-engine.js';
 import {
-  adjCompute, adjDefaults, adjLabel, adjRAF, adjRender, adjState, adjTypes, adjustGuard, buildLevelsControl,
-  lvBins, lvDrawHist, openAdjustLazy, renderAdjustDialog, set_adjRAF, set_adjState,
+  adjCompute, adjDefaults, adjLabel, adjParams, adjRAF, adjRender, adjState, adjTypes, adjustGuard,
+  buildLevelsControl, lvBins, lvDrawHist, openAdjustLazy, renderAdjustDialog, set_adjRAF, set_adjState,
 } from './41-image-adjust.js';
 import {
   ADJ_FORM, ADJ_SCALAR_ROWS, BC_BLOCKS, adjCtlState, adjLayerHistogram, adjLayerTarget, adjSelState, blockValue,
@@ -1329,8 +1330,7 @@ function applyAdjustNow(){
   const box = diffBox(before, S.pp.rgba, S.pp.w, S.pp.h, 4);
   if (box) {                                  
     histPush(adjLabel(S.type), 'brush');
-    brushHistory.undo.push({ kind: 'pixels', idx: S.idx, rect: box, px: 4, adjust: adjLabel(S.type),
-                             before: cutRect(before, S.pp.w, box, 4), after: cutRect(S.pp.rgba, S.pp.w, box, 4) });
+    brushHistory.undo.push(sparsePixelHistory(S.idx, before, S.pp.rgba, S.pp.w, S.pp.h, { adjust: adjLabel(S.type) }));
     if (brushHistory.undo.length > histCap('brush')) brushHistory.undo.shift();
     brushHistory.redo.length = 0;
   }
@@ -1345,7 +1345,7 @@ export function closeAdjustDialog(silent){
   const S = adjState; if (!S) { if (!silent) $('#adjDlg').close && $('#adjDlg').close(); return; }
   set_adjState(null);
   if (adjRAF) { cancelAnimationFrame(adjRAF); set_adjRAF(0); }
-  S.pp.rgba.set(S.base);                      
+  if (!S.sparse && S.base) S.pp.rgba.set(S.base);
   delete layerCanvasCache[S.idx]; delete thumbCache[S.idx];
   renderPreviewOnly();
   if (!silent) { const d = $('#adjDlg'); if (d.close) { try { d.close(); } catch { d.removeAttribute('open'); } } else d.removeAttribute('open'); }
@@ -1354,13 +1354,53 @@ $('#adjPreview').onchange = () => { if (adjState) { adjState.on = $('#adjPreview
 $('#adjKind').onchange = () => { if (adjState) { const t = $('#adjKind').value; closeAdjustDialog(true); openAdjustLazy(t); } };
 $('#adjReset').onclick = () => { if (adjState) { adjState.model = adjDefaults(adjState.type); renderAdjustDialog(); adjRender(); } };
 $('#adjCancel').onclick = () => closeAdjustDialog(false);
-$('#adjOk').onclick = () => {
+$('#adjOk').onclick = async () => {
   const S = adjState; if (!S) return;
+  if (S.sparse) {
+    const label = `图像调整 · ${adjLabel(S.type)}`;
+    const layer = doc?.layers?.[S.idx];
+    const layerLeft = layer?.bounds?.left | 0, layerTop = layer?.bounds?.top | 0;
+    const fullCover = !selection || selectionCoversAll(selection, layerLeft, layerTop, layer?.width || docW, layer?.height || docH);
+    if (docW * docH > 64e6 && fullCover) {
+      try {
+        const params = adjParams(S.type, S.model);
+        const applyPoint = (base, w, h, x = 0, y = 0) => applyAdjustment(base, w, h, params, { layerBounds: { left: layerLeft + x, top: layerTop + y } });
+        const okd = await bakeLayerTiles(label, ({ base, w, h, x, y }) => applyPoint(base, w, h, x, y), { index: S.idx, apply: applyPoint });
+        set_adjState(null); if (adjRAF) { cancelAnimationFrame(adjRAF); set_adjRAF(0); }
+        const d = $('#adjDlg'); if (d.close) { try { d.close(); } catch {} } else d.removeAttribute('open');
+        if (okd) actRecord('adjust', { type: S.type, model: JSON.parse(JSON.stringify(S.model)) });
+        return;
+      } catch (e) {
+        $('#err').textContent = label + '失败：' + humanEditError(e && e.message || e);
+        return;
+      }
+    }
+    const okd = await layerPixelJob(label, ({ base, w, h, docXY, cov }) => {
+      const rgba = applyAdjustment(base, w, h, adjParams(S.type, S.model), {
+        selection: selection || undefined,
+        layerBounds: docXY ? { left: docXY(0, 0)[0], top: docXY(0, 0)[1] } : undefined,
+      });
+      if (!cov) return rgba;
+      const out = new Uint8ClampedArray(base);
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const a = cov(x, y), o = (y * w + x) * 4;
+        out[o] = Math.round(base[o] + (rgba[o] - base[o]) * a);
+        out[o + 1] = Math.round(base[o + 1] + (rgba[o + 1] - base[o + 1]) * a);
+        out[o + 2] = Math.round(base[o + 2] + (rgba[o + 2] - base[o + 2]) * a);
+        out[o + 3] = Math.round(base[o + 3] + (rgba[o + 3] - base[o + 3]) * a);
+      }
+      return out;
+    }, { tile: true, index: S.idx });
+    set_adjState(null); if (adjRAF) { cancelAnimationFrame(adjRAF); set_adjRAF(0); }
+    const d = $('#adjDlg'); if (d.close) { try { d.close(); } catch { d.removeAttribute('open'); } } else d.removeAttribute('open');
+    if (okd) actRecord('adjust', { type: S.type, model: JSON.parse(JSON.stringify(S.model)) });
+    return;
+  }
   const okd = applyAdjustNow();
   set_adjState(null);                            
   if (adjRAF) { cancelAnimationFrame(adjRAF); set_adjRAF(0); }
   const d = $('#adjDlg'); if (d.close) { try { d.close(); } catch { d.removeAttribute('open'); } } else d.removeAttribute('open');
-  if (!okd) { S.pp.rgba.set(S.base); delete layerCanvasCache[S.idx]; delete thumbCache[S.idx]; renderPreviewOnly(); }
+  if (!okd) { if (S.base) S.pp.rgba.set(S.base); delete layerCanvasCache[S.idx]; delete thumbCache[S.idx]; renderPreviewOnly(); }
 };
 $('#adjDlg').addEventListener('cancel', ev => { ev.preventDefault(); closeAdjustDialog(false); });
 

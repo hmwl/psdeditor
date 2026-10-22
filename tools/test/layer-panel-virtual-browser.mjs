@@ -59,14 +59,14 @@ try {
   assert.ok(out.before.spacer && out.after.spacer, JSON.stringify(out));
   assert.ok(out.before.rows < 100 && out.after.rows < 100, `virtual panel mounted too many rows: ${JSON.stringify(out)}`);
   assert.notEqual(out.before.first, out.after.first, `scroll did not advance virtual window: ${JSON.stringify(out)}`);
-  assert.equal(out.totalBefore, 48000, JSON.stringify(out));
+  assert.equal(out.totalBefore, 1200 * 41, JSON.stringify(out));
   assert.equal(out.totalMiddle, out.totalBefore); assert.equal(out.totalBottom, out.totalBefore);
   assert.equal(out.last, '0'); assert.ok(out.reused);
   assert.equal(out.topSelected, 1199); assert.ok(out.topMounted);
   assert.equal(out.bottomSelected, 0); assert.ok(out.bottomMounted);
   assert.ok(out.renamed && out.editRetained, JSON.stringify(out));
   assert.equal(out.totalLarge, 1200 * 68);
-  assert.equal(out.expandedHeight, 48000 - 40 - 6 + 44);
-  assert.equal(out.collapsedHeight, out.expandedHeight - 40);
+  assert.equal(out.expandedHeight, 1200 * 41 - 41 - (41 - 25) + 44);
+  assert.equal(out.collapsedHeight, out.expandedHeight - 41);
   console.log('✓ 1200 层按可视窗口挂载；首尾/尺寸/组/效果行高准确；键盘跨窗口选层和重命名正常');
 } finally { await browser.close(); }

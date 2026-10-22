@@ -107,7 +107,6 @@ const sampleMax = d => (d === 32 ? 1 : d === 16 ? 65535 : 255);
 
 
 
-const M_RELATIVE = 0x01;    
 const M_DISABLED = 0x02;    
 const M_INVERT = 0x04;      
 const M_FROM_OTHER = 0x08;  
@@ -617,17 +616,15 @@ export function createMaskOps(h) {
       plane = decodePlane(maskCh, mw, mh, depth, psb, op, i, `图层 ${idx} 的蒙版通道 ${maskId}`);
     }
     const defV = ((geom.defaultColor == null ? 0 : geom.defaultColor) & 0xff) * scale;
-    const relative = !!(mFlags & M_RELATIVE);
     const invert = !!(mFlags & M_INVERT);
-    
     
     const values = new (sampleArr(depth))(lw * lh);
     for (let ly = 0; ly < lh; ly++) {
       for (let lx = 0; lx < lw; lx++) {
         let v = defV;
         if (plane) {
-          const mx = relative ? (lx - geom.left) : ((layer.bounds.left + lx) - geom.left);
-          const my = relative ? (ly - geom.top) : ((layer.bounds.top + ly) - geom.top);
+          const mx = (layer.bounds.left + lx) - geom.left;
+          const my = (layer.bounds.top + ly) - geom.top;
           if (mx >= 0 && mx < mw && my >= 0 && my < mh) v = plane[my * mw + mx];
         }
         values[ly * lw + lx] = invert ? (maxV - v) : v;

@@ -6,16 +6,19 @@
 import './15-gradient-bucket-eyedropper.js';   
 import { shell } from '../shell.js';
 import { $, EDIT, FILTER, FLTM, kick, runLazy } from './01-boot.js';
-import { brushHistory, doc, layerRenames, pixelPaint, selection } from './02-doc-state.js';
+import { brushHistory, doc, docH, docW, layerRenames, pixelPaint, selection } from './02-doc-state.js';
 import { actRecord, histCap, histPush, updateUndoButtons } from './03-history.js';
 import { paintOrigin } from './11-paint-common.js';
 import { filterGalleryUI, lastGalleryRun } from './12-fx-workspaces.js';
+import { bakeLayerTiles, layerPixelJob, selectionCoversAll } from './14-edit-misc.js';
 import { bytesEqual } from './21-load-document.js';
 import { layerCanvasCache, selLayer, set_selLayer, thumbCache } from './23-layers-panel.js';
 import { humanEditError } from './24-layer-ops-queue.js';
 import { renderPreviewOnly } from './30-render.js';
 import { bgRGB, fgRGB } from './31-selection-brush.js';
-import { commitPixelPaint, cutRect, ensurePixelPaint, sameBytes, selCovFn } from './38-brush-engine.js';
+import {
+  commitPixelPaint, cutRect, ensurePixelPaint, sameBytes, selCovFn, sparsePixelHistory,
+} from './38-brush-engine.js';
 import { adjExpandProxy, adjProxySelection, adjustGuard } from './41-image-adjust.js';
 import { setWaitCursor } from './48-info-export.js';
 
@@ -34,13 +37,34 @@ export function set_lastFilter(v) { return (lastFilter = v); }
 const FLT_PROXY_MAX = 1 << 19;            
 const TILE_FILTERS = new Set(['solarize', 'replaceColor', 'hsbHsl']);
 
+
+const LAZY_FILTER_ALLOW = new Set([
+  'gaussianBlur', 'boxBlur', 'motionBlur', 'blur', 'blurMore',
+  'unsharpMask', 'sharpen', 'sharpenMore',
+  'addNoise', 'median', 'despeckle', 'mosaic',
+  'findEdges', 'emboss', 'solarize',
+  'highPass', 'maximum', 'minimum', 'offset', 'replaceColor', 'hsbHsl',
+]);
+function filterHalo(kind, model) {
+  const spec = fltSpec(kind); let h = 0;
+  for (const pm of spec?.params || []) if (pm.spatial) { const v = Math.abs(Number(model[pm.key]) || 0); if (v > h) h = v; }
+  if (kind === 'offset') h = Math.max(h, Math.abs(+model.dx || 0), Math.abs(+model.dy || 0));
+  if (TILE_FILTERS.has(kind) || kind === 'addNoise') h = 0;
+  else if (!h) h = 8;
+  return Math.min(1024, Math.ceil(h));
+}
+
+
 export const fltKinds = () => (FLTM ? FLTM.FILTER_TYPES : []);
 export const fltSpec = k => (FLTM && FLTM.FILTERS[k]) || null;
 const fltLabel = k => (fltSpec(k) ? fltSpec(k).label : k);
 
 
-export function filterGuard(idx = selLayer){
-  const why = adjustGuard(idx);
+export function filterGuard(idx = selLayer, options){
+
+
+
+  const why = adjustGuard(idx, { ...(options || {}), sparse: true });
   if (why) return why.replace('图像 › 调整', '滤镜');
   return '';
 }
@@ -110,6 +134,10 @@ export function fltRender(){
   let out = null, err = '';
   if (S.on) { try { out = fltCompute(false); } catch (e) { err = humanEditError(e && e.message || e); } }
   S.pp.rgba.set(out || S.base);
+  if (S.lazy) {
+    S.lazy.layer.lazyPreview = { data: S.pp.rgba, width: S.pp.w, height: S.pp.h };
+    S.lazy.layer.lazyPreviewCanvas = null;
+  }
   delete layerCanvasCache[S.idx]; delete thumbCache[S.idx];
   renderPreviewOnly();
   const box = $('#fltErr'); if (box) { box.textContent = err ? '参数不合法：' + err : ''; box.hidden = !err; }
@@ -190,14 +218,33 @@ export function openFilterDialog(kind, params){
   if (why) { $('#err').textContent = '滤镜用不了：' + why; return null; }
   if (!FLTM) { kick(FILTER); $('#err').textContent = '滤镜用不了：' + FILTER.statusText(); return null; }
   if (!fltSpec(kind)) { $('#err').textContent = `没有「${kind}」这个滤镜`; return null; }
-  const pp = ensurePixelPaint(idx);
-  if (!pp) { $('#err').textContent = '滤镜用不了：这一层拿不到像素'; return null; }
+  let pp = ensurePixelPaint(idx), lazy = null;
+  if (!pp) {
+    const L = doc?.layers?.[idx], pv = L?.lazyPreview;
+    const lazySource = L && (L.lazyTileStore || L.lazyImage || L.lazyRasterFile || L.lazyChannels || L.lazyCompressedChannels);
+    if (!lazySource || !pv?.data || !(pv.width > 0 && pv.height > 0)) {
+      $('#err').textContent = '滤镜用不了：这一层拿不到可预览的像素';
+      return null;
+    }
+    if (!LAZY_FILTER_ALLOW.has(kind)) {
+      $('#err').textContent = `滤镜用不了：「${fltLabel(kind)}」在超大图层上会产生接缝（依赖整幅坐标/程序化噪声），请先降低分辨率或拼合后再用。`;
+      return null;
+    }
+    const left = L.bounds?.left | 0, top = L.bounds?.top | 0;
+    if (selection && !selectionCoversAll(selection, left, top, L.width, L.height)) {
+      $('#err').textContent = '滤镜用不了：超大图层的参数滤镜需要取消选择或全选；局部选区请先用无参数滤镜或缩小文档。';
+      return null;
+    }
+
+    pp = { rgba: pv.data, w: pv.width, h: pv.height, left: 0, top: 0, sparse: false, lazy: true };
+    lazy = { layer: L, origPreview: pv };
+  }
   closeFilterDialog(true);
   const base = Uint8ClampedArray.from(pp.rgba);
   const proxy = fltBuildProxy(pp);
   fltState = { idx, kind, pp, base, proxy,
-               proxySel: proxy ? adjProxySelection(pp, proxy, idx) : null,
-               model: { ...FLTM.filterDefaults(kind), ...(params || {}) }, on: true, bad: false };
+               proxySel: !lazy && proxy ? adjProxySelection(pp, proxy, idx) : null,
+               lazy, model: { ...FLTM.filterDefaults(kind), ...(params || {}) }, on: true, bad: false };
   for (const pm of fltSpec(kind).params) if (pm.type === 'color' && !(params && params[pm.key])) fltState.model[pm.key] = fgRGB.slice(0, 3);
   $('#fltPreview').checked = true;
   const sel = $('#fltKind');
@@ -220,6 +267,10 @@ export function closeFilterDialog(silent){
   const S = fltState;
   if (!S) { if (!silent) { const d = $('#fltDlg'); if (d && d.open && d.close) { try { d.close(); } catch { d.removeAttribute('open'); } } } return; }
   S.pp.rgba.set(S.base);                       
+  if (S.lazy) {
+    S.lazy.layer.lazyPreview = { data: S.pp.rgba, width: S.pp.w, height: S.pp.h };
+    S.lazy.layer.lazyPreviewCanvas = null;
+  }
   delete layerCanvasCache[S.idx]; delete thumbCache[S.idx];
   fltState = null;
   renderPreviewOnly();
@@ -251,10 +302,39 @@ function fltRawOffThread(kind, rgba, w, h, params){
   }));
 }
 
+function commitLazyFilter(S) {
+  const label = `滤镜 · ${fltLabel(S.kind)}`;
+  const layer = S.lazy.layer;
+  S.pp.rgba.set(S.base);
+  layer.lazyPreview = S.lazy.origPreview;
+  layer.lazyPreviewCanvas = null;
+  const halo = filterHalo(S.kind, S.model);
+  const apply = (base, w, h) => FLTM.applyFilter(S.kind, base, w, h, fltParams(S.kind, S.model));
+  fltState = null;
+  const d = $('#fltDlg'); if (d?.close) { try { d.close(); } catch {} } else d?.removeAttribute('open');
+  setWaitCursor(true, '正在分块计算滤镜…');
+  shell.status(`${label}：正在按 256 瓦片分块计算…`);
+  return bakeLayerTiles(label, ({ base, w, h }) => apply(base, w, h), { index: S.idx, halo, apply: halo ? undefined : apply })
+    .then(ok => {
+      if (ok) {
+        lastFilter = { kind: S.kind, params: { ...S.model } };
+        actRecord('filter', { kind: S.kind, params: { ...S.model } });
+        shell.status(`滤镜：${fltLabel(S.kind)}`);
+      }
+      return ok;
+    })
+    .catch(e => {
+      $('#err').textContent = label + '失败：' + humanEditError(e && e.message || e);
+      return false;
+    })
+    .finally(() => setWaitCursor(false));
+}
+
 
 
 export function commitFilter(){
   const S = fltState; if (!S || S.bad || S.busy) return false;
+  if (S.lazy) return commitLazyFilter(S);
   const pp = S.pp;
   if (pp.w * pp.h < FLT_WORKER_PX) {
     let out;
@@ -293,7 +373,7 @@ function fltFinish(S, out){
     $('#notice').textContent = `「${fltLabel(S.kind)}」没有改变任何像素。`;
     return false;
   }
-  brushHistory.undo.push({ kind: 'pixels', idx: S.idx, rect, before, after, px: 4 });
+  brushHistory.undo.push(sparsePixelHistory(S.idx, before, after, S.pp.w, S.pp.h, { filter: true }));
   if (brushHistory.undo.length > histCap('brush')) brushHistory.undo.shift();
   brushHistory.redo.length = 0;
   histPush(fltLabel(S.kind), 'brush');
@@ -307,21 +387,45 @@ function fltFinish(S, out){
 }
 
 export async function applyFilterNow(kind, params){
-  const why = filterGuard();
+  const why = filterGuard(selLayer, { sparse: TILE_FILTERS.has(kind) });
   if (why) { $('#err').textContent = '滤镜用不了：' + why; return false; }
   if (!FLTM) { kick(FILTER); $('#err').textContent = '滤镜用不了：' + FILTER.statusText(); return false; }
   if (!fltSpec(kind)) { $('#err').textContent = `没有「${kind}」这个滤镜`; return false; }
   const lazyLayer = doc?.layers?.[selLayer];
-  if (TILE_FILTERS.has(kind) && lazyLayer && (lazyLayer.lazyChannels || lazyLayer.lazyCompressedChannels)) {
-    // shortcut: point-wise filters only; neighborhood filters still need halo-aware tiles.
-    const { layerPixelJob } = await import('./14-edit-misc.js');
+  const lazyCapable = pixelPaint[selLayer]?.sparse || (lazyLayer
+    && (lazyLayer.lazyTileStore || lazyLayer.lazyChannels || lazyLayer.lazyCompressedChannels || lazyLayer.lazyImage || lazyLayer.lazyRasterFile));
+  if ((TILE_FILTERS.has(kind) || LAZY_FILTER_ALLOW.has(kind)) && lazyCapable) {
     const model = { ...FLTM.filterDefaults(kind), ...(params || {}) };
-    const out = await layerPixelJob(`滤镜 · ${fltLabel(kind)}`, ({ base, w, h }) => FLTM.applyFilter(kind, base, w, h, fltParams(kind, model)), { tile: true });
-    if (out !== false) { lastFilter = { kind, params: { ...model } }; actRecord('filter', { kind, params: { ...model } }); }
-    return out;
+    const label = `滤镜 · ${fltLabel(kind)}`;
+    const halo = filterHalo(kind, model);
+    const applyPoint = (base, w, h) => FLTM.applyFilter(kind, base, w, h, fltParams(kind, model));
+    const compute = ({ base, w, h }) => applyPoint(base, w, h);
+    const layerLeft = lazyLayer?.bounds?.left | 0, layerTop = lazyLayer?.bounds?.top | 0;
+    const fullCover = !selection || selectionCoversAll(selection, layerLeft, layerTop, lazyLayer?.width || docW, lazyLayer?.height || docH);
+    if (docW * docH > 64e6 && fullCover) {
+      try {
+        const ok = await bakeLayerTiles(label, compute, { index: selLayer, halo, apply: halo ? undefined : applyPoint });
+        if (ok) { lastFilter = { kind, params: { ...model } }; actRecord('filter', { kind, params: { ...model } }); }
+        return ok;
+      } catch (e) {
+        $('#err').textContent = label + '失败：' + humanEditError(e && e.message || e);
+        return false;
+      }
+    }
+    if (!halo) {
+      const out = await layerPixelJob(label, ({ base, w, h }) => compute({ base, w, h }), { tile: true, paintedOnly: false });
+      if (out !== false) { lastFilter = { kind, params: { ...model } }; actRecord('filter', { kind, params: { ...model } }); }
+      return out;
+    }
   }
   const pp = ensurePixelPaint(selLayer);
-  if (!pp) { $('#err').textContent = '滤镜用不了：这一层拿不到像素'; return false; }
+  if (!pp) {
+    const L = doc?.layers?.[selLayer];
+    $('#err').textContent = (pixelPaint[selLayer]?.sparse || L?.lazyTileStore || L?.lazyRasterSource || L?.lazyChannels || L?.lazyCompressedChannels)
+      ? '滤镜用不了：这个滤镜在超大图层上需要整层分块（取消选择或全选后再试），局部选区请用点式滤镜。'
+      : '滤镜用不了：这一层拿不到像素';
+    return false;
+  }
   fltState = { idx: selLayer, kind, pp, base: Uint8ClampedArray.from(pp.rgba), proxy: null, proxySel: null,
                model: { ...FLTM.filterDefaults(kind), ...(params || {}) }, on: true, bad: false, noDialog: true };
   const r = commitFilter();

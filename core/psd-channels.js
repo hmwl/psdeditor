@@ -23,7 +23,7 @@
 
 
 import {
-  readSections, readImageHeader, decodeCompositeImage, encodeCompositeImage,
+  readSections, readImageHeader, decodeCompositeImage, encodeCompositeImage, hasMergedTransparency,
   COLOR_CHANNELS, ColorMode, Compression, detectSample16Max, byteTo16, SAMPLE16_PS,
 } from './psd-image.js';
 import { parseImageResources, resourceHandler } from './psd-resources.js';
@@ -71,19 +71,7 @@ function auxAligned(arr, n) {
 
 
 
-export function hasMergedTransparency(buffer) {
-  const u8 = toU8(buffer);
-  const sec = readSections(u8);
-  const lm = sec.layerAndMask;
-  const w = sec.header.psb ? 8 : 4;
-  if (!lm || lm.len < w + 2) return false;
-  const o = lm.off;
-  let infoLen = 0;
-  for (let k = 0; k < w; k++) infoLen = infoLen * 256 + u8[o + k];
-  if (infoLen < 2) return false;
-  const cnt = (u8[o + w] << 8) | u8[o + w + 1];
-  return (cnt & 0x8000) !== 0 && sec.header.channels > colorChannelCount(sec.header);
-}
+export { hasMergedTransparency } from './psd-image.js';
 export function listAlphaChannels(buffer) {
   const u8 = toU8(buffer);
   const sec = readSections(u8);

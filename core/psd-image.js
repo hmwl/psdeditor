@@ -588,6 +588,35 @@ export function readSections(buffer) {
 }
 
 
+export function hasMergedTransparency(buffer, sections = null) {
+  const sec = sections || readSections(buffer), h = sec.header;
+  if (h.mode === ColorMode.MULTICHANNEL || h.channels <= (COLOR_CHANNELS[h.mode] ?? h.channels)) return false;
+  const lm = sec.layerAndMask, end = lm.off + lm.len, r = new Reader(buffer, h.psb);
+  if (lm.len < (h.psb ? 8 : 4)) return false;
+  r.seek(lm.off);
+  const size = r.len32or64(), infoStart = r.o;
+  if (!Number.isSafeInteger(size) || infoStart + size > end) return false;
+  if (size >= 2 && r.i16() < 0) return true;
+  r.seek(infoStart + size);
+  if (r.o + 4 > end) return false;
+  const maskSize = r.u32();
+  if (r.o + maskSize > end) return false;
+  r.skip(maskSize);
+  const bigKeys = new Set(['LMsk','Lr16','Lr32','Layr','Mt16','Mt32','Mtrn','Alph','FMsk','lnk2','lnkD','lnk3','lnkE','FEid','FXid','PxSD','cinf']);
+  while (r.o + 12 <= end) {
+    const sig = r.key4();
+    if (sig !== '8BIM' && sig !== '8B64') break;
+    const key = r.key4(), big = sig === '8B64' || (h.psb && bigKeys.has(key));
+    if (r.o + (big ? 8 : 4) > end) break;
+    const len = big ? r.u64() : r.u32(), next = r.o + len;
+    if (!Number.isSafeInteger(next) || next > end) break;
+    if (len >= 2 && (key === 'Layr' || (h.depth === 16 && key === 'Lr16') || (h.depth === 32 && key === 'Lr32')) && r.i16() < 0) return true;
+    r.seek(next + ((4 - len % 4) % 4));
+  }
+  return false;
+}
+
+
 
 
 
@@ -702,6 +731,7 @@ export function channelsToRGBA({ planes, width, height, depth, mode, palette = n
   
   const max16 = depth === 16 ? (sample16Max || detectSample16Max(Object.values(planes || {}))) : SAMPLE16_PS;
   const norm = normalizer(depth, mode === ColorMode.BITMAP, max16);
+  const coverage = depth === 32 ? v => Math.max(0, Math.min(255, Math.round(v * 255))) : norm;
   const P = id => planes[id] || null;
   const p0 = P(0), p1 = P(1), p2 = P(2), p3 = P(3);
   const A = P(-1);
@@ -711,12 +741,11 @@ export function channelsToRGBA({ planes, width, height, depth, mode, palette = n
   const mFlags = mask ? (mask.flags | 0) : 0;
   const mDisabled = !!(mFlags & 2);
   const mInvert = !!(mFlags & 4);
-  const mRelative = !!(mFlags & 1);
   const mw = mask ? (mask.width | 0) : width, mh = mask ? (mask.height | 0) : height;
   const mTop = mask ? (mask.top | 0) : 0, mLeft = mask ? (mask.left | 0) : 0;
   const lTop = mask ? (mask.layerTop | 0) : 0, lLeft = mask ? (mask.layerLeft | 0) : 0;
   const mDefault = mask && mask.defaultColor != null ? mask.defaultColor : 255;
-  const needsPlace = !!M && (mRelative || mw !== width || mh !== height || mTop !== lTop || mLeft !== lLeft);
+  const needsPlace = !!M && (mw !== width || mh !== height || mTop !== lTop || mLeft !== lLeft);
 
   const tmp = [0, 0, 0];
   const inv = v => 255 - norm(v);
@@ -786,16 +815,16 @@ export function channelsToRGBA({ planes, width, height, depth, mode, palette = n
         r = p0 ? norm(p0[i]) : 0; g = p1 ? norm(p1[i]) : r; b = p2 ? norm(p2[i]) : r;
     }
 
-    let a = A ? norm(A[i]) : 255;
+    let a = A ? coverage(A[i]) : 255;
     if (M && !mDisabled) {
       let mv = mDefault;
       if (needsPlace) {
         const lx = i % width, ly = (i / width) | 0;
-        const mx = mRelative ? (lx - mLeft) : ((lLeft + lx) - mLeft);
-        const my = mRelative ? (ly - mTop) : ((lTop + ly) - mTop);
-        if (mx >= 0 && mx < mw && my >= 0 && my < mh) mv = norm(M[my * mw + mx]);
+        const mx = (lLeft + lx) - mLeft;
+        const my = (lTop + ly) - mTop;
+        if (mx >= 0 && mx < mw && my >= 0 && my < mh) mv = coverage(M[my * mw + mx]);
       } else {
-        mv = norm(M[i]);
+        mv = coverage(M[i]);
       }
       if (mInvert) mv = 255 - mv;
       a = (a * mv) / 255;
@@ -875,7 +904,7 @@ export function decodeLayerChannels(buffer, layerRecord, header, opts = {}) {
     const isMask = id === -2 || id === -3;
     const cw = isMask ? (mask ? mask.width : 0) : bounds.width;
     const chh = isMask ? (mask ? mask.height : 0) : bounds.height;
-    if (cw <= 0 || chh <= 0) continue;
+    if (cw <= 0 || chh <= 0) { if (isMask) byId[id] = new Uint8Array(0); continue; }
     if (start + len > u8.length) throw new Error(`通道 ${id} 数据越界（${start}+${len} > ${u8.length}）`);
     if (len < 2) { warnings.push({ channelId: id, message: `通道 ${id} 数据只有 ${len} 字节` }); continue; }
 
@@ -1006,7 +1035,8 @@ export function decodeCompositeImage(buffer, header = null, sections = null, opt
   
   const nColor = mode === ColorMode.MULTICHANNEL ? nCh : Math.min(nCh, COLOR_CHANNELS[mode] ?? nCh);
   const byId = Object.create(null);
-  for (let c = 0; c < nCh; c++) byId[c < nColor ? c : -(c - nColor + 1)] = planes[c];
+  const mergedTransparency = hasMergedTransparency(buffer, sec);
+  for (let c = 0; c < nCh; c++) byId[c < nColor ? c : -(c - nColor + (mergedTransparency ? 1 : 2))] = planes[c];
 
   const palette = opts.palette !== undefined ? opts.palette
     : (mode === ColorMode.INDEXED ? readPalette(buffer, sec) : null);

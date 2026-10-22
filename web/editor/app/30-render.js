@@ -14,6 +14,7 @@ import {
   hasRenderableVectorMask, groupHasMask, groupMaskAlpha, vectorStrokeRenderParams,
 } from '../../../core/app.js';
 import { applyAdjustment } from '../../../core/adjust.js';
+import { invert3 as invertQuad, quadMatrix } from '../../../core/quad-warp.js';
 import { buildDrawList, createDrawListState, markDirty as markDrawListDirty } from '../../../core/render/draw-list.js';
 import { createFrameQueue } from '../../../core/render/frame-queue.js';
 import { lodForScale } from '../../../core/psd-lod.js';
@@ -37,8 +38,8 @@ import { backend, fitOf, pushDocHistory, uiQuiet } from './03-history.js';
 import { padL, padT, syncRulers, viewH, viewHold, viewW, zoom } from './04-view-chrome.js';
 import { moveDrag } from './07-nav-histogram.js';
 import { tfState } from './19-free-transform.js';
-import { filterInputForSO, loadImage } from './20-snap-smart-object.js';
-import { decodeLazyTiles, decodedTileCache } from './21-load-document.js';
+import { filterInputForSO, loadImage, soInside } from './20-snap-smart-object.js';
+import { decodeLazyTiles, decodedTileCache, readLazyImageTile } from './21-load-document.js';
 import { deformEnter, deformOpts, deformTool } from './22-deform-tools.js';
 import { layerCanvasCache, layerCanvasCacheRaw, selLayer, set_layerPixelHook } from './23-layers-panel.js';
 import {
@@ -184,7 +185,7 @@ function requestLazyUpgrades(){
   const vx1 = Math.min(docW, Math.ceil((win.W * win.dpr - tx) / s) + cellSize), vy1 = Math.min(docH, Math.ceil((win.H * win.dpr - ty) / s) + cellSize);
   const layers = [];
   for (const i of displayOrder()) {
-    const l = doc.layers[i]; if (!(l?.lazyCompressedChannels || l?.lazyChannels || l?.lazyImage) || l.rgba || l.hidden) continue;
+    const l = doc.layers[i]; if (!(l?.lazyTileStore || l?.lazyCompressedChannels || l?.lazyChannels || l?.lazyImage || l?.lazyRasterFile) || l.rgba || l.hidden) continue;
     const p = l.lazyPreview;
     if (p && s * Math.max(l.width / p.width, l.height / p.height) <= 1) continue;
     const b = l.bounds || { left: 0, top: 0, right: l.width, bottom: l.height };
@@ -347,12 +348,13 @@ export function renderPreviewOnly(){
   if (channelsPanelVisible()) syncChannelPanel();   
   
   $('.optbar').classList.add('preview');
-  $('#docInfo').textContent = `文档 ${docW}×${docH} · ${doc.layers.length} 个图层`;
+  const layerCount = doc.layers.filter((l, i) => !layerDeletes.has(i) && l.group?.type !== 3 && layerTree?.flat[i]?.groupType !== 3).length;
+  $('#docInfo').textContent = `文档 ${docW}×${docH} · ${layerCount} 个图层`;
   syncToolButtons(); syncAnts();              
   const oh = $('#optHint'); oh.hidden = false;
   oh.innerHTML = '左侧工具栏：<kbd>V</kbd> 移动 · <kbd>M</kbd> 选框 · <kbd>L</kbd> 套索 · <kbd>W</kbd> 魔棒 · <kbd>B</kbd> 画笔 · <kbd>E</kbd> 橡皮 ｜ '
     + '<kbd>⌘/Ctrl+A</kbd> 全选 · <kbd>⌘/Ctrl+D</kbd> 取消选择 · <kbd>⌘/Ctrl+Z</kbd> 撤销 · <kbd>⌘/Ctrl+S</kbd> 导出';
-  $('#info').textContent = `文档 ${docW}×${docH} · 图层 ${doc.layers.length} 层 · 双击智能对象进入内部编辑，属性面板可编辑智能对象`;
+  $('#info').textContent = `文档 ${docW}×${docH} · 图层 ${layerCount} 层 · 双击智能对象进入内部编辑，属性面板可编辑智能对象`;
 }
 function ensureLazyPreviews(){
   if (!doc || docW * docH <= 64e6 || ![1, 3, 8].includes(doc.mode)) return;
@@ -382,6 +384,60 @@ export function renderLargeViewportFallback({ keepGPU = false, rect = null } = {
     if (px1 <= px0 || py1 <= py0) return true;
   }
   
+
+
+
+
+  const solo = doc.layers.length === 1 ? doc.layers[0] : null;
+  if (solo && solo.lazyPreview && !solo.rgba && !solo.hidden && !solo.effects && !solo.adjustment
+      && !solo.mask && !solo.vectorMask && !solo.fill && (solo.blendMode == null || solo.blendMode === 'norm')
+      && (solo.opacity == null || solo.opacity === 255) && (solo.fillOpacity == null || solo.fillOpacity === 255)
+      && solo.bounds && solo.bounds.left === 0 && solo.bounds.top === 0 && solo.bounds.right === docW && solo.bounds.bottom === docH
+      && !Object.keys(layerTransforms).length && !Object.keys(textRenders).length) {
+    const pv = solo.lazyPreview;
+    let pc = solo.lazyPreviewCanvas;
+    if (!pc) {
+      pc = solo.lazyPreviewCanvas = typeof OffscreenCanvas !== 'undefined'
+        ? new OffscreenCanvas(pv.width, pv.height)
+        : Object.assign(document.createElement('canvas'), { width: pv.width, height: pv.height });
+      const d = pv.data instanceof Uint8ClampedArray ? pv.data : new Uint8ClampedArray(pv.data);
+      try { pc.getContext('2d').putImageData(new ImageData(d, pv.width, pv.height), 0, 0); } catch { pc = null; }
+    }
+    if (pc) {
+      ctx.clearRect(0, 0, W, H);
+      const kx = pv.width / Math.max(1, docW), ky = pv.height / Math.max(1, docH);
+      const dx0 = Math.max(0, (px0 - tx) / s), dy0 = Math.max(0, (py0 - ty) / s);
+      const dx1 = Math.min(docW, (px1 - tx) / s), dy1 = Math.min(docH, (py1 - ty) / s);
+      if (dx1 > dx0 && dy1 > dy0) {
+        ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'medium';
+        ctx.drawImage(pc, dx0 * kx, dy0 * ky, (dx1 - dx0) * kx, (dy1 - dy0) * ky,
+          Math.round(tx + dx0 * s), Math.round(ty + dy0 * s),
+          Math.max(1, Math.round((dx1 - dx0) * s)), Math.max(1, Math.round((dy1 - dy0) * s)));
+      }
+
+
+      const tiles = pixelPaint[0]?.sparse?.tiles;
+      if (tiles && tiles.size) {
+        let tcv = solo.paintTileCanvas;
+        if (!tcv) tcv = solo.paintTileCanvas = typeof OffscreenCanvas !== 'undefined'
+          ? new OffscreenCanvas(256, 256)
+          : Object.assign(document.createElement('canvas'), { width: 256, height: 256 });
+        const tctx = tcv.getContext('2d');
+        for (const t of tiles.values()) {
+          if (tcv.width !== t.width || tcv.height !== t.height) { tcv.width = t.width; tcv.height = t.height; }
+          const d = t.data instanceof Uint8ClampedArray ? t.data : new Uint8ClampedArray(t.data);
+          tctx.putImageData(new ImageData(d, t.width, t.height), 0, 0);
+          ctx.drawImage(tcv, Math.round(tx + t.x * s), Math.round(ty + t.y * s),
+            Math.max(1, Math.round(t.width * s)), Math.max(1, Math.round(t.height * s)));
+        }
+      }
+      cv.docID = sceneRef(doc); cv.ownerID = frameOwnerOf(doc);
+      if (!keepGPU) { GPUV.stale = false; gpuShow(false); }
+      drawGizmo();
+      return true;
+    }
+  }
+
 
 
   const complex = doc.layers.some(l => l && ((l.group && l.group.type != null) || l.knockout ||
@@ -467,49 +523,73 @@ export function renderLargeViewportFallback({ keepGPU = false, rect = null } = {
     const b = srcLayer.bounds || { left: 0, top: 0 };
     const levels = lazyDetailLevels(l.lazyGpuDetail), preferred = lodForScale(s);
     const detailLevels = [...levels.filter(v => (v.scale || 1) <= preferred).reverse(), ...levels.filter(v => (v.scale || 1) > preferred)];
+
+
+
+
+
+    const bTop = b.top | 0, bLeft = b.left | 0;
+    const samp = [0, 0, 0, 0];
+    const pv = l.lazyPreview, pvW = pv ? pv.width : 0, pvH = pv ? pv.height : 0, pvD = pv ? pv.data : null;
+    const pvKx = pvD && srcLayer.width > 0 ? pvW / srcLayer.width : 0;
+    const pvKy = pvD && srcLayer.height > 0 ? pvH / srcLayer.height : 0;
+    let editCol = -1, editTile = null;
     for (let py = py0; py < py1; py++) {
-      const dy = (py + .5 - ty) / s, sy = Math.floor(dy - b.top); if (sy < 0 || sy >= srcLayer.height) continue;
+      const sy = Math.floor((py + .5 - ty) / s - bTop); if (sy < 0 || sy >= srcLayer.height) continue;
+      const rowBase = sy * srcLayer.width, tileRow = sy >> 8;
+      editCol = -1;
       for (let outX = px0; outX < px1; outX++) {
-        const dx = (outX + .5 - tx) / s, sx = Math.floor(dx - b.left); if (sx < 0 || sx >= srcLayer.width) continue;
-        const si = (sy * srcLayer.width + sx) * 4;
-        let sample;
-        const editKey=`${Math.floor(sx/256)*256}:${Math.floor(sy/256)*256}`;
-        const edited=l.lazyGpuDetail?.edits?.tiles.get(editKey)||pixelPaint[idx]?.sparse?.tiles.get(editKey);
-        if (srcLayer.rgba) sample = [srcLayer.rgba[si], srcLayer.rgba[si + 1], srcLayer.rgba[si + 2], srcLayer.rgba[si + 3]];
-        else if(edited){const ti=((sy-edited.y)*edited.width+sx-edited.x)*4;sample=[edited.data[ti],edited.data[ti+1],edited.data[ti+2],edited.data[ti+3]];}
-        else if (detailLevels.length) {
-          for (const level of detailLevels) {
-            const tile = level.tiles.get(`${Math.floor(sx / level.tileSize) * level.tileSize}:${Math.floor(sy / level.tileSize) * level.tileSize}`);
-            if (!tile) continue;
-            const k = tile.scale || 1, ti = (Math.floor((sy - tile.y) / k) * (tile.sampleWidth || tile.width) + Math.floor((sx - tile.x) / k)) * 4;
-            sample = [tile.data[ti], tile.data[ti + 1], tile.data[ti + 2], tile.data[ti + 3]]; break;
+        const sx = Math.floor((outX + .5 - tx) / s - bLeft); if (sx < 0 || sx >= srcLayer.width) continue;
+        let has = false;
+        if (srcLayer.rgba) {
+          const si = (rowBase + sx) * 4, d = srcLayer.rgba;
+          samp[0] = d[si]; samp[1] = d[si + 1]; samp[2] = d[si + 2]; samp[3] = d[si + 3]; has = true;
+        } else {
+          const tileCol = sx >> 8;
+          if (tileCol !== editCol) {
+            editCol = tileCol;
+            const ek = `${tileCol << 8}:${tileRow << 8}`;
+            editTile = (l.lazyGpuDetail?.edits?.tiles.get(ek) || pixelPaint[idx]?.sparse?.tiles.get(ek)) || null;
           }
-        } else if (l.lazyHighTiles) {
-          const tile = l.lazyHighTiles.get(`${Math.floor(sx / 256) * 256}:${Math.floor(sy / 256) * 256}`);
-          if (tile) { const ti = ((sy - tile.y) * tile.width + sx - tile.x) * 4; sample = [tile.data[ti], tile.data[ti + 1], tile.data[ti + 2], tile.data[ti + 3]]; }
+          if (editTile) {
+            const ti = ((sy - editTile.y) * editTile.width + sx - editTile.x) * 4, d = editTile.data;
+            if (ti >= 0 && ti + 3 < d.length) { samp[0] = d[ti]; samp[1] = d[ti + 1]; samp[2] = d[ti + 2]; samp[3] = d[ti + 3]; has = true; }
+          }
+          if (!has && detailLevels.length) {
+            for (const level of detailLevels) {
+              const ts = level.tileSize, tile = level.tiles.get(`${Math.floor(sx / ts) * ts}:${Math.floor(sy / ts) * ts}`);
+              if (!tile) continue;
+              const k = tile.scale || 1, ti = (Math.floor((sy - tile.y) / k) * (tile.sampleWidth || tile.width) + Math.floor((sx - tile.x) / k)) * 4, d = tile.data;
+              samp[0] = d[ti]; samp[1] = d[ti + 1]; samp[2] = d[ti + 2]; samp[3] = d[ti + 3]; has = true; break;
+            }
+          }
+          if (!has && l.lazyHighTiles) {
+            const tile = l.lazyHighTiles.get(`${tileCol << 8}:${tileRow << 8}`);
+            if (tile) { const ti = ((sy - tile.y) * tile.width + sx - tile.x) * 4, d = tile.data; samp[0] = d[ti]; samp[1] = d[ti + 1]; samp[2] = d[ti + 2]; samp[3] = d[ti + 3]; has = true; }
+          }
+          if (!has && useTiles && l.lazyChannels) {
+            const tile = readLazyLayerTile(l, tileCol, tileRow, doc.mode);
+            if (tile) { const ti = ((sy - tile.y) * tile.width + sx - tile.x) * 4, d = tile.data; samp[0] = d[ti]; samp[1] = d[ti + 1]; samp[2] = d[ti + 2]; samp[3] = d[ti + 3]; has = true; }
+          }
+          if (!has && useTiles && l.lazyImageTiles) {
+            const tile = l.lazyImageTiles.get(`${tileCol << 8}:${tileRow << 8}`);
+            if (tile) { const ti = ((sy - tile.y) * tile.width + sx - tile.x) * 4, d = tile.data; samp[0] = d[ti]; samp[1] = d[ti + 1]; samp[2] = d[ti + 2]; samp[3] = d[ti + 3]; has = true; }
+          }
+          if (!has && pvD) {
+            const qx = Math.min(pvW - 1, Math.max(0, Math.floor(sx * pvKx)));
+            const qy = Math.min(pvH - 1, Math.max(0, Math.floor(sy * pvKy)));
+            const qi = (qy * pvW + qx) * 4;
+            samp[0] = pvD[qi]; samp[1] = pvD[qi + 1]; samp[2] = pvD[qi + 2]; samp[3] = pvD[qi + 3]; has = true;
+          }
+          if (!has) { const p = readLazyLayerPixel(l, sx, sy, doc.mode); if (p) { samp[0] = p[0]; samp[1] = p[1]; samp[2] = p[2]; samp[3] = p[3]; has = true; } }
         }
-        if (!sample && useTiles && l.lazyChannels) {
-          const tile = readLazyLayerTile(l, Math.floor(sx / 256), Math.floor(sy / 256), doc.mode);
-          if (tile) { const ti = ((sy - tile.y) * tile.width + sx - tile.x) * 4; sample = [tile.data[ti], tile.data[ti + 1], tile.data[ti + 2], tile.data[ti + 3]]; }
-        }
-        if (!sample && useTiles && l.lazyImageTiles) {
-          const tile = l.lazyImageTiles.get(`${Math.floor(sx / 256) * 256}:${Math.floor(sy / 256) * 256}`);
-          if (tile) { const ti = ((sy - tile.y) * tile.width + sx - tile.x) * 4; sample = [tile.data[ti], tile.data[ti + 1], tile.data[ti + 2], tile.data[ti + 3]]; }
-        }
-        if (!sample && l.lazyPreview) {
-          const qx = Math.min(l.lazyPreview.width - 1, Math.max(0, Math.floor(sx * l.lazyPreview.width / l.width)));
-          const qy = Math.min(l.lazyPreview.height - 1, Math.max(0, Math.floor(sy * l.lazyPreview.height / l.height)));
-          const qi = (qy * l.lazyPreview.width + qx) * 4, d = l.lazyPreview.data;
-          sample = [d[qi], d[qi + 1], d[qi + 2], d[qi + 3]];
-        }
-        if (!sample) sample = readLazyLayerPixel(l, sx, sy, doc.mode);
-        if (!sample) continue;
-        const sa = (sample[3] / 255) * op; if (sa <= 0) continue;
+        if (!has) continue;
+        const sa = (samp[3] / 255) * op; if (sa <= 0) continue;
         const oi = ((py - py0) * rw + outX - px0) * 4, da = out[oi + 3] / 255, oa = sa + da * (1 - sa);
         if (oa <= 0) continue;
-        out[oi] = Math.round((sample[0] * sa + out[oi] * da * (1 - sa)) / oa);
-        out[oi + 1] = Math.round((sample[1] * sa + out[oi + 1] * da * (1 - sa)) / oa);
-        out[oi + 2] = Math.round((sample[2] * sa + out[oi + 2] * da * (1 - sa)) / oa);
+        out[oi] = Math.round((samp[0] * sa + out[oi] * da * (1 - sa)) / oa);
+        out[oi + 1] = Math.round((samp[1] * sa + out[oi + 1] * da * (1 - sa)) / oa);
+        out[oi + 2] = Math.round((samp[2] * sa + out[oi + 2] * da * (1 - sa)) / oa);
         out[oi + 3] = Math.round(oa * 255);
       }
     }
@@ -810,6 +890,182 @@ export const PREVIEW_EFFECT_MULTI = {
   DrSh: 'dropShadowMulti', IrSh: 'innerShadowMulti', SoFi: 'solidFillMulti',
   GrFl: 'gradientFillMulti', patternFill: 'patternFillMulti', FrFX: 'frameFXMulti',
 };
+
+export async function readLayerRegionRGBA(layer, idx, x0, y0, w, h){
+  const out = new Uint8ClampedArray(w * h * 4);
+  const left = layer.bounds?.left | 0, top = layer.bounds?.top | 0;
+  const lw = layer.width | 0, lh = layer.height | 0;
+  if (layer.rgba && lw > 0 && lh > 0) {
+    const xa = Math.max(x0, left), xb = Math.min(x0 + w, left + lw);
+    const ya = Math.max(y0, top), yb = Math.min(y0 + h, top + lh);
+    if (xb > xa) for (let y = ya; y < yb; y++)
+      out.set(layer.rgba.subarray(((y - top) * lw + xa - left) * 4, ((y - top) * lw + xb - left) * 4), ((y - y0) * w + xa - x0) * 4);
+
+  } else if ((layer.lazyTileStore || layer.lazyImage || layer.lazyRasterFile) && lw > 0 && lh > 0) {
+    const lx0 = Math.max(0, x0 - left), ly0 = Math.max(0, y0 - top);
+    const lx1 = Math.min(lw, x0 + w - left), ly1 = Math.min(lh, y0 + h - top);
+    for (let ty = Math.floor(ly0 / 256) * 256; ty < ly1; ty += 256)
+      for (let tx = Math.floor(lx0 / 256) * 256; tx < lx1; tx += 256) {
+        let t = null;
+        try { t = await readLazyImageTile(layer, tx, ty); } catch { t = null; }
+        if (!t) continue;
+        const dx0 = left + t.x, dy0 = top + t.y;
+        const xa = Math.max(x0, dx0), xb = Math.min(x0 + w, dx0 + t.width);
+        const ya = Math.max(y0, dy0), yb = Math.min(y0 + h, dy0 + t.height);
+        if (!(xb > xa && yb > ya)) continue;
+        for (let y = ya; y < yb; y++)
+          out.set(t.data.subarray(((y - dy0) * t.width + xa - dx0) * 4, ((y - dy0) * t.width + xb - dx0) * 4), ((y - y0) * w + xa - x0) * 4);
+      }
+  } else if (layer.lazyChannels) {
+    for (let y = Math.max(y0, top); y < Math.min(y0 + h, top + lh); y++)
+      for (let x = Math.max(x0, left); x < Math.min(x0 + w, left + lw); x++) {
+        const p = readLazyLayerPixel(layer, x - left, y - top, doc.mode);
+        if (!p) continue;
+        const q = ((y - y0) * w + x - x0) * 4;
+        out[q] = p[0]; out[q + 1] = p[1]; out[q + 2] = p[2]; out[q + 3] = p[3];
+      }
+  } else if (layer.lazyPreview?.data?.length) {
+    const p = layer.lazyPreview, kx = p.width / Math.max(1, lw), ky = p.height / Math.max(1, lh);
+    for (let y = Math.max(y0, top); y < Math.min(y0 + h, top + lh); y++)
+      for (let x = Math.max(x0, left); x < Math.min(x0 + w, left + lw); x++) {
+        const px = Math.min(p.width - 1, Math.max(0, Math.floor((x - left) * kx)));
+        const py = Math.min(p.height - 1, Math.max(0, Math.floor((y - top) * ky)));
+        const so = (py * p.width + px) * 4, q = ((y - y0) * w + x - x0) * 4;
+        out[q] = p.data[so]; out[q + 1] = p.data[so + 1]; out[q + 2] = p.data[so + 2]; out[q + 3] = p.data[so + 3];
+      }
+  }
+  const tiles = pixelPaint[idx]?.sparse?.tiles;
+  if (tiles?.size) for (const t of tiles.values()) {
+    const dx0 = left + t.x, dy0 = top + t.y;
+    const xa = Math.max(x0, dx0), xb = Math.min(x0 + w, dx0 + t.width);
+    const ya = Math.max(y0, dy0), yb = Math.min(y0 + h, dy0 + t.height);
+    if (!(xb > xa && yb > ya)) continue;
+    for (let y = ya; y < yb; y++)
+      out.set(t.data.subarray(((y - dy0) * t.width + xa - dx0) * 4, ((y - dy0) * t.width + xb - dx0) * 4), ((y - y0) * w + xa - x0) * 4);
+  }
+  return out;
+}
+
+
+
+async function readAffineLayerRegion(layer, idx, x0, y0, w, h, tr){
+  const lw = layer.width | 0, lh = layer.height | 0;
+  const left = layer.bounds?.left | 0, top = layer.bounds?.top | 0;
+  if (!(lw > 0 && lh > 0) || !(tr.w > 0 && tr.h > 0)) return null;
+  const rad = (tr.rot || 0) * Math.PI / 180, cos = Math.cos(rad), sin = Math.sin(rad);
+  const cx = tr.x + tr.w / 2, cy = tr.y + tr.h / 2, kx = lw / tr.w, ky = lh / tr.h;
+  const qinv = tr.quad ? invertQuad(quadMatrix(lw, lh, tr.quad)) : null;
+  if (tr.quad && !qinv) return null;
+  const srcOf = (dx, dy) => {
+    if (qinv) {
+      const w = qinv[6] * dx + qinv[7] * dy + qinv[8];
+      if (Math.abs(w) < 1e-12) return null;
+      let u = (qinv[0] * dx + qinv[1] * dy + qinv[2]) / w, v = (qinv[3] * dx + qinv[4] * dy + qinv[5]) / w;
+      if (tr.flipX) u = lw - u;
+      if (tr.flipY) v = lh - v;
+      return [u, v];
+    }
+    let u = dx * cos + dy * sin, v = -dx * sin + dy * cos;
+    if (tr.flipX) u = -u;
+    if (tr.flipY) v = -v;
+    return [u * kx + lw / 2, v * ky + lh / 2];
+  };
+  const srcBox = (dx, dy, rw, rh) => {
+    const q = [srcOf(dx - (qinv ? 0 : cx), dy - (qinv ? 0 : cy)), srcOf(dx + rw - (qinv ? 0 : cx), dy - (qinv ? 0 : cy)),
+      srcOf(dx + rw - (qinv ? 0 : cx), dy + rh - (qinv ? 0 : cy)), srcOf(dx - (qinv ? 0 : cx), dy + rh - (qinv ? 0 : cy))].filter(Boolean);
+    if (!q.length) return { x0: 0, x1: 0, y0: 0, y1: 0 };
+    return { x0: Math.max(0, Math.floor(Math.min(...q.map(p => p[0]))) - 1), x1: Math.min(lw, Math.ceil(Math.max(...q.map(p => p[0]))) + 1),
+      y0: Math.max(0, Math.floor(Math.min(...q.map(p => p[1]))) - 1), y1: Math.min(lh, Math.ceil(Math.max(...q.map(p => p[1]))) + 1) };
+  };
+  let step = 128;
+  for (;;) {
+    const b = srcBox(x0, y0, Math.min(step, w), Math.min(step, h));
+    if ((b.x1 - b.x0) * (b.y1 - b.y0) <= 4e6 || step <= 8) break;
+    step >>= 1;
+  }
+  const out = new Uint8ClampedArray(w * h * 4);
+  for (let ry = 0; ry < h; ry += step) for (let rx = 0; rx < w; rx += step) {
+    const rw = Math.min(step, w - rx), rh = Math.min(step, h - ry);
+    const b = srcBox(x0 + rx, y0 + ry, rw, rh);
+    if (!(b.x1 > b.x0 && b.y1 > b.y0)) continue;
+    const sw = b.x1 - b.x0, sh = b.y1 - b.y0;
+    const src = await readLayerRegionRGBA(layer, idx, left + b.x0, top + b.y0, sw, sh);
+    for (let yy = 0; yy < rh; yy++) for (let xx = 0; xx < rw; xx++) {
+      const gx = x0 + rx + xx, gy = y0 + ry + yy;
+      const p = srcOf(gx + 0.5 - (qinv ? 0 : cx), gy + 0.5 - (qinv ? 0 : cy));
+      if (!p) continue;
+      const [sx, sy] = p;
+      const fx = sx - b.x0 - 0.5, fy = sy - b.y0 - 0.5;
+      if (fx <= -1 || fy <= -1 || fx >= sw || fy >= sh) continue;
+      const ix = Math.max(0, Math.min(sw - 1, Math.floor(fx))), iy = Math.max(0, Math.min(sh - 1, Math.floor(fy)));
+      const ix1 = Math.min(sw - 1, ix + 1), iy1 = Math.min(sh - 1, iy + 1);
+      const ax = fx - Math.floor(fx), ay = fy - Math.floor(fy);
+      const w00 = (1 - ax) * (1 - ay), w10 = ax * (1 - ay), w01 = (1 - ax) * ay, w11 = ax * ay;
+      const p00 = (iy * sw + ix) * 4, p10 = (iy * sw + ix1) * 4, p01 = (iy1 * sw + ix) * 4, p11 = (iy1 * sw + ix1) * 4;
+      const a00 = src[p00 + 3], a10 = src[p10 + 3], a01 = src[p01 + 3], a11 = src[p11 + 3];
+      const a = a00 * w00 + a10 * w10 + a01 * w01 + a11 * w11;
+      if (a <= 0.5) continue;
+      const o = ((gy - y0) * w + gx - x0) * 4;
+      out[o] = (src[p00] * a00 * w00 + src[p10] * a10 * w10 + src[p01] * a01 * w01 + src[p11] * a11 * w11) / a;
+      out[o + 1] = (src[p00 + 1] * a00 * w00 + src[p10 + 1] * a10 * w10 + src[p01 + 1] * a01 * w01 + src[p11 + 1] * a11 * w11) / a;
+      out[o + 2] = (src[p00 + 2] * a00 * w00 + src[p10 + 2] * a10 * w10 + src[p01 + 2] * a01 * w01 + src[p11 + 2] * a11 * w11) / a;
+      out[o + 3] = a;
+    }
+  }
+  return out;
+}
+export async function compositeRegionRGBA(x0, y0, x1, y1, opts = {}){
+  const w = x1 - x0, h = y1 - y0;
+  if (!(w > 0 && h > 0)) return null;
+  const order = displayOrder();
+  const pos = opts.belowIdx != null ? order.indexOf(opts.belowIdx) : -1;
+  const above = opts.belowIdx != null && pos >= 0 ? new Set(order.slice(pos + 1)) : null;
+  const source = previewCompositeDoc(doc), layers = [];
+  for (let i = 0; i < doc.layers.length; i++) {
+    const layer = source.layers[i], raw = doc.layers[i];
+    if (!layer || !raw) { layers.push(layer); continue; }
+    const gt = layer.group && layer.group.type;
+    if (layer.hidden) { layers.push(layer); continue; }
+    if (above?.has(i) && gt !== 1 && gt !== 2 && gt !== 3) { layers.push({ ...layer, hidden: true }); continue; }
+    if (opts.ignoreAdj && layer.adjustment && layer.adjustment.kind !== 'fill' && !layer.fill) { layers.push({ ...layer, hidden: true }); continue; }
+    const tr = transformChanged(i);
+    if (tr) {
+
+      const c = textRenders[i] ? rasterizeTransformed(i, { clip: { x: x0, y: y0, width: w, height: h } }) : null;
+      if (c) {
+        layers.push({ ...layer, rgba: c.rgba, width: c.bounds.right - c.bounds.left, height: c.bounds.bottom - c.bounds.top,
+          bounds: { ...c.bounds }, lazyChannels: null, lazyImage: null, lazyRasterFile: null, lazyTileStore: null, lazyPixelOps: [] });
+        continue;
+      }
+      if (layer.rgba || raw.lazyChannels || raw.lazyImage || raw.lazyRasterFile || raw.lazyTileStore || raw.lazyPixelOps?.length || raw.lazyPreview || pixelPaint[i]?.sparse?.tiles?.size) {
+        const rgba = await readAffineLayerRegion(raw, i, x0, y0, w, h, tr);
+        if (rgba) {
+          layers.push({ ...layer, rgba, width: w, height: h, bounds: { left: x0, top: y0, right: x1, bottom: y1 },
+            lazyChannels: null, lazyImage: null, lazyRasterFile: null, lazyTileStore: null, lazyPixelOps: [] });
+          continue;
+        }
+      }
+    }
+    const cp = textRenders[i] && textCrops[i];
+    if (cp?.rgba) {
+      layers.push({ ...layer, rgba: cp.rgba, width: cp.bounds.right - cp.bounds.left, height: cp.bounds.bottom - cp.bounds.top,
+        bounds: { ...cp.bounds }, lazyChannels: null, lazyImage: null, lazyRasterFile: null, lazyTileStore: null, lazyPixelOps: [] });
+      continue;
+    }
+    if (!layer.rgba && (raw.lazyChannels || raw.lazyImage || raw.lazyRasterFile || raw.lazyTileStore || raw.lazyPixelOps?.length)) {
+      const rgba = await readLayerRegionRGBA(raw, i, x0, y0, w, h);
+      layers.push({ ...layer, rgba, width: w, height: h, bounds: { left: x0, top: y0, right: x1, bottom: y1 },
+        lazyChannels: null, lazyImage: null, lazyRasterFile: null, lazyTileStore: null, lazyPixelOps: [] });
+      continue;
+    }
+    layers.push(layer);
+  }
+  const cdoc = composeDocForOrder({ ...source, layers }, order);
+  const shifted = regionizeDoc(cdoc, docW, docH, x0, y0, w, h);
+  if (!shifted) return null;
+  const surf = compositeAll(shifted, w, h, new Map());
+  return surf?.data ? { data: surf.data, width: w, height: h, x: x0, y: y0 } : null;
+}
 export function previewCompositeDoc(source){
   if (!source || !Object.keys(layerOps).length) return source;
   let changed = false;
@@ -889,6 +1145,7 @@ export function previewCompositeDoc(source){
 
 function previewBlendOptions(layer, op){
   const out = {};
+  if (op.blendClipped !== undefined) out.blendClipped = op.blendClipped;
   if (op.blendIf) {
     const base = layer.blendIf || { gray: { src: [0, 0, 255, 255], dst: [0, 0, 255, 255] }, channels: [] };
     const bi = { gray: { ...base.gray }, channels: [0, 1, 2].map(k => ({ ...(base.channels[k] || { src: [0, 0, 255, 255], dst: [0, 0, 255, 255] }) })) };
@@ -1077,7 +1334,7 @@ export function paintLayers(ctx, indexes){
   const rootCtx = ctx;
   const closeGroupFrame = () => {
     const fr = groupStack.pop(), g = composedDocBase.layers[fr.hdr];
-    if (groupHasMask(g)) {
+    if (groupHasMask(g) && docW * docH <= 128e6) {
       const m = groupMaskAlpha(g, docW, docH), md = new Uint8ClampedArray(docW * docH * 4);
       for (let q = 0; q < m.length; q++) md[q * 4 + 3] = m[q];
       const mc = mkGroupCv(); mc.getContext('2d').putImageData(new ImageData(md, docW, docH), 0, 0);
@@ -1098,7 +1355,7 @@ export function paintLayers(ctx, indexes){
     if (gType === 3 && groupHeadOf.has(i)) {
       const hdr = groupHeadOf.get(i), g = composedDocBase.layers[hdr];
       const gVis = layerEdits[hdr] && layerEdits[hdr].visible != null ? layerEdits[hdr].visible : !g?.hidden;   
-      if (g && (groupHasMask(g) || (g.artboard && g.artboard.rect)) && gVis) {
+      if (g && docW * docH <= 128e6 && (groupHasMask(g) || (g.artboard && g.artboard.rect)) && gVis) {
         const cv = mkGroupCv();
         groupStack.push({ hdr, prev: ctx, prevClip: hasClipBase, cv });
         ctx = cv.getContext('2d'); hasClipBase = false;
@@ -1162,7 +1419,7 @@ export function nativeCMYKPreview(){
   const base=previewCompositeDoc(doc),order=displayOrder(),layers=base.layers.map((l,i)=>{
     const e=layerEdits[i]||{};return {...l,opacity:e.opacity??l.opacity,blendMode:e.blendKey??l.blendMode,hidden:e.visible==null?l.hidden:!e.visible};
   });
-  const key=JSON.stringify([docW,docH,order,layers.map(l=>[l.hidden,l.opacity,l.fillOpacity,l.blendMode,l.bounds,l.effects,l.adjustment,l.blendIf,l.channelsOff,l.knockout,l.clipping])]);
+  const key=JSON.stringify([docW,docH,order,layers.map(l=>[l.hidden,l.opacity,l.fillOpacity,l.blendMode,l.bounds,l.effects,l.adjustment,l.blendIf,l.channelsOff,l.knockout,l.clipping,l.blendClipped])]);
   if(nativeInkCache.doc===doc&&nativeInkCache.key===key)return nativeInkCache.value;
   const value=compositeCMYK(composeDocForOrder({...base,layers},order),docW,docH);
   nativeInkCache={doc,key,value};return value;
@@ -1718,7 +1975,7 @@ export async function replaceImg(file){
 }
 
 export function renderWarpNow(){
-  const useImg = replImg || img;
+  const useImg = replImg || (soInside[cur]?.changed && soInside[cur].composite) || img;
   if(!useImg || !li){ return; }
   try {
     const cached=scratchCtx('#warp');

@@ -18,9 +18,9 @@ import { $, EDIT, QUADM, applySoEdit, engineOK, ensureLazy, freshLayerInfo, rend
 import {
   LP, LX, applyDocFull, applyState, captureState, cur, doc, docH, docLabel, docName, docStack, docW,
   globalLightDirty, gridOpts, guides, guidesVisible, img, layerDeletes, layerDupes, layerEdits, layerRenames,
-  layerReorder, layerTextEdits, layerTransforms, layerTree, li, maskPaint, origBuffer, set_layerReorder,
-  set_soImgURL, soBaked, soEdits, soOrigRaster, soRepl, sos, textCrops, textOverlay, textRenders,
-  textStyleEdits, vpDirty,
+  layerReorder, layerTextEdits, layerTransforms, layerTree, li, maskPaint, origBuffer, pixelPaint,
+  set_layerReorder, set_soImgURL, soBaked, soEdits, soOrigRaster, soRepl, sos, textCrops, textOverlay,
+  textRenders, textStyleEdits, vpDirty,
 } from './02-doc-state.js';
 import {
   HXP, actRecord, backend, beginLayerEdit, docHistLock, docHistory, endLayerEdit, pushDocHistory,
@@ -181,7 +181,12 @@ export function nudgeLayer(dx, dy){
         continue;
       }
       const l = doc.layers[i];
-      if (!((l.rgba && l.width > 0 && l.height > 0) || textCrops[i])) continue;   
+
+
+      const movable = (l.rgba && l.width > 0 && l.height > 0)
+        || ((l.lazyRasterSource || l.lazyChannels || l.lazyImage) && l.width > 0 && l.height > 0)
+        || textCrops[i];
+      if (!movable) continue;
       const v = getTransformValues(i);
       setLayerPos(i, v.x + dx, v.y + dy);
     }
@@ -427,7 +432,7 @@ export async function openInside(k){
       let ab = src instanceof ArrayBuffer ? src.slice(0) : src.slice().buffer;
       const u0 = new Uint8Array(ab);
       if (!(u0[0] === 0x38 && u0[1] === 0x42)) ab = LX.imageToPsd(await LX.imageFromBytes(u0, insideName), insideName);
-      set_hxFresh(true); await initDocument(ab, insideName, { nested: true });
+      set_hxFresh(true); await initDocument(ab, insideName, { nested: true, freshDoc: true });
     }
     docStack[docStack.length - 1].base = origBuffer;       
   } catch (e) {
@@ -442,6 +447,7 @@ export async function openInside(k){
 
 
 export function hasAnyEdits(){
+  if (doc?.layers?.some(l => l && (l.lazyTileStore || l.lazyPixelOps?.length || l.lazyMaskEdits?.tiles?.size || l.lazyMaskEdits?.uniform != null))) return true;
   if (toolData && Object.values(toolData.dirty).some(Boolean)) return true;
   if (textSheetsForExport()) return true;             
   if (workPathDirty || savedPathsDirty) return true;  
@@ -480,6 +486,11 @@ export function duplicateLayerUI(idx, opts = {}){
   const name = LP && !LP.opts.addCopy ? baseName : uniqueCopyName(baseName + ' 拷贝');   
   const clone = { ...src, rgba: src.rgba ? src.rgba.slice() : null, bounds: { ...src.bounds } };
   
+
+  const srcPP = pixelPaint[idx];
+  if (!src.rgba && srcPP?.sparse?.tiles?.size) clone.dupSparseTiles = new Map(srcPP.sparse.tiles);
+  else if (src.dupSparseTiles) clone.dupSparseTiles = new Map(src.dupSparseTiles);
+
 
   const tc = textRenders[idx] && textCrops[idx];
   if (tc && tc.rgba) {
@@ -538,6 +549,18 @@ export async function materializeDupes(){
   if (!layerDupes.length) { dupPending = null; return false; }
   dupPending = null;
   if (textOverlay) closeInlineText(true);
+
+
+
+
+  const huge = docW * docH > 128e6;
+  if (huge && layerDupes.every(d => {
+    const src = doc.layers[d.src];
+    return src && (src.lazyRasterSource || src.lazyTileStore || src.lazyPixelOps?.length);
+  })) {
+    refreshAll(false);
+    return true;
+  }
   const selAfter = builtIndexOf(selLayer);
   const keepAfter = dupKeepSel ? dupKeepSel.map(builtIndexOf).filter(k => k >= 0) : null;   
   dupKeepSel = null;

@@ -5,9 +5,12 @@
 
 import './40-options-bar-wiring.js';   
 import { $, ADJM, ADJUST, ADJ_ALL, applyAdjustment, icon, kick, runLazy } from './01-boot.js';
-import { doc, layerDeletes, layerTree, li, selection, soBaked, textRenders } from './02-doc-state.js';
+import {
+  doc, docH, docW, layerDeletes, layerTree, li, pixelPaint, selection, soBaked, textRenders,
+} from './02-doc-state.js';
 import { PP } from './03-history.js';
 import { PAINT_SCALED_WHY, paintOrigin } from './11-paint-common.js';
+import { bakeLayerTiles, layerPixelJob, selectionCoversAll } from './14-edit-misc.js';
 import { buildAdjEyeRow } from './15-gradient-bucket-eyedropper.js';
 import { layerCanvasCache, selLayer, thumbCache } from './23-layers-panel.js';
 import { effLock, humanEditError } from './24-layer-ops-queue.js';
@@ -120,7 +123,7 @@ const ADJ_ORDER = ['brightnessContrast', 'levels', 'curves', 'exposure', 'vibran
 export const adjTypes = () => ADJ_ORDER.filter(t => ADJ_ALL[t] && ADJ_SPEC[t]);
 
 
-export function adjustGuard(idx = selLayer){
+export function adjustGuard(idx = selLayer, { sparse = false } = {}){
   if (!doc) return '先打开一个 PSD';
   if (li) return '正在变形编辑中：先退出变形（Esc）再用图像调整';
   if (!(idx >= 0)) return '先在图层面板里选中一个图层';
@@ -139,7 +142,22 @@ export function adjustGuard(idx = selLayer){
 
   const emptyNew = !dl.rgba && !dl.mask && !dl.vectorMask && dl.width === 0 && dl.height === 0 && dl.bounds
     && !dl.bounds.top && !dl.bounds.left && !dl.bounds.bottom && !dl.bounds.right;
-  if ((!(dl.width > 0 && dl.height > 0) || !dl.rgba) && !emptyNew) return '这是个空图层（包围盒 0×0），没有像素可以调整';
+  const sparsePixels = sparse && doc.depth === 8 && doc.mode === 3
+    && (dl.lazyChannels || dl.lazyCompressedChannels || dl.lazyRasterFile || dl.lazyImage || pixelPaint[idx]?.sparse);
+
+
+
+  if (!dl.rgba && !sparsePixels && (dl.lazyRasterFile || dl.lazyImage || dl.lazyChannels || dl.lazyCompressedChannels))
+    return '这一层是超大图（像素在源文件里），「图像 › 调整」面板要把它整层读进内存（约 '
+      + Math.round((dl.width || 0) * (dl.height || 0) * 4 / 1048576) + 'MB）。请改用「滤镜」菜单里的同名调整（按选区瓦片处理），或新建图层后再调';
+  if ((!(dl.width > 0 && dl.height > 0) || (!dl.rgba && !sparsePixels)) && !emptyNew) return '这是个空图层（包围盒 0×0），没有像素可以调整';
+
+
+  if (sparsePixels && !dl.rgba && dl.lazyCompressedChannels) {
+    const px = (dl.width || 0) * (dl.height || 0);
+    if (px > 64e6 && !selection && !pixelPaint[idx]?.sparse?.tiles?.size)
+      return `这一层有 ${(px / 1e6).toFixed(0)} 百万像素，只能按区域处理：先用选框框一块（或先在上面画点东西）`;
+  }
   if (textRenders[idx]) return '这一层的像素已经被文字重绘接管：撤销文字修改后再调整';
   for (const k in soBaked) if (soBaked[k] && soBaked[k].layerIdx === idx) return '这一层的像素来自智能对象烘焙：请在智能对象内部编辑';
   
@@ -255,7 +273,7 @@ export function adjDefaults(type){
   return m;
 }
 
-function adjParams(type, m){
+export function adjParams(type, m){
   const sp = ADJ_SPEC[type], out = { type };
   if (sp.levelsPanel) {                                        
     const chans = {};
@@ -369,6 +387,7 @@ export function adjCompute(full){
 export function adjRender(){                       
   const S = adjState; if (!S) return;
   let out = null, err = '';
+  if (S.sparse) { const okBtn = $('#adjOk'); if (okBtn) okBtn.disabled = false; return; }
   if (S.on) { try { out = adjCompute(false); } catch (e) { err = humanEditError(e && e.message || e); } }
   S.pp.rgba.set(out || S.base);
   delete layerCanvasCache[S.idx]; delete thumbCache[S.idx];
@@ -387,9 +406,22 @@ function adjSchedule(){
 const ADJ_IMMEDIATE = new Set(['invert', 'desaturate']);
 export const openAdjustLazy = type => runLazy(ADJUST, '图像调整', async () => {
   const lazy = doc?.layers?.[selLayer];
-  if (ADJ_IMMEDIATE.has(type) && lazy && (lazy.lazyChannels || lazy.lazyCompressedChannels)) {
-    const { layerPixelJob } = await import('./14-edit-misc.js');
-    const ok = await layerPixelJob(`图像调整 · ${adjLabel(type)}`, ({ base, w, h, cov }) => {
+  if (ADJ_IMMEDIATE.has(type) && lazy && (lazy.lazyTileStore || lazy.lazyChannels || lazy.lazyCompressedChannels || lazy.lazyImage || lazy.lazyRasterFile || pixelPaint[selLayer]?.sparse)) {
+    const label = `图像调整 · ${adjLabel(type)}`;
+    const params = adjParams(type, adjDefaults(type));
+    const layerLeft = lazy.bounds?.left | 0, layerTop = lazy.bounds?.top | 0;
+    const fullCover = !selection || selectionCoversAll(selection, layerLeft, layerTop, lazy.width || docW, lazy.height || docH);
+    if (docW * docH > 64e6 && fullCover) {
+      try {
+        const applyPoint = (base, w, h, x = 0, y = 0) => applyAdjustment(base, w, h, params, { layerBounds: { left: layerLeft + x, top: layerTop + y } });
+        const ok = await bakeLayerTiles(label, ({ base, w, h, x, y }) => applyPoint(base, w, h, x, y), { index: selLayer, apply: applyPoint });
+        return ok;
+      } catch (e) {
+        $('#err').textContent = label + '失败：' + humanEditError(e && e.message || e);
+        return false;
+      }
+    }
+    const ok = await layerPixelJob(label, ({ base, w, h, cov }) => {
       const out = new Uint8ClampedArray(base);
       for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
         const o = (y * w + x) * 4, a = cov ? cov(x, y) : 1;
@@ -401,21 +433,32 @@ export const openAdjustLazy = type => runLazy(ADJUST, '图像调整', async () =
       }
       return out;
     }, { tile: true });
-    if (ok !== false) return ok;
+    return ok;
   }
   const st = openAdjustDialog(type);
-  if (st && ADJ_IMMEDIATE.has(type)) $('#adjOk').onclick();
+  if (st && ADJ_IMMEDIATE.has(type)) await $('#adjOk').onclick();
   return st;
 });
 export function openAdjustDialog(type){
   const idx = selLayer;
-  const why = adjustGuard(idx);
+  const why = adjustGuard(idx, { sparse: true });
   if (why) { $('#err').textContent = '图像调整用不了：' + why; return null; }
   
   if (!ADJM) { kick(ADJUST); $('#err').textContent = '图像调整用不了：' + ADJUST.statusText(); return null; }
   if (!ADJ_SPEC[type] || !ADJ_ALL[type]) { $('#err').textContent = `没有「${type}」这个调整`; return null; }
-  const pp = ensurePixelPaint(idx);
+  const pp = ensurePixelPaint(idx, { sparse: true });
   if (!pp) { $('#err').textContent = '图像调整用不了：这一层拿不到像素'; return null; }
+  if (pp.sparse) {
+    adjState = { idx, type, pp, base: null, sparse: true, proxy: null, proxySel: null,
+                 model: adjDefaults(type), on: true, badParams: false };
+    $('#adjPreview').checked = true;
+    const sel = $('#adjKind'); sel.innerHTML = '';
+    for (const t of adjTypes()) sel.append(mkEl('option', { value: t, textContent: adjLabel(t), title: ADJ_ALL[t].accepts }));
+    sel.value = type; renderAdjustDialog();
+    const dlg = $('#adjDlg');
+    if (!dlg.open) { if (dlg.showModal) { try { dlg.showModal(); } catch { dlg.setAttribute('open', ''); } } else dlg.setAttribute('open', ''); }
+    return adjState;
+  }
   closeAdjustDialog(true);                  
   const base = Uint8ClampedArray.from(pp.rgba);
   const proxy = adjBuildProxy(pp);
@@ -621,8 +664,7 @@ export function renderAdjustDialog(){
     + '直方图统计的是选中图层的像素（忽略完全透明的像素），有选区也仍是整个图层。');
   if (sp.tintLock) note('warn', '此破坏性图像调整对话框不提供黑白「色调」：PS 的灰度→Lab 色调映射曲线没有公开资料，不能把近似结果伪装成精确实现。导入的 PSD 黑白调整层含色调时，画布会以保明暗 HSL 映射的明确近似合成；若要在此菜单中着色，请在黑白之后再叠一层「色相/饱和度」并勾上「着色」。');
   if (selection) note('plain', '当前有选区：调整**只作用于选区内**（out = 原值×(1−覆盖率) + 调整后×覆盖率，羽化边缘按覆盖率过渡，覆盖率 0 的像素逐字节不变）。');
-  if (adjState.proxy) note('plain', `图层 ${adjState.pp.w}×${adjState.pp.h} 较大：实时预览在 ${adjState.proxy.pw}×${adjState.proxy.ph} 的降采样代理上算（会有锯齿），`
-    + '点「确定」时在全分辨率 + 真实选区上重新精确计算一次。');
+  if (adjState.sparse) note('plain', '将只处理选区包围盒；没有选区时处理已经编辑过的区域。应用结果会直接写回图层像素。');
   note('plain', '这是**破坏性**调整：直接改图层像素（PS 的「图像 › 调整」也是如此）。要非破坏性请用图层面板底部的「+ 新建调整图层」。'
     + '本模块按公开算法/公开逆向结论实现，未与 Photoshop 逐像素比对。');
   const rst = $('#adjReset');

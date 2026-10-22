@@ -610,9 +610,14 @@
     <main class="viewport" id="viewport">
       <div id="err"></div>
       <div id="notice" aria-live="polite"></div>
-      <div id="docLoadingOverlay" hidden aria-live="polite" aria-busy="true">
-        <span class="doc-loading-spinner" aria-hidden="true"></span>
-        <span id="docLoadingText">正在打开文档…</span>
+      <div id="docLoadingOverlay" hidden aria-live="polite" aria-busy="true" role="status">
+        <div class="doc-loading-card">
+          <span class="doc-loading-spinner" aria-hidden="true"></span>
+          <strong id="docLoadingPercent" class="doc-loading-percent" hidden>0%</strong>
+          <span id="docLoadingText">正在打开文档…</span>
+          <div id="docLoadingBar" class="doc-loading-bar" hidden><span id="docLoadingBarFill"></span></div>
+          <button id="docLoadingCancel" type="button" hidden>取消导出</button>
+        </div>
       </div>
       <div class="home" id="emptyHint">
         <section class="home-main">

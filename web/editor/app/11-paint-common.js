@@ -28,7 +28,9 @@ import {
 import { bgRGB, fgRGB } from './31-selection-brush.js';
 import { affInv } from './32-cursors-select-options.js';
 import { docArtboards } from './35-artboard.js';
-import { commitPixelPaint, cutRect, ensurePixelPaint, paintGuard, sameBytes } from './38-brush-engine.js';
+import {
+  commitPixelPaint, cutRect, ensurePixelPaint, paintGuard, sameBytes, sparsePixelHistory,
+} from './38-brush-engine.js';
 import { affMul } from './47-canvas-context-menu.js';
 
 
@@ -298,7 +300,8 @@ export function paintPixelsWith(at, opts = {}){
   }
   const after = cutRect(pp.rgba, pp.w, rect, 4);
   if (sameBytes(before, after)) return false;
-  brushHistory.undo.push({ kind: 'pixels', idx, rect, before, after, px: 4 });
+  const base = Uint8ClampedArray.from(pp.rgba); for (let y = 0; y < rect.h; y++) base.set(before.subarray(y * rect.w * 4, (y + 1) * rect.w * 4), ((rect.y + y) * pp.w + rect.x) * 4);
+  brushHistory.undo.push(sparsePixelHistory(idx, base, pp.rgba, pp.w, pp.h));
   if (brushHistory.undo.length > histCap('brush')) brushHistory.undo.shift();
   brushHistory.redo.length = 0;
   histPush(opts.label || '填充', 'brush');

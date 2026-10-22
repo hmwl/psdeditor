@@ -13,16 +13,20 @@
 import { decodeSmartObject, toFoxpsdLayerInfo, buildWarpRewrites } from './smart-object.js';
 import { buildQuiltRewrites, needsQuiltRewrite } from './warp-write.js';
 
-const MAX_BLOCK_BYTES = 8 * 1024 * 1024;   
+const MAX_BLOCK_BYTES = 16 * 1024 * 1024;
+const MAX_FRAGMENT_BYTES = 24 * 1024 * 1024;
 
 export function validateFragment(f) {
   if (!f || typeof f !== 'object') throw new Error('fragment 缺失');
   if (!Array.isArray(f.blocks) || !f.blocks.length) throw new Error('fragment.blocks 为空');
   if (f.blocks.length > 8) throw new Error('fragment.blocks 过多');
+  let totalBytes = 0;
   for (const b of f.blocks) {
     if (b.key !== 'SoLd' && b.key !== 'PlLd') throw new Error('放置块 key 只能是 SoLd / PlLd');
     if (!(b.data instanceof Uint8Array)) throw new Error('放置块 data 须为字节');
-    if (b.data.length > MAX_BLOCK_BYTES) throw new Error('放置块过大');
+    if (b.data.length > MAX_BLOCK_BYTES) throw new Error('放置块过大（上限 16 MiB）');
+    totalBytes += b.data.length;
+    if (totalBytes > MAX_FRAGMENT_BYTES) throw new Error('放置片段过大（上限 24 MiB）');
   }
   const bd = f.bounds;
   if (!bd || ![bd.top, bd.left, bd.bottom, bd.right].every(Number.isFinite)) throw new Error('bounds 无效');

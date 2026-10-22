@@ -4,6 +4,7 @@
 
 
 import './14-edit-misc.js';   
+import { gradientSpan } from '../../../core/paint-fill.js';
 import { patternToRGBA } from '../../../core/app.js';
 import { PAINT_MODES } from '../../../core/brush-engine.js';
 import {
@@ -132,21 +133,22 @@ const gradModelName = () => gradOpts.model ? '自定义' : ((GRAD_PRESET_INDEX.g
 
 export function gradGeomFromLine(typeKey, x0, y0, x1, y1){
   const dx = x1 - x0, dy = y1 - y0, L = Math.max(1e-6, Math.hypot(dx, dy));
-  const cs = dx / L, sn = dy / L, ext = Math.abs(cs) * docW + Math.abs(sn) * docH;
-  const lin = typeKey === 'Lnr ';
+  const cs = dx / L, sn = dy / L, ext = gradientSpan(typeKey, docW, docH, cs, sn);
+  const lin = typeKey === 'Lnr ', inset = lin ? 0 : 1;
   const cx = lin ? (x0 + x1) / 2 : x0, cy = lin ? (y0 + y1) / 2 : y0;
   const r1 = v => Math.round(v * 100) / 100;
   return {
     Angl: r1(Math.atan2(-dy, dx) * 180 / Math.PI),
     'Scl ': r1(Math.max(1, Math.min(1000, (lin ? L : 2 * L) / ext * 100))),
-    'Ofst.Hrzn': r1(Math.max(-100, Math.min(100, (cx - (docW - 1) / 2) / docW * 100))),
-    'Ofst.Vrtc': r1(Math.max(-100, Math.min(100, (cy - (docH - 1) / 2) / docH * 100))),
+    'Ofst.Hrzn': r1(Math.max(-100, Math.min(100, (cx - (docW - inset) / 2) / docW * 100))),
+    'Ofst.Vrtc': r1(Math.max(-100, Math.min(100, (cy - (docH - inset) / 2) / docH * 100))),
   };
 }
 export function gradLineFromGeom(typeKey, ang, scl, ox, oy){
   const a = ang * Math.PI / 180, cs = Math.cos(a), sn = -Math.sin(a);
-  const span = Math.max(1, (Math.abs(cs) * docW + Math.abs(sn) * docH) * scl / 100);
-  const cx = (docW - 1) / 2 + ox / 100 * docW, cy = (docH - 1) / 2 + oy / 100 * docH;
+  const span = Math.max(1, gradientSpan(typeKey, docW, docH, cs, sn) * scl / 100);
+  const inset = typeKey === 'Lnr ' ? 0 : 1;
+  const cx = (docW - inset) / 2 + ox / 100 * docW, cy = (docH - inset) / 2 + oy / 100 * docH;
   if (typeKey === 'Lnr ') return { x0: cx - cs * span / 2, y0: cy - sn * span / 2, x1: cx + cs * span / 2, y1: cy + sn * span / 2 };
   return { x0: cx, y0: cy, x1: cx + cs * span / 2, y1: cy + sn * span / 2 };
 }

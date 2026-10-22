@@ -27,6 +27,7 @@
 
 import { Reader, readDescriptor } from './psd-parse.js';
 import { serializeDescriptor } from './psd-descriptor.js';
+import { gradientMidpointsFromPSD, gradientMidpointsToPSD } from './paint-fill.js';
 
 const toU8 = b => b instanceof Uint8Array ? b : b instanceof ArrayBuffer ? new Uint8Array(b) : ArrayBuffer.isView(b) ? new Uint8Array(b.buffer, b.byteOffset, b.byteLength) : new Uint8Array(b || 0);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -97,7 +98,7 @@ export function gradientFromDesc(g) {
   }));
   if (!clrs.length) clrs.push({ loc: 0, r: 0, g: 0, b: 0, mid: 50 }, { loc: 4096, r: 255, g: 255, b: 255, mid: 50 });
   if (!trns.length) trns.push({ loc: 0, opct: 100, mid: 50 }, { loc: 4096, opct: 100, mid: 50 });
-  const model = { clrs, trns };
+  const model = { clrs: gradientMidpointsFromPSD(clrs), trns: gradientMidpointsFromPSD(trns) };
   const intr = g.Intr != null ? num(g.Intr) : 4096;
   if (Number.isFinite(intr) && Math.round(intr / 40.96) !== 100) model.smooth = Math.round(clamp(intr / 40.96, 0, 100));
   return { name, model };
@@ -125,7 +126,7 @@ export function gradientToDesc({ name, model: m }) {
   g.GrdF = { __enumType: 'GrdF', value: 'CstS' };
   g.Intr = (m && m.smooth != null ? clamp(+m.smooth, 0, 100) : 100) * 40.96;
   g.__doub = { Intr: true };
-  g.Clrs = ((m && m.clrs) || []).map(s => ({
+  g.Clrs = gradientMidpointsToPSD((m && m.clrs) || []).map(s => ({
     __name: '', __classID: 'Clrt',
     'Clr ': rgbToColorDesc(s.r, s.g, s.b),
     Type: { __enumType: 'Clry', value: s.type === 'fg' ? 'FrgC' : s.type === 'bg' ? 'BckC' : 'UsrS' },
@@ -133,7 +134,7 @@ export function gradientToDesc({ name, model: m }) {
     Mdpn: Math.round(clamp(s.mid == null ? 50 : +s.mid, 0, 100)),
     __long: { Lctn: true, Mdpn: true },
   }));
-  g.Trns = ((m && m.trns) || []).map(s => ({
+  g.Trns = gradientMidpointsToPSD((m && m.trns) || []).map(s => ({
     __name: '', __classID: 'TrnS',
     Opct: { __unit: '#Prc', value: clamp(+s.opct, 0, 100) },
     Lctn: Math.round(clamp(+s.loc || 0, 0, 4096)),

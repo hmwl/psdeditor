@@ -17,9 +17,9 @@ import { panels } from './panels.js';
 import { uiIcon } from './icons.js';
 
 const LS_KEY = 'psd_editor.layersPanel.opts';
-export const THUMB_SIZES = { none: 20, small: 22, medium: 38, large: 64 };   
-const DEFAULTS = { thumbSize: 'medium', thumbContent: 'bounds', defaultMask: true, showMaskBadges: true, expandNewFx: true, addCopy: true, anim: 'auto' };
-export const LABEL_COLORS = { 0: '', 1: '#c9463f', 2: '#d08834', 3: '#c9bb3f', 4: '#4f9f4f', 5: '#3f6fc9', 6: '#8a4fc9', 7: '#7a7a7e' };
+export const THUMB_SIZES = { none: 20, small: 22, medium: 32, large: 64 };
+const DEFAULTS = { thumbSize: 'medium', thumbContent: 'document', defaultMask: true, showMaskBadges: true, expandNewFx: true, addCopy: true, anim: 'auto' };
+export const LABEL_COLORS = { 0: '', 1: '#933839', 2: '#aa7136', 3: '#927c26', 4: '#3f6335', 5: '#566595', 6: '#5c4682', 7: '#5c5c5c' };
 export const LABEL_NAMES = ['无颜色', '红色', '橙色', '黄色', '绿色', '蓝色', '紫色', '灰色'];
 const FILTER_KINDS = [['kind', '类型'], ['name', '名称'], ['effect', '效果'], ['mode', '模式'], ['attr', '属性'], ['color', '颜色'], ['smart', '智能对象'], ['selected', '选定'], ['artboard', '画板']];
 const KIND_BTNS = [['pixel', 'layer-bitmap', '像素图层滤镜'], ['adjust', 'layer-adjust', '调整图层滤镜'], ['text', 'layer-text', '文字图层滤镜'], ['shape', 'layer-vector', '形状图层滤镜'], ['smart', 'layer-smart', '智能对象滤镜']];
@@ -36,7 +36,7 @@ export function installLayersPanel(C) {
   const opts = { ...DEFAULTS };
   try { const v = JSON.parse(localStorage.getItem(LS_KEY) || 'null'); if (v && typeof v === 'object') for (const k of Object.keys(DEFAULTS)) if (typeof v[k] === typeof DEFAULTS[k]) opts[k] = v[k]; } catch {}
   if (!THUMB_SIZES[opts.thumbSize]) opts.thumbSize = 'medium';
-  if (!['bounds', 'document'].includes(opts.thumbContent)) opts.thumbContent = 'bounds';
+  if (!['bounds', 'document'].includes(opts.thumbContent)) opts.thumbContent = 'document';
   const saveOpts = () => { try { localStorage.setItem(LS_KEY, JSON.stringify(opts)); } catch {} };
   function applyThumbOpts(rerender = true) {
     const list = document.getElementById('layerList');
@@ -45,7 +45,7 @@ export function installLayersPanel(C) {
       list.classList.toggle('lp-anim-show', opts.anim === 'show');
     }
     document.documentElement.dataset.lpAnim = opts.anim || 'auto';   
-    C.setThumbBox(THUMB_SIZES[opts.thumbSize] || 38);
+    C.setThumbBox(THUMB_SIZES[opts.thumbSize] || 32);
     if (rerender) C.ui.renderLayerPanel();
   }
   function setOpt(patch) { Object.assign(opts, patch); saveOpts(); applyThumbOpts(); }
@@ -303,9 +303,10 @@ export function installLayersPanel(C) {
   }
   function buildFilterBar() {
     const bar = document.querySelector('#panelLayers .layer-filter'); if (!bar) return;
-    bar.innerHTML = ''; bar.classList.add('lpf');
-    const kind = mk('select', { className: 'lpf-kind', title: '选取滤镜类型' });
+    bar.innerHTML = ''; bar.classList.add('lpf'); bar.dataset.filterKind = filt.kind;
+    const kind = mk('select', { className: 'lpf-kind', title: '选取图层筛选类型' });
     for (const [k, lab] of FILTER_KINDS) kind.append(mk('option', { value: k, textContent: lab }));
+    kind.setAttribute('aria-label', '图层筛选类型');
     kind.value = filt.kind;
     kind.onchange = () => { filt.kind = kind.value; buildFilterBar(); C.ui.renderLayerPanel(); };
     const ctl = mk('span', { className: 'lpf-ctl' });
@@ -321,8 +322,9 @@ export function installLayersPanel(C) {
       case 'kind':
         for (const [k, ic, tip] of KIND_BTNS) {
           const b = mk('button', { type: 'button', className: 'lpf-btn' + (filt.kinds.has(k) ? ' on' : ''), title: tip });
-          b.dataset.kind = k; b.append(uiIcon(ic, 14));
-          b.onclick = () => { if (filt.kinds.has(k)) filt.kinds.delete(k); else filt.kinds.add(k); b.classList.toggle('on', filt.kinds.has(k)); rerender(); };
+          b.dataset.kind = k; b.setAttribute('aria-pressed', String(filt.kinds.has(k)));
+          b.append(uiIcon(ic.replace('layer-', 'layer-filter-'), 14));
+          b.onclick = () => { if (filt.kinds.has(k)) filt.kinds.delete(k); else filt.kinds.add(k); b.classList.toggle('on', filt.kinds.has(k)); b.setAttribute('aria-pressed', String(filt.kinds.has(k))); rerender(); };
           ctl.append(b);
         }
         break;
@@ -347,8 +349,11 @@ export function installLayersPanel(C) {
       case 'artboard': ctl.append(mk('span', { className: 'lpf-note', textContent: '只列出所选画板里的图层' })); break;
     }
     const tog = mk('button', { type: 'button', className: 'lpf-toggle' + (filt.on ? ' on' : ''), title: filt.on ? '关闭图层过滤' : '打开图层过滤' });
+    tog.setAttribute('role', 'switch'); tog.setAttribute('aria-checked', String(filt.on)); tog.setAttribute('aria-label', '图层过滤');
     tog.onclick = () => { filt.on = !filt.on; buildFilterBar(); C.ui.renderLayerPanel(); };
-    bar.append(mk('span', { className: 'lpf-search' }, uiIcon('search', 12)), kind, ctl, tog);
+    const kindField = mk('span', { className: 'lpf-kind-field' }, kind,
+      mk('span', { className: 'lpf-search' }, uiIcon('layer-filter-search', 12)));
+    bar.append(kindField, ctl, tog);
     bar.classList.toggle('off', !filt.on);
     bar.classList.toggle('busy', filterBusy());
   }
@@ -415,7 +420,7 @@ export function installLayersPanel(C) {
       { sep: true },
       size('none'), size('small'), size('medium'), size('large'),
       { sep: true },
-      F('将缩览图剪切到图层边界', () => setOpt({ thumbContent: 'bounds' }), true, { checked: opts.thumbContent === 'bounds' }),
+      F('将缩览图剪切到图层边界', () => setOpt({ thumbContent: 'document' }), true, { checked: opts.thumbContent === 'bounds' }),
       F('将缩览图剪切到文档边界', () => setOpt({ thumbContent: 'document' }), true, { checked: opts.thumbContent === 'document' }),
     ];
   }
@@ -585,6 +590,9 @@ export function installLayersPanel(C) {
     const pairs = [['#hdrOpacity', 'opacity'], ['#hdrFill', 'fill']];
     for (const [sel, kind] of pairs) {
       const inp = document.querySelector(sel); if (!inp) continue;
+
+      inp.dataset.scrub = '1';
+      inp.setAttribute('aria-label', kind === 'opacity' ? '不透明度' : '填充不透明度');
       let lab = inp.previousElementSibling;
       if (lab && lab.classList.contains('lc-label')) {
         lab.classList.add('lp-scrub');
@@ -604,26 +612,44 @@ export function installLayersPanel(C) {
         });
       }
       const pct = inp.nextElementSibling;
-      if (pct && pct.classList.contains('lc-pct') && !pct.nextElementSibling?.classList.contains('lp-drop')) {
+      if (pct && pct.classList.contains('lc-pct') && !inp.parentElement.classList.contains('lc-percent-field')) {
+        const field = mk('span', { className: 'lc-percent-field' });
+        inp.before(field); field.append(inp, pct);
         const b = mk('button', { type: 'button', className: 'lp-drop', title: '弹出滑块' });
-        b.append(uiIcon('popup-arrow-down', 6));
-        pct.after(b);
-        b.onclick = e => { e.stopPropagation(); if (!inp.disabled) sliderPop(inp, kind, b); };
+        b.setAttribute('aria-expanded', 'false');
+        b.append(uiIcon('chevron-down', 8));
+        field.append(b);
+        b.onclick = e => { e.stopPropagation(); if (b.getAttribute('aria-expanded') === 'true') closeSlider?.(); else if (!inp.disabled) sliderPop(inp, kind, b, e.detail === 0); };
       }
     }
   }
-  function sliderPop(inp, kind, anchor) {
-    document.querySelectorAll('.lp-slider-pop').forEach(p => p.remove());
+  let closeSlider = null;
+  function sliderPop(inp, kind, anchor, keyboard) {
+    if (closeSlider) closeSlider();
     const r = anchor.getBoundingClientRect();
     const pop = mk('div', { className: 'lp-slider-pop' });
     const rng = mk('input', { type: 'range', min: 0, max: 100, value: +inp.value || 0 });
+    const thumb = uiIcon('layer-slider-thumb', 12);
+    thumb.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    thumb.setAttribute('viewBox', '-1 -2 24 22');
+    const path = thumb.querySelector('path');
+    path.setAttribute('opacity', '1'); path.setAttribute('fill', '#e6e6e6');
+    path.setAttribute('stroke', '#202020'); path.setAttribute('stroke-width', '2'); path.setAttribute('stroke-linejoin', 'round');
+    rng.style.setProperty('--lp-slider-thumb', `url("data:image/svg+xml,${encodeURIComponent(thumb.outerHTML)}")`);
+    rng.setAttribute('aria-label', kind === 'opacity' ? '不透明度滑块' : '填充滑块');
+    anchor.setAttribute('aria-expanded', 'true');
     pop.append(rng); document.body.append(pop);
-    pop.style.left = Math.max(4, Math.min(innerWidth - 150, r.right - 140)) + 'px'; pop.style.top = (r.bottom + 4) + 'px';
+    pop.style.left = Math.max(4, Math.min(innerWidth - 123, r.right - 112)) + 'px'; pop.style.top = (r.bottom + 3) + 'px';
     let moved = false;
     rng.oninput = () => { if (!moved) { moved = true; C.pushDocHistory(kind === 'opacity' ? '不透明度' : '填充不透明度'); } inp.value = rng.value; C.liveValue(kind, +rng.value); };
-    const close = ev => { if (ev && pop.contains(ev.target)) return; removeEventListener('pointerdown', close, true); pop.remove(); if (moved) C.endLiveValue(kind); };
-    setTimeout(() => addEventListener('pointerdown', close, true), 0);
-    rng.addEventListener('change', () => {  });
+    const finish = () => { if (moved) { moved = false; C.endLiveValue(kind); } };
+    const close = () => { removeEventListener('pointerdown', outside, true); removeEventListener('keydown', key, true); pop.remove(); anchor.setAttribute('aria-expanded', 'false'); closeSlider = null; finish(); };
+    const outside = ev => { if (!pop.contains(ev.target) && !anchor.contains(ev.target)) close(); };
+    const key = ev => { if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); close(); anchor.focus(); } };
+    closeSlider = close;
+    addEventListener('pointerdown', outside, true); addEventListener('keydown', key, true);
+    rng.addEventListener('change', finish);
+    if (keyboard) rng.focus();
   }
 
   
@@ -647,6 +673,10 @@ export function installLayersPanel(C) {
   wireScrub();
   const list = document.getElementById('layerList');
   if (list) {
+    list.addEventListener('click', e => {
+      if (e.button !== 0 || !hasLayer() || e.target.closest?.('.lrow, button, input, select, a')) return;
+      actions.run('select.deselectLayers');
+    });
     list.addEventListener('click', onListClickCapture, true);
     list.addEventListener('drop', onListDropCapture, true);
     list.addEventListener('dragover', onListDragOverCapture, true);

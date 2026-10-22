@@ -16,7 +16,7 @@ import { shell } from '../shell.js';
 import { $, EDIT, applyEdits, ensureLazy, getVectorMaskPath } from './01-boot.js';
 import {
   LP, doc, docH, docName, docStack, docW, layerDeletes, layerRenames, layerTransforms, layerTree, li,
-  origBuffer, soEdits, soRepl, sos,
+  origBuffer, pixelPaint, soEdits, soRepl, sos,
 } from './02-doc-state.js';
 import { actRecord, structuralApply, structuralBegin, structuralDone } from './03-history.js';
 import { rasterKindOf, rasterizeLayerUI } from './05-layer-lock-guides.js';
@@ -24,8 +24,8 @@ import { commit, tfFrame } from './06-view-zoom-move.js';
 import { docResolution } from './08-doc-size.js';
 import { gradPresetModel } from './11-paint-common.js';
 import { commitFreeTransform, restoreFreeTransformHistory, tfState } from './19-free-transform.js';
-import { hasAnyEdits, refreshAll } from './20-snap-smart-object.js';
-import { decodeImageFile, initDocument, isImageFileName, selectSO } from './21-load-document.js';
+import { hasAnyEdits, refreshAll, soInside } from './20-snap-smart-object.js';
+import { decodeImageFile, initDocument, isImageFileName, restoreLazySource, selectSO } from './21-load-document.js';
 import { exitSO, matchLayer } from './22-deform-tools.js';
 import { layerOrderView, selLayer, selLayers, set_selLayer } from './23-layers-panel.js';
 import { humanEditError } from './24-layer-ops-queue.js';
@@ -35,6 +35,7 @@ import {
 import { transformBase, transformChanged } from './28-layer-props-transform.js';
 import { renderWarpNow, viewScratch } from './30-render.js';
 import { bgRGB, fgRGB, hexOf } from './31-selection-brush.js';
+import { restoreSparsePaint } from './38-brush-engine.js';
 import { buildPsdBuffer, ensureStructuralBase, setWaitCursor } from './48-info-export.js';
 import { composeSegmentRGBA, cropRGBABox, tightAlphaBox, topLevelBlockList } from './50-clipboard-merge-mask.js';
 
@@ -276,8 +277,23 @@ export async function createLayerUI(opts = {}){
   setWaitCursor(true, '正在处理当前视图…');
   try {
     const prev = structuralBegin();
+    const lazyRaster = doc?.layers?.find(l => l?.lazyRasterSource);
+    const lazyIdx = lazyRaster ? doc.layers.indexOf(lazyRaster) : -1;
+
+
+    const prevPaints = [];
+    for (const [k, pp] of Object.entries(pixelPaint)) {
+      if (!pp?.sparse?.tiles?.size) continue;
+      const l = doc.layers[+k];
+      if (!l || l.lazyRasterSource) continue;
+      prevPaints.push({ name: l.name, tiles: new Map(pp.sparse.tiles), w: pp.w, h: pp.h, left: pp.left, top: pp.top });
+    }
     let base = await ensureStructuralBase(origBuffer);
-    if (dirty) { const built = await buildPsdBuffer({ fast: true }); base = built.buf; }
+
+
+
+
+    if (dirty && !lazyRaster) { const built = await buildPsdBuffer({ fast: true }); base = built.buf; }
     base = await ensureStructuralBase(base);
     let baseLayerCount = doc.layers.length;
     try { baseLayerCount = parsePsdFull(base).layers.length; } catch {}
@@ -285,6 +301,18 @@ export async function createLayerUI(opts = {}){
     const name = opts.name || nextLayerName('图层');
     const r = applyEdits(base, [{ op: 'createLayer', at, name }]);
     await initDocument(r.buffer, docName, { nested: docStack.length > 0 });
+
+
+    if (lazyRaster) { try { restoreLazySource(lazyRaster, lazyIdx); } catch (e) { console.warn('[新建图层] 惰性原图恢复失败', e); } }
+
+    if (prevPaints.length) {
+      try {
+        for (const e of prevPaints) {
+          const idx = doc.layers.findIndex(l => l && l.name === e.name);
+          if (idx >= 0) restoreSparsePaint(idx, e.tiles, e);
+        }
+      } catch (err) { console.warn('[新建图层] 笔迹恢复失败', err); }
+    }
     set_selLayer(Math.min(at, doc.layers.length - 1));
     
     if (opts.opacity != null) setLayerOpacity(selLayer, Math.round(Math.max(0, Math.min(100, opts.opacity)) * 2.55));
@@ -403,7 +431,7 @@ async function enterWarpLayer(idx, options){
   }
   await selectSO(k);
   if (!li || li.deform) return rollback($('#err').textContent || `无法读取用于变形的贝塞尔网格（${li ? li.deform?.kind : '未载入'}）`);
-  const preview=prepareWarpCachedPreview(doc.layers[idx],li,viewScratch.get('#warp'),{matrix:map,recover:!options.resumeSession&&!soEdits[k]&&!soRepl[k]});
+  const preview=prepareWarpCachedPreview(doc.layers[idx],li,viewScratch.get('#warp'),{matrix:map,recover:!options.resumeSession&&!soEdits[k]&&!soRepl[k]&&!soInside[k]?.changed});
   set_warpSession(options.resumeSession || { transaction, k, layerIndex:idx, changedBeforeWarp: !!options.changedBeforeWarp,
     baseline: JSON.stringify({points:li.points,xn:li.xn,yn:li.yn,sliceX:li.sliceX,sliceY:li.sliceY}) });
   if (map) {

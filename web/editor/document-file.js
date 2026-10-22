@@ -47,18 +47,29 @@ export function saveDocumentFile(mode = 'save') {
     }) : Promise.resolve(handle)) : showSaveFilePicker({ suggestedName: ctx.name().replace(/\.[^.]+$/, '') + (ctx.original()&&new DataView(ctx.original()).getUint16(4)===2?'.psb':'.psd'), types });
   } catch (e) { ctx.error('保存失败：' + e.message); return Promise.resolve(false); }
   pending = (async () => {
-    let writable;
+    let writable, progress;
     try {
       handle = await choice;
       if (ctx.uid() !== uid) throw new Error('活动文档已改变，请重新保存');
       if (!await ctx.settle()) return false;
       if (ctx.uid() !== uid) throw new Error('活动文档已改变，请重新保存');
-      ctx.status('正在保存：'+handle.name);
+      progress = ctx.progress?.('save', 0, '正在生成保存文件…', true);
       let signature=ctx.signature();
-      const { buf } = await ctx.build({ refreshWarpCaches: true,onSnapshot:()=>{signature=ctx.signature();} });
+      const { buf } = await ctx.build({ refreshWarpCaches: true,onSnapshot:()=>{signature=ctx.signature();}, abortSignal:progress?.signal, onProgress:(done,total)=>progress?.set?.(Math.min(90,Math.floor(done*90/Math.max(1,total))),'正在生成保存文件…') });
+      if (progress?.signal?.aborted) throw progress.signal.reason;
+
+
+      const length = buf?.byteLength ?? buf?.length ?? 0;
+      const head = new Uint8Array(buf instanceof ArrayBuffer ? buf : buf.buffer, buf?.byteOffset || 0, Math.min(26, length));
+      if (length < 26 || String.fromCharCode(...head.subarray(0, 4)) !== '8BPS' || ![1, 2].includes(new DataView(head.buffer, head.byteOffset, head.byteLength).getUint16(4)))
+        throw new Error('生成的保存文件不是有效的 PSD/PSB');
+      progress?.set(92, '正在写入原文件…');
       writable = await handle.createWritable();
+      if (progress?.signal?.aborted) throw progress.signal.reason;
       await writable.write(buf);
+      progress?.set(99, '正在完成写入…');
       await writable.close(); writable = null;
+      progress?.set(100, '已保存');
       if (mode !== 'copy') {
         files.set(uid, handle);
         ctx.rename(handle.name, uid);
@@ -70,7 +81,7 @@ export function saveDocumentFile(mode = 'save') {
       if (writable) { try { await writable.abort(); } catch {} }
       if (e.name !== 'AbortError') ctx.error('保存失败：' + e.message);
       return false;
-    } finally { pending = null; }
+    } finally { progress?.end?.(); pending = null; }
   })();
   return pending;
 }

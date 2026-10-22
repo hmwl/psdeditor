@@ -7,7 +7,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url)), root = path.resolve(here, '../..');
 const ALL = [
+  ['production-smoke-browser', '真实页面初始化、新建文档和图层（支持生产构建）'],
   ['layer-panel-visual-browser', '图层类型/缩略图/蒙版选中与属性同步'],
+  ['layer-header-browser', '图层筛选原稿/内嵌百分号/切换与输入交互'],
   ['document-layout-browser', '文档分屏顺序/浮动窗口拖动/合并页签'],
   ['smart-object-tabs-browser', '智能对象父文档/源文档独立页签与切换存储'],
   ['editor-chrome-browser', '文档页签与全域浏览器右键菜单策略'],
@@ -26,6 +28,9 @@ const ALL = [
   ['parity-first-pass-browser', '透明边GL对拍与严格动作回放'],
   ['native-pixel-edit-browser', '浏览器高位深局部编辑/撤销/扩边/重载'],
   ['brush-undo-render-browser', '画笔 Ctrl+Z 后画布与缩略图同步清空'],
+  ['sparse-operations-browser', '空图层绘画与分块填充/滤镜/调整的选区和撤销'],
+  ['lazy-clipboard-safety-browser', '惰性复制/合并原像素及失败时保留源数据'],
+  ['lazy-png-export-browser', '超大单层 PSD 分块 PNG 导出及边缘编辑'],
   ['color-presentation-browser', 'ICC身份/CMYK设置刷新/校样保护'],
   ['cmyk-native-browser', '浏览器CMYK保K/原生缓存/局部编辑'],
   ['photoshop-presets-browser', '原生PS预设资源/笔尖/依赖/持久化'],
@@ -54,6 +59,12 @@ const ALL = [
   ['multilayer-tile-budget-browser', '真实 12 层 PSB 的全局瓦片预算与稳定驻留'],
   ['preset-style-performance-browser', '隐藏样式面板按需计算与缩略图无读回'],
   ['gpu-frame-queue-browser', 'GPU 在途限制/最新像素/切文档与快照'],
+  ['large-jpg-ops-browser', '超大 JPG 打开后的画笔/缩放/移动/变换/滤镜/样式实测'],
+  ['large-mask-browser', '超大带蒙版 PSD 的惰性通道与蒙版逐块渲染'],
+  ['large-export-browser', '超大文档的 WebP / TIFF / JPEG→PDF 导出'],
+  ['large-transform-browser', '超大 JPG/PSD 的旋转缩放导出与重新载入'],
+  ['image-mask-save-browser', '大 JPG 新建蒙版后保存/重开保留蒙版'],
+  ['raw-formats-browser', '超大文档 PPM/PAM/TGA/BMP/HDR 流式编码'],
 ];
 const want = process.argv.slice(2);
 let list = want.length ? ALL.filter(([k]) => want.includes(k)) : ALL;

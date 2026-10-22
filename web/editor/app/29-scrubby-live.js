@@ -38,7 +38,7 @@ import { cropCanvasAlpha, cropRGBABuf } from './49-fonts-text-model.js';
 
 export const EV = el => ((el.ownerDocument && el.ownerDocument.defaultView) || window).Event;
 function scrubHandleFor(inp){
-  const prev = inp.previousElementSibling;
+  const prev = inp.closest('.prop-pixel-field')?.previousElementSibling || inp.previousElementSibling;
   
   if (prev && prev.classList && prev.classList.contains('tx-ic')) return prev;
   if (prev && /^(SPAN|LABEL|I|B)$/.test(prev.tagName) && prev.textContent.trim() && !prev.querySelector('input')) return prev;

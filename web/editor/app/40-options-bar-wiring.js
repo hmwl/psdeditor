@@ -17,18 +17,21 @@ import {
   smoothSelection,
 } from './01-boot.js';
 import {
-  brushHistory, doc, docH, docW, layerTree, maskPaint, selection, set_selPathCache, set_selection,
+  brushHistory, doc, docH, docW, layerTree, maskPaint, pixelPaint, selection, set_selPathCache, set_selection,
+  textCrops, textRenders,
 } from './02-doc-state.js';
 import { docHistory, docSnapshot, histCap, histPush, updateUndoButtons } from './03-history.js';
 import { spaceDown } from './06-view-zoom-move.js';
 import { layerViaSelection } from './13-quickmask-apply-image.js';
 import { syncBucketBar, syncGradBar } from './15-gradient-bucket-eyedropper.js';
 import { builtIndexOf, dupTask, duplicateLayerUI } from './20-snap-smart-object.js';
+import { readLazyImageBand } from './21-load-document.js';
 import {
   layerCanvasCache, renderLayerPanel, selLayer, selLayers, set_selLayer, thumbCache,
 } from './23-layers-panel.js';
-import { renderProps } from './24-layer-ops-queue.js';
+import { humanEditError, renderProps } from './24-layer-ops-queue.js';
 import { setLayerVisible } from './27-gradient-editor.js';
+import { displayOrder } from './29-scrubby-live.js';
 import { renderPreviewOnly } from './30-render.js';
 import {
   DOC_TOOLS, MIX_G, TOOL_BTN, artHistoryOpts, bgRGB, brush, cleanMixerBrush, docTool, eraserOpts, fgRGB, hexOf,
@@ -44,7 +47,7 @@ import { qsOpts } from './33-lasso-quick-select.js';
 import { AB_BAR_ICONS } from './36-clipboard-frame.js';
 import {
   SYM_TOOLS, brushTarget, commitMaskPaint, commitPixelPaint, ensureMaskPaint, ensurePixelPaint, maskAdded,
-  maskFromSelection, paintGuard, syncBrushSwatches,
+  maskFromSelection, paintGuard, sparsePixelHistory, syncBrushSwatches,
 } from './38-brush-engine.js';
 import {
   ADJ_BRUSH_KINDS, AIR_TOOLS, MODE_TOOLS, NO_FLOW_TOOLS, NO_OPACITY_TOOLS, SMOOTH_TOOLS, adjBrushOpts, barImg,
@@ -277,7 +280,7 @@ function bindPaintUI(){
 
 
 
-var smBase = null, smSnapshot = null, smPx = null;   
+var smBase = null, smSnapshot = null, smPx = null, smHuge = false;
 
 
 
@@ -314,11 +317,27 @@ function smApplyToolOpts(){
 }
 
 function smRefineStamp(pt, erase){
-  if (!smRefine) smRefine = new Uint8Array(docW * docH);
   const r = Math.max(1, smToolSize / 2);
   const add = !erase && smToolOp !== 'subtract';
   if (add) smRefineR = Math.max(smRefineR, r);
-  stampDisk(smRefine, docW, docH, pt.x, pt.y, r, add);
+  if (!smHuge) {
+    if (!smRefine) smRefine = new Uint8Array(docW * docH);
+    stampDisk(smRefine, docW, docH, pt.x, pt.y, r, add);
+    return;
+  }
+  if (!smRefine || !smRefine.tiles) smRefine = { tiles: new Map() };
+  const x0 = Math.max(0, Math.floor(pt.x - r - 1)), x1 = Math.min(docW - 1, Math.ceil(pt.x + r + 1));
+  const y0 = Math.max(0, Math.floor(pt.y - r - 1)), y1 = Math.min(docH - 1, Math.ceil(pt.y + r + 1));
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const d = Math.hypot(x + 0.5 - pt.x, y + 0.5 - pt.y);
+    const v = Math.max(0, Math.min(1, r - d + 0.5));
+    if (!v) continue;
+    const tx = (x / 256) | 0, ty = (y / 256) | 0, k = ty * Math.ceil(docW / 256) + tx;
+    let t = smRefine.tiles.get(k);
+    if (!t) { t = new Uint8Array(256 * 256); smRefine.tiles.set(k, t); }
+    const o = (y % 256) * 256 + (x % 256), q = Math.round(v * 255);
+    t[o] = add ? Math.max(t[o], q) : Math.min(t[o], 255 - q);
+  }
 }
 addEventListener('pointerdown', ev => {
   if (ev.target !== gizmo || !smOpen() || !smTool || ev.button !== 0 || spaceDown) return;
@@ -385,6 +404,193 @@ export function set_smViewCache(v) { return (smViewCache = v); }
 const SM_VIEW_KEYS = { o: 'onion', m: 'ants', v: 'overlay', a: 'black', t: 'white', k: 'bw', y: 'layers' };
 export function smOpen(){ return !!smBase && !!$('#selMaskDlg').open; }
 export function smViewHidesAnts(){ return smOpen() && !smShowOrig && smView !== 'ants'; }
+
+const smBandCache = new Map(), smBandOrder = [];
+async function smSampleBand(sy) {
+  const hit = smBandCache.get(sy);
+  if (hit) { smBandOrder.splice(smBandOrder.indexOf(sy), 1); smBandOrder.push(sy); return hit; }
+  const bh = Math.min(256, docH - sy), out = new Uint8ClampedArray(docW * bh * 4);
+  const over = (r, g, b, a, q, op) => {
+    const sa = a / 255 * op; if (!(sa > 0)) return;
+    const da = out[q + 3] / 255, oa = sa + da * (1 - sa); if (!(oa > 0)) return;
+    out[q] = Math.round((r * sa + out[q] * da * (1 - sa)) / oa);
+    out[q + 1] = Math.round((g * sa + out[q + 1] * da * (1 - sa)) / oa);
+    out[q + 2] = Math.round((b * sa + out[q + 2] * da * (1 - sa)) / oa);
+    out[q + 3] = Math.round(oa * 255);
+  };
+  for (const i of displayOrder()) {
+    const l = doc.layers[i]; if (!l || l.hidden) continue;
+    const op = ((l.opacity ?? 255) / 255) * ((l.fillOpacity ?? 255) / 255); if (!(op > 0)) continue;
+    const b = l.bounds || { left: 0, top: 0 }, L = b.left | 0, T = b.top | 0, w = l.width | 0, lh = l.height | 0;
+    const ya = Math.max(sy, T), yb = Math.min(sy + bh, T + lh);
+    const tc = textRenders[i] && textCrops[i];
+    if (tc?.rgba) {
+      const tb = tc.bounds, tw = tb.right - tb.left;
+      for (let y = Math.max(sy, tb.top); y < Math.min(sy + bh, tb.bottom); y++)
+        for (let x = Math.max(0, tb.left); x < Math.min(docW, tb.right); x++) {
+          const s = ((y - tb.top) * tw + x - tb.left) * 4;
+          over(tc.rgba[s], tc.rgba[s + 1], tc.rgba[s + 2], tc.rgba[s + 3], ((y - sy) * docW + x) * 4, op);
+        }
+    } else if (l.rgba && w > 0 && lh > 0 && yb > ya) {
+      const xa = Math.max(0, L), xb = Math.min(docW, L + w);
+      for (let y = ya; y < yb; y++) for (let x = xa; x < xb; x++) {
+        const s = ((y - T) * w + x - L) * 4;
+        over(l.rgba[s], l.rgba[s + 1], l.rgba[s + 2], l.rgba[s + 3], ((y - sy) * docW + x) * 4, op);
+      }
+    } else if ((l.lazyTileStore || l.lazyPixelOps?.length || l.lazyImage || l.lazyRasterFile) && w > 0 && lh > 0 && yb > ya) {
+      const band = await readLazyImageBand(l, ya - T, yb - ya);
+      if (band) for (let yy = 0; yy < band.height; yy++) for (let x = Math.max(0, L); x < Math.min(docW, L + w); x++) {
+        const s = (yy * band.width + x - L) * 4;
+        over(band.data[s], band.data[s + 1], band.data[s + 2], band.data[s + 3], ((ya + yy - sy) * docW + x) * 4, op);
+      }
+    }
+    const pp = pixelPaint[i], tiles = pp?.sparse?.tiles;
+    if (tiles?.size) {
+      const left = pp.left | 0, top = pp.top | 0;
+      for (const t of tiles.values()) {
+        const ya2 = Math.max(sy, top + t.y), yb2 = Math.min(sy + bh, top + t.y + t.height);
+        const xa2 = Math.max(0, left + t.x), xb2 = Math.min(docW, left + t.x + t.width);
+        for (let y = ya2; y < yb2; y++) for (let x = xa2; x < xb2; x++) {
+          const s = ((y - top - t.y) * t.width + x - left - t.x) * 4;
+          over(t.data[s], t.data[s + 1], t.data[s + 2], t.data[s + 3], ((y - sy) * docW + x) * 4, op);
+        }
+      }
+    }
+  }
+  const band = { y: sy, height: bh, data: out };
+  smBandCache.set(sy, band); smBandOrder.push(sy);
+  while (smBandOrder.length > 6) { const k = smBandOrder.shift(); smBandCache.delete(k); }
+  return band;
+}
+async function smSampleRect(x0, y0, w, h) {
+  const out = new Uint8ClampedArray(w * h * 4);
+  for (let sy = Math.floor(y0 / 256) * 256; sy < y0 + h; sy += 256) {
+    const band = await smSampleBand(sy);
+    const ya = Math.max(y0, sy), yb = Math.min(y0 + h, sy + band.height);
+    for (let y = ya; y < yb; y++) out.set(band.data.subarray(((y - sy) * docW + x0) * 4, ((y - sy) * docW + x0 + w) * 4), ((y - y0) * w) * 4);
+  }
+  return out;
+}
+async function refineHugeSelection(sel, R, smart, alive = () => true) {
+  const tilesToDo = SELM.selectionBorderTiles(sel, R + 2);
+  if (!tilesToDo.length) return cloneSelection(sel);
+  const input = sel.data?.__tiles || new Map();
+  const outTiles = new Map(input), owned = new Set();
+  const fill = isFinite(sel.data?.__fill) ? sel.data.__fill : 0;
+  const TS = 256, cols = Math.ceil(sel.width / TS);
+  const write = (gx, gy, v) => {
+    const i = gx - sel.x, j = gy - sel.y;
+    if (i < 0 || j < 0 || i >= sel.width || j >= sel.height) return;
+    const k = ((j / TS) | 0) * cols + ((i / TS) | 0);
+    let t = outTiles.get(k);
+    if (!owned.has(k)) { t = t ? Uint8Array.from(t) : new Uint8Array(TS * TS); outTiles.set(k, t); owned.add(k); }
+    t[(j % TS) * TS + (i % TS)] = v;
+  };
+  const pad = R + 4;
+  for (const rect of tilesToDo) {
+    if (!alive()) throw new DOMException('已取消', 'AbortError');
+    const cx0 = Math.max(0, rect.x - pad), cy0 = Math.max(0, rect.y - pad);
+    const cx1 = Math.min(docW, rect.x + rect.width + pad), cy1 = Math.min(docH, rect.y + rect.height + pad);
+    const cw = cx1 - cx0, ch = cy1 - cy0;
+    if (!(cw > 0 && ch > 0)) continue;
+    const crop = SELM.selectionCropDense(sel, cx0, cy0, cw, ch);
+    const rgb = await smSampleRect(cx0, cy0, cw, ch);
+    if (!alive()) throw new DOMException('已取消', 'AbortError');
+    let ref;
+    try { ref = SELM.refineEdgeSelection(crop, rgb, cw, ch, { radius: R, smart }); } catch { continue; }
+    for (let gy = Math.max(rect.y, sel.y); gy < Math.min(rect.y + rect.height, sel.y + sel.height); gy++)
+      for (let gx = Math.max(rect.x, sel.x); gx < Math.min(rect.x + rect.width, sel.x + sel.width); gx++)
+        write(gx, gy, selectionValueAt(ref, gx - cx0, gy - cy0));
+  }
+  return SELM.selectionFromTiles(sel.x, sel.y, sel.width, sel.height, outTiles, fill, docW, docH);
+}
+async function smApplyRefineHuge(sel, rad, alive) {
+  if (!smRefine?.tiles?.size || !(smRefineR > 0)) return sel;
+  const R = Math.max(rad, Math.round(smRefineR)), TS = 256, cols = Math.ceil(docW / TS);
+  const targets = new Map();
+  for (const [k, t] of smRefine.tiles) {
+    let any = false;
+    for (let i = 0; i < t.length; i += 7) if (t[i]) { any = true; break; }
+    if (!any) continue;
+    const tx = k % cols, ty = (k / cols) | 0;
+    const pad = R + 4;
+    const gx0 = Math.max(0, Math.floor((tx * TS - pad) / TS) * TS), gy0 = Math.max(0, Math.floor((ty * TS - pad) / TS) * TS);
+    const gx1 = Math.min(docW, Math.ceil((tx * TS + TS + pad) / TS) * TS), gy1 = Math.min(docH, Math.ceil((ty * TS + TS + pad) / TS) * TS);
+    for (let y = gy0; y < gy1; y += TS) for (let x = gx0; x < gx1; x += TS)
+      targets.set(`${x}:${y}`, { x, y, width: Math.min(TS, docW - x), height: Math.min(TS, docH - y) });
+  }
+  if (!targets.size) return sel;
+  const input = sel.data?.__tiles || new Map(), outTiles = new Map(input), owned = new Set();
+  const fill = isFinite(sel.data?.__fill) ? sel.data.__fill | 0 : 0;
+  const selCols = Math.ceil(sel.width / TS);
+  const baseAt = (gx, gy) => {
+    const i = gx - sel.x, j = gy - sel.y;
+    if (i < 0 || j < 0 || i >= sel.width || j >= sel.height) return 0;
+    return sel.data[j * sel.width + i];
+  };
+  const tileFor = (gx, gy) => {
+    const i = gx - sel.x, j = gy - sel.y;
+    const k = ((j / TS) | 0) * selCols + ((i / TS) | 0);
+    let t = outTiles.get(k);
+    if (owned.has(k)) return t;
+    if (t) t = Uint8Array.from(t);
+    else {
+      t = new Uint8Array(TS * TS);
+      if (!sel.data?.__virtual || sel.data?.__base || sel.data?.__neg || sel.data?.__brushBase) {
+        const lx0 = sel.x + (((i / TS) | 0) * TS), ly0 = sel.y + (((j / TS) | 0) * TS);
+        for (let yy = 0; yy < TS; yy++) for (let xx = 0; xx < TS; xx++) {
+          const gx2 = lx0 + xx, gy2 = ly0 + yy;
+          t[yy * TS + xx] = gx2 < docW && gy2 < docH ? baseAt(gx2, gy2) : 0;
+        }
+      } else t.fill(fill);
+    }
+    outTiles.set(k, t); owned.add(k);
+    return t;
+  };
+  const maskAt = (gx, gy) => {
+    const t = smRefine.tiles.get(((gy / TS) | 0) * cols + ((gx / TS) | 0));
+    return t ? t[(gy % TS) * TS + (gx % TS)] : 0;
+  };
+  const pad = R + 4;
+  for (const rect of targets.values()) {
+    if (!alive()) throw new DOMException('已取消', 'AbortError');
+    const cx0 = Math.max(0, rect.x - pad), cy0 = Math.max(0, rect.y - pad);
+    const cx1 = Math.min(docW, rect.x + rect.width + pad), cy1 = Math.min(docH, rect.y + rect.height + pad);
+    const cw = cx1 - cx0, ch = cy1 - cy0;
+    if (!(cw > 0 && ch > 0)) continue;
+    const crop = SELM.selectionCropDense(smBase, cx0, cy0, cw, ch);
+    const rgb = await smSampleRect(cx0, cy0, cw, ch);
+    if (!alive()) throw new DOMException('已取消', 'AbortError');
+    let ref;
+    try { ref = SELM.refineEdgeSelection(crop, rgb, cw, ch, { radius: R, smart: true }); } catch { continue; }
+    for (let gy = Math.max(rect.y, sel.y); gy < Math.min(rect.y + rect.height, sel.y + sel.height); gy++)
+      for (let gx = Math.max(rect.x, sel.x); gx < Math.min(rect.x + rect.width, sel.x + sel.width); gx++) {
+        const m = maskAt(gx, gy); if (!m) continue;
+        const a = baseAt(gx, gy), b = selectionValueAt(ref, gx - cx0, gy - cy0);
+        const v = Math.round(a + (b - a) * m / 255);
+        tileFor(gx, gy)[((gy - sel.y) % TS) * TS + ((gx - sel.x) % TS)] = v;
+      }
+  }
+  return SELM.selectionFromTiles(sel.x, sel.y, sel.width, sel.height, outTiles, fill, docW, docH);
+}
+async function smChainHuge(token) {
+  let sel = cloneSelection(smBase);
+  const rad = +$('#smRadius').value, sm = +$('#smSmooth').value, fe = +$('#smFeather').value;
+  const ct = +$('#smContrast').value, mv = +$('#smMove').value;
+  const alive = () => token === smPreviewToken && smOpen();
+  if (rad > 0) sel = await refineHugeSelection(sel, rad, $('#smSmart').checked, alive);
+  if (!alive()) return null;
+  sel = await smApplyRefineHuge(sel, rad, alive);
+  if (!alive()) return null;
+  if (sm > 0) sel = smoothSelection(sel, Math.max(1, Math.round(sm / 2)));
+  if (fe > 0) sel = featherSelection(sel, fe);
+  if (ct > 0) { try { sel = SELM.contrastSelection(sel, ct); } catch {} }
+  if (mv) {
+    const px = Math.round(Math.abs(mv) / 100 * Math.max(3, fe + rad));
+    if (px > 0) sel = mv > 0 ? expandSelection(sel, px) : contractSelection(sel, px);
+  }
+  return sel;
+}
 function smChain(){
   let sel = cloneSelection(smBase);
   const rad = +$('#smRadius').value, sm = +$('#smSmooth').value, fe = +$('#smFeather').value;
@@ -401,6 +607,7 @@ function smChain(){
   }
   return sel;
 }
+let smPreviewTimer = 0, smPreviewToken = 0;
 function smPreview(){
   if (!smBase) return;
   $('#smRadiusVal').textContent = $('#smRadius').value + ' 像素';
@@ -408,11 +615,28 @@ function smPreview(){
   $('#smFeatherVal').textContent = $('#smFeather').value + ' 像素';
   $('#smContrastVal').textContent = $('#smContrast').value + '%';
   $('#smMoveVal').textContent = $('#smMove').value + '%';
-  const sel = smChain();
-  smInternal = true;
-  try { setSelection(sel, { history: false, props: false }); } finally { smInternal = false; }
-  const a = sel ? selectionArea(sel) : 0;
-  $('#smStats').textContent = `预览：覆盖 ${Math.round(a)} px（原 ${Math.round(selectionArea(smBase))} px）`;
+  const apply = sel => {
+    if (!smOpen()) return;
+    smInternal = true;
+    try { setSelection(sel, { history: false, props: false }); } finally { smInternal = false; }
+    const a = sel ? selectionArea(sel) : 0;
+    $('#smStats').textContent = `预览：覆盖 ${Math.round(a)} px（原 ${Math.round(selectionArea(smBase))} px）`;
+  };
+  if (!smHuge) { apply(smChain()); return; }
+
+  const token = ++smPreviewToken;
+  clearTimeout(smPreviewTimer);
+  $('#smStats').textContent = '正在按分块计算预览…';
+  smPreviewTimer = setTimeout(() => {
+    if (token !== smPreviewToken || !smOpen()) return;
+    let sel = null;
+    (async () => {
+      try { sel = await smChainHuge(token); }
+      catch (e) { if (e?.name !== 'AbortError' && token === smPreviewToken) $('#smStats').textContent = '预览失败：' + humanEditError(e && e.message || e); return; }
+      if (!sel || token !== smPreviewToken || !smOpen()) return;
+      apply(sel);
+    })();
+  }, 120);
 }
 function smSyncView(){
   $('#smView').value = smView; $('#smViewOp').value = String(Math.round(smViewOp * 100));
@@ -432,10 +656,12 @@ export function maskSelectAndMask(idx){
 export async function openSelectAndMask(){
   if (!doc) return;
   if (!selection) { $('#notice').textContent = '先做一个选区（选区工具 / ⌘A / ⌘点缩略图）。'; return; }
+  smHuge = docW * docH > 64e6;
   if (!selReady('选择并遮住')) return;                              
   smBase = cloneSelection(selection);
   smSnapshot = docSnapshot();
-  try { smPx = sampleRGBA(true); } catch { smPx = null; }
+  if (!smHuge) { try { smPx = sampleRGBA(true); } catch { smPx = null; } }
+  else smPx = null;
   const dlg = $('#selMaskDlg');
   for (const id of ['#smRadius', '#smSmooth', '#smFeather', '#smContrast', '#smMove']) $(id).value = 0;
   $('#smSmart').checked = false;
@@ -487,7 +713,7 @@ function smDecontaminate(idx, amount, sel){
   const n = decontaminateColors(pp.rgba, pp.w, pp.h, pp.left, pp.top, (x, y) => selectionValueAt(sel, x, y), amount, rad);
   if (!n) return false;
   const rect = { x: 0, y: 0, w: pp.w, h: pp.h };
-  brushHistory.undo.push({ kind: 'pixels', idx, rect, before, after: Uint8ClampedArray.from(pp.rgba), px: 4 });
+  brushHistory.undo.push(sparsePixelHistory(idx, before, pp.rgba, pp.w, pp.h));
   if (brushHistory.undo.length > histCap('brush')) brushHistory.undo.shift();
   brushHistory.redo.length = 0;
   histPush('净化颜色', 'brush');
@@ -520,7 +746,9 @@ $('#smOk').onclick = async () => {
   docHistory.undo.push(smSnapshot);
   if (docHistory.undo.length > histCap()) docHistory.undo.shift();
   docHistory.redo.length = 0;
-  smSnapshot = null; smBase = null; smPx = null; smViewCache = null;
+  smSnapshot = null; smBase = null; smPx = null; smViewCache = null; smHuge = false;
+  clearTimeout(smPreviewTimer); smPreviewToken++;
+  smBandCache.clear(); smBandOrder.length = 0;
   updateUndoButtons(); syncAnts(); drawGizmo();
   const out = $('#smOutput').value, src = selLayer;
   if (out === 'selection' || !selection) return;
@@ -560,14 +788,58 @@ $('#smCancel').onclick = () => {
   $('#selMaskDlg').close('cancel');
   smLeaveTools();
   if (smBase) setSelection(cloneSelection(smBase), { history: false });
-  smSnapshot = null; smBase = null; smPx = null; smViewCache = null;
+  smSnapshot = null; smBase = null; smPx = null; smViewCache = null; smHuge = false;
+  clearTimeout(smPreviewTimer); smPreviewToken++;
+  smBandCache.clear(); smBandOrder.length = 0;
   syncAnts(); drawGizmo();
 };
 
 
+
+function drawSmViewLarge(ctx){
+  const s = selection;
+  if (!s) return;
+  const op = smView === 'layers' || smView === 'bw' ? 1 : smViewOp;
+  const m = ctx.getTransform ? ctx.getTransform() : null;
+  const sx = (m && m.a) || 1, sy = (m && m.d) || 1, tx = m ? m.e : 0, ty = m ? m.f : 0;
+  const cw = ctx.canvas?.width || docW, ch = ctx.canvas?.height || docH;
+  const x0 = Math.max(0, Math.floor(-tx / sx) - 2), y0 = Math.max(0, Math.floor(-ty / sy) - 2);
+  const x1 = Math.min(docW, Math.ceil((cw - tx) / sx) + 2), y1 = Math.min(docH, Math.ceil((ch - ty) / sy) + 2);
+  const vw = x1 - x0, vh = y1 - y0;
+  if (!(vw > 0 && vh > 0)) return;
+  const k = Math.max(1, Math.ceil(vw / Math.max(1, cw)), Math.ceil(vh / Math.max(1, ch)));
+  const ow = Math.max(1, Math.ceil(vw / k)), oh = Math.max(1, Math.ceil(vh / k));
+  const c = smViewCache?.canvas || document.createElement('canvas');
+  const cache = smViewCache;
+  if (!cache || cache.key !== s || cache.mode !== smView || cache.op !== op || cache.x0 !== x0 || cache.y0 !== y0
+      || cache.k !== k || c.width !== ow || c.height !== oh) {
+    c.width = ow; c.height = oh;
+    const g = c.getContext('2d'), img = g.createImageData(ow, oh), D = img.data;
+    const sd = s.data, sxx = s.x, syy = s.y, sw = s.width, sh = s.height;
+    let o = 0;
+    for (let j = 0; j < oh; j++) {
+      const yy = y0 + Math.min(vh - 1, Math.floor((j + .5) * k));
+      for (let i = 0; i < ow; i++) {
+        const xx = x0 + Math.min(vw - 1, Math.floor((i + .5) * k));
+        const qi = xx - sxx, qj = yy - syy;
+        const a = qi < 0 || qj < 0 || qi >= sw || qj >= sh ? 0 : sd[qj * sw + qi];
+        if (smView === 'bw') { D[o] = D[o + 1] = D[o + 2] = a; D[o + 3] = 255; o += 4; continue; }
+        let r = 0, gg = 0, b = 0;
+        if (smView === 'overlay') r = 255;
+        else if (smView === 'white') r = gg = b = 255;
+        else { const v = (((xx >> 3) + (yy >> 3)) & 1) ? 204 : 255; r = gg = b = v; }
+        D[o] = r; D[o + 1] = gg; D[o + 2] = b; D[o + 3] = Math.round((255 - a) * op); o += 4;
+      }
+    }
+    g.putImageData(img, 0, 0);
+    smViewCache = { key: s, mode: smView, op, x0, y0, k, canvas: c };
+  }
+  ctx.save(); ctx.imageSmoothingEnabled = false; ctx.drawImage(c, x0, y0, vw, vh); ctx.restore();
+}
 export function drawSmView(ctx){
   if (!smOpen()) { smViewCache = null; return; }
   if (smShowOrig || smView === 'ants') return;
+  if (docW * docH > 64e6) return drawSmViewLarge(ctx);
   const op = smView === 'layers' || smView === 'bw' ? 1 : smViewOp;
   const key = selection;
   if (!smViewCache || smViewCache.key !== key || smViewCache.mode !== smView || smViewCache.op !== op || smViewCache.canvas.width !== docW || smViewCache.canvas.height !== docH) {

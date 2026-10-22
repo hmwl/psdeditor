@@ -187,7 +187,7 @@ export async function newDocument(o){
   const ab = m.createPsd({ ...o, name: o.layerName });
   const dtk = await DOCS.beginOpen(); if (!dtk) return false;
   set_hxOpenLabel('新建');                          
-  try { await initDocument(ab, (o.name || '未标题-1') + '.psd', { nested: false }); }
+  try { await initDocument(ab, (o.name || '未标题-1') + '.psd', { nested: false, freshDoc: true }); }
   catch (e) { DOCS.abortOpen(dtk); $('#err').textContent = '新建文档失败：' + (e && e.message || e); return false; }
   refreshAll(true);
   await gpuFlush();

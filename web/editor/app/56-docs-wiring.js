@@ -24,6 +24,7 @@ import { psPanels } from '../ps-panels.js';
 import { CUSTOM_SHAPES, customShapeSubpaths } from '../shapes.js';
 import { shell } from '../shell.js';
 import { installToasts } from '../toast.js';
+import { tools } from '../tools.js';
 import {
   $, ADJUST, BRUSH, EDIT, FILTER, QUADW, RETOUCH, RETOUCHM, SELECT, SELM, api, applyEdits, cloneDeform,
   deformEquals, ellipseSelection, ensureLazy, freshLayerInfo, lassoSelection, layerStyleDlg,
@@ -179,8 +180,8 @@ import {
 } from './37-local-pixel-tools.js';
 import {
   beginStroke, brushRedo, brushUndo, brushUndoable, endStroke, ensurePixelPaint, flushSparsePaint, lastPaintPt,
-  maskFromSelection, paintGuard, repaintStrokeLayer, scheduleStrokeRepaint, strokeLineTo, strokeTo,
-  syncBrushSwatches,
+  maskFromSelection, paintGuard, repaintStrokeLayer, scheduleStrokeRepaint, sparsePaintBusy, strokeLineTo,
+  strokeTo, syncBrushSwatches,
 } from './38-brush-engine.js';
 import {
   adjBrushOpts, applyBrushPreset, applyBrushRecord, beginPencilStroke, currentBrushRecord, endSymEdit,
@@ -212,7 +213,9 @@ import {
 import {
   closeInlineText, layersUnder, openCanvasCtx, openInlineTextEditor, openTextEditor,
 } from './47-canvas-context-menu.js';
-import { buildPsdBuffer, endDrag, textBoxHandles, textBoxRaw, textIndexAt } from './48-info-export.js';
+import {
+  buildPsdBuffer, endDrag, setExportProgress, setWaitCursor, textBoxHandles, textBoxRaw, textIndexAt,
+} from './48-info-export.js';
 import {
   addUserFontFile, effTextStyle, ensureTextRaster, removeUserFont, renderTextLayer, resolveFont, textRenderPad,
   userFonts, userFontsReady,
@@ -248,6 +251,7 @@ function documentEditSignature() {
   const full = captureDocFull({cloneSparse:false}).full;
   const state = { source: st.origBuffer, width: st.docW, height: st.docH, resolution: st.docResolution,
     history: fileObjectId(histLog.items[histLog.cursor] || histLog), maps, deletes: st.deletes, order: st.layerReorder,
+    lazyMask: st.doc?.layers?.map(l => l?.lazyMaskEdits ? l.lazyMaskEdits.version : 0) || null,
     paths: paths && { work: paths.workDirty ? paths.work : null, saved: paths.savedDirty ? paths.saved : null },
     toolData: st.toolData, light: full.globalLightDirty ? full.globalLight : null,
     guides: full.guidesDirty ? full.guides : null, slices: full.slicesDirty ? full.docSlices : null,
@@ -262,15 +266,26 @@ function documentEditSignature() {
     if (seen.has(value)) return '[shared]'; seen.add(value); return value;
   });
 }
+export function saveDocumentWithProgress(){
+  const controller=new AbortController();
+  setWaitCursor(true,'正在生成保存文件…');
+  setExportProgress(0,'正在生成保存文件…');
+  const btn=document.getElementById('docLoadingCancel');
+  if(btn){btn.hidden=false;btn.textContent='取消保存';btn.onclick=()=>controller.abort(new DOMException('保存已取消','AbortError'));}
+  const task={signal:controller.signal,set(value,label){setExportProgress(value,label);},end(){setWaitCursor(false);if(btn){btn.hidden=true;btn.textContent='取消导出';btn.onclick=null;}}};
+  return task;
+}
 installDocumentFiles({
   uid: () => DOCS.activeUid(), name: () => docName, inside: () => docStack.length > 0,
-  saveInside, settle: settleForDocSwitch, build: buildPsdBuffer, signature: documentEditSignature,
+  saveInside, settle: settleForDocSwitch, build: buildPsdBuffer, signature: documentEditSignature, progress:()=>saveDocumentWithProgress(),
   markClean: (uid, signature) => DOCS.markClean(uid, signature),
   rename: (name, uid) => { DOCS.renameDocument(uid, name); if (DOCS.activeUid() === uid) { set_docName(name); set_docLabel(name); syncDocTab(); } },
   original: () => origBuffer,
   reload: async (buf, name) => {
     const previous = captureDocFull();
-    try { await initDocument(buf, name, { nested: false }); refreshAll(true); }
+
+
+    try { await initDocument(buf, name, { nested: false, freshDoc: true }); refreshAll(true); }
     catch (e) { applyDocFull(previous); refreshAll(false); throw e; }
   },
   input: () => $('#file'),
@@ -285,7 +300,7 @@ installAutosave({
   busy: () => !!(li || docStack.length || curStroke || auxDrag || deformTool || tfState || textOverlay || cropState),
   uid: () => DOCS.activeUid(), openUids: () => DOCS.buffers().map(b => b.uid),
   editSig: () => { const it = histLog.items[histLog.cursor]; return `${histLog.items.length}:${histLog.cursor}:${it && it.seq}:${countLayerOps()}`; },
-  buildBytes: async () => (await buildPsdBuffer({ fast: true })).buf,
+  buildBytes: async () => { while (sparsePaintBusy()) await flushSparsePaint(); return (await buildPsdBuffer({ fast: true })).buf; },
   docName: () => docName, docW: () => docW, docH: () => docH,
   openBuffer: (buf, name, msg) => DOCS.openBuffer(buf, name, msg),
   choiceDialog, status: t => shell.status(t), pref: k => PREF.get(k),
@@ -324,7 +339,7 @@ DOCS.init({
   save: () => saveDocumentFile(),
   open: async file => isImageFileName(file) ? openImageAsDocument(file) : loadPsd(file),
   closeEmbedded: options => exitInside(options.discard ? { save: false } : {}),
-  loadBuffer: async (buf, name) => { await initDocument(buf, name, { nested: false }); refreshAll(true); },
+  loadBuffer: async (buf, name) => { await initDocument(buf, name, { nested: false, freshDoc: true }); refreshAll(true); },
   buildBytes: async (fast = true) => (await buildPsdBuffer({ fast })).buf,
   composite: () => compositeNowRGBA(),
   resolution: () => docResolution,
@@ -359,7 +374,7 @@ DOCS.init({
     c.buf = b.buf; c.ids = map; c.frozen = true;
   },
   moveDragging: () => !!(moveDrag && !moveDrag.tf && docTool === 'move'), cancelMoveDrag: () => cancelMoveDrag(),
-  tool: () => docTool, spaceDown: () => spaceDown,
+  tool: () => docTool, selectTool: id => tools.select(id), spaceDown: () => spaceDown,
   zoomStep: dir => nextZoomStep(dir),
   status: m => shell.status(m), notice: m => { $('#notice').textContent = m; }, err: m => { $('#err').textContent = m; },
 });
@@ -380,7 +395,7 @@ window.__psd_editor = {
     get view(){ return { artboardGuidesOn, countVisible, notesVisible, editPinsOn, brushPreviewOn, viewPar, viewParCorrect, gridOpts: { ...gridOpts }, rulerUnit, guides: guides.map(g => ({ ...g })) }; },
     run: (id, ...a) => actions.run(id, ...a),
   },
-  docs: DOCS,
+  docs: DOCS, selectTool: id => tools.select(id),
   get hx(){ return HXP; }, get notes(){ return NOTESP; }, hxCapture, hxApplyCtx,   
   get actionsPanel(){ return ACTP; }, compositeRGBA: () => sampleRGBA(true), historyEntries: () => ({ items: historyEntries(), cursor: histLog.cursor }),
   colorMgmt: CM, actions, get lastAction(){return LAST_RUN;},
@@ -417,8 +432,10 @@ window.__psd_editor = {
       const S = docTool === 'pencil' ? beginPencilStroke({ x: pts[0][0], y: pts[0][1] }) : BRUSHOP_TOOLS.has(docTool) ? beginBrushOpStroke({ x: pts[0][0], y: pts[0][1] }, ev) : beginStroke({ x: pts[0][0], y: pts[0][1] });
       if (!S) return false;
       for (let i = 1; i < pts.length; i++) strokeTo(S, { x: pts[i][0], y: pts[i][1] });
-      S.forced = true; endStroke();
-      return true;
+      S.forced = true;
+      const done = endStroke();
+
+      return done && typeof done.then === 'function' ? done.then(() => true) : true;
     },
     magicErase: (x, y, o = {}) => magicEraseAt({ x, y }, { shiftKey: !!o.shift }),
     get bar(){ const id = i => { const el = $(i); return el ? { hidden: !!el.hidden, value: el.value, checked: el.checked } : null; };
@@ -661,7 +678,7 @@ window.__psd_editor = {
     setCursor: (x, y) => setBrushCursor({ x, y }),
     clearCursor: clearBrushCursor,
     setColors(fg, bg){ if (fg) set_fgRGB(fg.slice()); if (bg) set_bgRGB(bg.slice()); syncBrushSwatches(); syncGradBar(); syncBucketBar(); },
-    getColors: () => ({ fg: fgRGB.slice(), bg: bgRGB.slice() }),
+    getColors: () => ({ fg: (fgRGB || [0, 0, 0]).slice(), bg: (bgRGB || [255, 255, 255]).slice() }),
     swapColors, resetColors,
   },
   

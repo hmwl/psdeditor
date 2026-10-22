@@ -33,7 +33,7 @@ export const MODE_CODE = {
   hLit: 12, vLit: 13, lLit: 14, pLit: 15, hMix: 16, diff: 17, smud: 18, fsub: 19, fdiv: 20,
   'hue ': 21, 'sat ': 22, colr: 23, 'lum ': 24, dkCl: 25, lgCl: 26,
 };
-const F_CLIP = 1, F_MASK = 2, F_BLENDIF = 4, F_CHOFF = 8, F_KNOCK = 16, F_ABCLIP = 32, F_LERP = 64, F_SKIP_DETAIL = 128;
+const F_CLIP = 1, F_MASK = 2, F_BLENDIF = 4, F_CHOFF = 8, F_KNOCK = 16, F_ABCLIP = 32, F_LERP = 64, F_SKIP_DETAIL = 128, F_KEEP_ALPHA = 256, F_OPAQUE = 512, F_CLIP_LERP = 1024;
 const K_TEX = 0, K_ADJ = 1, K_SURF = 2, K_SOLID = 3;
 const LUT3_N = 52;                 
 const OP_STRIDE = 512, OP_SIZE = 384;
@@ -264,17 +264,23 @@ fn sourceStraight(p: vec2i, d: vec2f, cb: vec3f, da: f32) -> vec4f {
   let bd = vec4f(floor(bdq.rgb * 255.0 + 0.5) / 255.0, floor(bdq.a * 255.0 + 0.5) / 255.0);
   let cb = bd.rgb; let da = bd.a;
   var s = sourceStraight(p, d, cb, da);
+  if ((flags & ${F_CLIP_LERP}u) != 0u) {
+    let k = textureLoad(clipTex, p, 0).r * op.p0.x;
+    return mix(bdp, textureLoad(srcTex, p, 0), k);
+  }
+  if ((flags & ${F_OPAQUE}u) != 0u) { s.a = 1.0; }
   if ((flags & ${F_LERP}u) != 0u) {
     // 带蒙版的直通组：组外 = 原样，蒙版内 = 组内直通画出来的结果，按 蒙版 × 组不透明度 插值
     let a = maskAt(d) * op.p0.x;
     let o = mix(bd, s, a);
     return vec4f(o.rgb * o.a, o.a);
   }
+  if ((flags & ${F_KEEP_ALPHA}u) != 0u && kind == 1u) { s.a = 1.0; }
   if ((flags & ${F_MASK}u) != 0u) { s.a *= maskAt(d); }
   if ((flags & ${F_ABCLIP}u) != 0u && (d.x < op.ab.x || d.y < op.ab.y || d.x >= op.ab.z || d.y >= op.ab.w)) { s.a = 0.0; }
   if ((flags & ${F_CLIP}u) != 0u) { s.a *= textureLoad(clipTex, p, 0).r; }
   if ((flags & ${F_BLENDIF}u) != 0u) { s.a *= blendIfW(s.rgb, cb); }
-  if ((flags & ${F_KNOCK}u) != 0u) { return bdp * (1.0 - min(1.0, s.a * op.p0.y)); }
+  if ((flags & ${F_KNOCK}u) != 0u) { return mix(bdp, textureLoad(maskTex, p, 0), min(1.0, s.a * op.p0.x)); }
   var opa = op.p0.x;
   var m = op.u0.x;
   if (m == 1u) {
@@ -284,6 +290,11 @@ fn sourceStraight(p: vec2i, d: vec2f, cb: vec3f, da: f32) -> vec4f {
   let sa = s.a * opa;
   if (sa <= 0.0) { return bdp; }
   let B = blendRGB(m, cb, s.rgb);
+  if ((flags & ${F_KEEP_ALPHA}u) != 0u) {
+    var color = mix(cb, B, sa);
+    if ((flags & ${F_CHOFF}u) != 0u) { color = mix(color, cb, op.ch.xyz); }
+    return vec4f(color * da, da);
+  }
   let na = sa + da * (1.0 - sa);
   var co = (1.0 - sa) * da * cb + sa * ((1.0 - da) * s.rgb + da * B);
   if ((flags & ${F_CHOFF}u) != 0u && da > 0.0) {
@@ -655,23 +666,28 @@ export async function createGpuCompositor(opts = {}) {
     opBuf = device.createBuffer({ size: opCap * OP_STRIDE, usage: BU.UNIFORM | BU.COPY_DST });
     opData = new ArrayBuffer(opCap * OP_STRIDE);
   };
-  function writeOp(o) {
+  function writeOp(o, quad) {
     if (nOps >= opCap) { const old = opData, oldN = nOps; ensureOpBuf(nOps + 1); new Uint8Array(opData).set(new Uint8Array(old, 0, oldN * OP_STRIDE)); }
     const off = nOps * OP_STRIDE;
     const f = new Float32Array(opData, off, OP_SIZE / 4), u = new Uint32Array(opData, off, OP_SIZE / 4);
     f.fill(0);
-    f.set(o.quad, 0); f.set([V.W, V.H, ...(o.pixelOrigin||[0,0])], 4); f.set([V.s, V.s, V.tx, V.ty], 8);
+    f.set(quad, 0);
+    const po = o.pixelOrigin;
+    f[4] = V.W; f[5] = V.H; f[6] = po ? po[0] : 0; f[7] = po ? po[1] : 0;
+    f[8] = V.s; f[9] = V.s; f[10] = V.tx; f[11] = V.ty;
     if (o.tile) f.set(o.tile, 12); if (o.core) f.set(o.core, 16);
-    f.set([V.docW, V.docH, V.lod, V.s], 20);
+    f[20] = V.docW; f[21] = V.docH; f[22] = V.lod; f[23] = V.s;
     if (o.color) f.set(o.color, 24); if (o.ab) f.set(o.ab, 28);
     if (o.biS) for (let k = 0; k < 4; k++) f.set(o.biS[k], 32 + k * 4);
     if (o.biD) for (let k = 0; k < 4; k++) f.set(o.biD[k], 48 + k * 4);
     if (o.ch) f.set(o.ch, 64);
-    f.set([o.opacity ?? 1, o.knock ?? 0, o.level ?? 0, 0], 68);
-    u.set([o.mode | 0, o.kind | 0, o.flags | 0, o.filter | 0], 72);
-    u.set([o.lutKind | 0, o.biMaskS | 0, o.biMaskD | 0, o.has == null ? 1 : o.has], 76);
-    f.set(o.m || [1, 0, 0, 1], 80); f.set(o.n || [0, 0, V.lod, 0], 84); f.set(o.pz || [1, 1, 0, 0], 88);
-    f.set(o.grid || [0, 0, 0, 0], 92);
+    f[68] = o.opacity ?? 1; f[69] = o.knock ?? 0; f[70] = o.level ?? 0;
+    u[72] = o.mode | 0; u[73] = o.kind | 0; u[74] = o.flags | 0; u[75] = o.filter | 0;
+    u[76] = o.lutKind | 0; u[77] = o.biMaskS | 0; u[78] = o.biMaskD | 0; u[79] = o.has == null ? 1 : o.has;
+    if (o.m) f.set(o.m, 80); else f[80] = 1;
+    if (o.n) f.set(o.n, 84); else f[86] = V.lod;
+    if (o.pz) f.set(o.pz, 88); else { f[88] = 1; f[89] = 1; }
+    if (o.grid) f.set(o.grid, 92);
     return nOps++ * OP_STRIDE;
   }
   let V = null;               
@@ -696,10 +712,10 @@ export async function createGpuCompositor(opts = {}) {
   };
   const drawCalls = [];        
   function emit(kind, target, quad, op, binds, extra = null) {
-    const off = writeOp({ ...op, quad });
+    const off = writeOp(op, quad);
     drawCalls.push({ kind, target, quad, off, binds, extra });
   }
-  const isHardware = (mode, flags) => (mode === 0) && !(flags & (F_BLENDIF | F_CHOFF | F_KNOCK | F_LERP));
+  const isHardware = (mode, flags) => (mode === 0) && !(flags & (F_BLENDIF | F_CHOFF | F_KNOCK | F_LERP | F_KEEP_ALPHA | F_OPAQUE | F_CLIP_LERP));
   
 
   function geomOf(op) {
@@ -871,15 +887,8 @@ export async function createGpuCompositor(opts = {}) {
     }
   }
   const coreOf = (tile, clip) => clip ? [Math.max(tile.core[0], clip[0]), Math.max(tile.core[1], clip[1]), Math.min(tile.core[2], clip[2]), Math.min(tile.core[3], clip[3])] : tile.core;
-  function drawSrcOp(op, target, clipActive) {
-    if (op.src.detail) { for (const part of sourceParts(op)) drawSrcOp(part, target, clipActive); return; }
-    const g = geomOf(op); if (!g) return;
-    if (!quadOf(g, 0, 0, op.src.width, op.src.height)) return;
-    const e = srcEntry(op.src);
-    const mode = MODE_CODE[op.blend] ?? 0;
-    let flags = 0;
-    if (op.clip) { if (!clipActive) return; flags |= F_CLIP; }
-    if (op.skipDetails) flags |= F_SKIP_DETAIL;
+  function contentOptions(op) {
+    let flags = (op.keepAlpha ? F_KEEP_ALPHA : 0) | (op.opaque ? F_OPAQUE : 0);
     let biS = null, biD = null, biMaskS = 0, biMaskD = 0, ch = null;
     if (op.knockout != null) flags |= F_KNOCK;
     if (op.content && op.blendIf) {
@@ -890,15 +899,29 @@ export async function createGpuCompositor(opts = {}) {
       if (biMaskS || biMaskD) flags |= F_BLENDIF;
     }
     if (op.content && op.channelsOff && op.channelsOff.length) { ch = [0, 0, 0, 0]; for (const c of op.channelsOff) ch[c] = 1; flags |= F_CHOFF; }
+    return { flags, biS, biD, biMaskS, biMaskD, ch };
+  }
+  function drawSrcOp(op, target, clipActive, knockoutBackdrop = null) {
+    if (op.src.detail) { for (const part of sourceParts(op)) drawSrcOp(part, target, clipActive, knockoutBackdrop); return; }
+    const g = geomOf(op); if (!g) return;
+    if (!quadOf(g, 0, 0, op.src.width, op.src.height)) return;
+    const e = srcEntry(op.src);
+    const mode = MODE_CODE[op.blend] ?? 0;
+    let flags = 0;
+    if (op.clip) { if (!clipActive) return; flags |= F_CLIP; }
+    if (op.skipDetails) flags |= F_SKIP_DETAIL;
+    const opts = contentOptions(op);
+    flags |= opts.flags;
+    const { biS, biD, biMaskS, biMaskD, ch } = opts;
     for (const t of visibleTiles(e, g)) {
       stats.tileCandidates++;
       const core = coreOf(t, op.coreClip); if (core[2] <= core[0] || core[3] <= core[1]) continue;
       const q = quadOf(g, ...core);
       if (!q) continue;
       const tv = prepTile(e, t, g.filter !== 2 || g.n[2] < t.P);
-      const o = { kind: K_TEX, mode, flags, opacity: op.knockout != null ? 1 : op.opacity, knock: op.knockout ?? 0, filter: g.filter,
+      const o = { kind: K_TEX, mode, flags, opacity: op.opacity, knock: op.knockout ?? 0, filter: g.filter,
         tile: [t.ox, t.oy, t.tw, t.th], core, m: g.m, n: [g.n[0], g.n[1], g.n[2], t.P], pixelOrigin:[V.tx+(g.F[4]+t.ox)*V.s,V.ty+(g.F[5]+t.oy)*V.s],has: (tv.det ? 1 : 0) | (tv.pyr ? 2 : 0), pz: op.gridScale ? [...pzOf(t).slice(0, 2), ...op.gridScale] : pzOf(t), grid: op.grid, biS, biD, biMaskS, biMaskD, ch };
-      emit(isHardware(mode, flags) ? 'over' : 'generic', target, q, o, { src: tv.det, pyr: tv.pyr, clip: (flags & F_CLIP) ? clipS.view : null, detail: op.skipDetails });
+      emit(isHardware(mode, flags) ? 'over' : 'generic', target, q, o, { src: tv.det, pyr: tv.pyr, mask: knockoutBackdrop?.view, clip: (flags & F_CLIP) ? clipS.view : null, detail: op.skipDetails });
     }
   }
   function drawBase(op, clear = true) {
@@ -916,16 +939,36 @@ export async function createGpuCompositor(opts = {}) {
       emit('base', clipS, q, { kind: K_TEX, flags: op.skipDetails ? F_SKIP_DETAIL : 0, filter: g.filter, tile: [t.ox, t.oy, t.tw, t.th], core, m: g.m, n: [g.n[0], g.n[1], g.n[2], t.P],pixelOrigin:[V.tx+(g.F[4]+t.ox)*V.s,V.ty+(g.F[5]+t.oy)*V.s], has: (tv.det ? 1 : 0) | (tv.pyr ? 2 : 0), pz: op.gridScale ? [...pzOf(t).slice(0, 2), ...op.gridScale] : pzOf(t), grid: op.grid }, { src: tv.det, pyr: tv.pyr, detail: op.skipDetails });
     }
   }
-  function runOps(ops, target) {
-    let clipActive = false;
+  const hasKnockout = ops => ops.some(o => o.knockout || (o.ops && hasKnockout(o.ops)));
+  function runOps(ops, target, deepBackdrop = null) {
+    const shallow = hasKnockout(ops) ? acquire() : null;
+    if (shallow) drawCalls.push({ kind: 'copyAll', from: target, to: shallow });
+    let deep = deepBackdrop || shallow, clipActive = false;
     for (const op of ops) {
       if (op.k === 'base') { if (op.used) { drawBase(op); clipActive = true; } continue; }
-      if (op.k === 'src') { drawSrcOp(op, target, clipActive && op.clip); continue; }
+      if (op.k === 'src') {
+        drawSrcOp(op, target, clipActive && op.clip, op.knockout === 2 ? deep : op.knockout ? shallow : null);
+        if (op.isBackground && shallow) { drawCalls.push({ kind: 'copyAll', from: target, to: shallow }); deep = shallow; }
+        continue;
+      }
+      if (op.k === 'clipStack') {
+        const colors = acquire();
+        drawCalls.push(op.pass ? { kind: 'copyAll', from: target, to: colors } : { kind: 'clear', s: colors });
+        runOps(op.ops, colors);
+        const q = devRect(0, 0, V.docW, V.docH), options = contentOptions(op), mode = MODE_CODE[op.blend] ?? 0;
+        if (op.pass) drawBase(op);
+        if (q) emit(op.pass || !isHardware(mode, options.flags) ? 'generic' : 'over', target, q,
+          { ...options, flags: op.pass ? F_CLIP_LERP : options.flags, kind: K_SURF, mode, opacity: op.opacity, core: [0, 0, V.docW, V.docH] },
+          { src: colors.view, clip: op.pass ? clipS.view : null });
+        drawCalls.push({ kind: 'release', s: colors });
+        clipActive = false;
+        continue;
+      }
       if (op.k === 'adj') {
         const q = devRect(0, 0, V.docW, V.docH); if (!q) continue;
         if (op.clip && !clipActive) continue;
         const L = lutOf(op);
-        let flags = 0;
+        let flags = op.keepAlpha ? F_KEEP_ALPHA : 0;
         if (op.plane) flags |= F_MASK;
         if (op.clip) flags |= F_CLIP;
         emit('generic', target, q, { kind: K_ADJ, mode: MODE_CODE[op.blend] ?? 0, flags, opacity: op.opacity, lutKind: L.kind, level: L.level, core: [0, 0, V.docW, V.docH] },
@@ -933,10 +976,11 @@ export async function createGpuCompositor(opts = {}) {
         continue;
       }
       if (op.k === 'group') {
+        if (op.mode === 'pass') { runOps(op.ops, target, deep); clipActive = false; continue; }
         const S = acquire();
         if (op.mode === 'passMask') {
           drawCalls.push({ kind: 'copyAll', from: target, to: S });
-          runOps(op.ops, S);
+          runOps(op.ops, S, deep);
           const q = devRect(0, 0, V.docW, V.docH);
           if (q) emit('generic', target, q, { kind: K_SURF, flags: F_LERP, opacity: op.opacity, core: [0, 0, V.docW, V.docH] }, { src: S.view, mask: planeView(op.mask, V.docW, V.docH) });
           drawCalls.push({ kind: 'release', s: S });
@@ -964,6 +1008,7 @@ export async function createGpuCompositor(opts = {}) {
         clipActive = false;
       }
     }
+    if (shallow) drawCalls.push({ kind: 'release', s: shallow });
   }
   
   function encodeCalls(root) {
@@ -1108,7 +1153,7 @@ export async function createGpuCompositor(opts = {}) {
       if (lost) return false;
       const big = list.docW > maxDim || list.docH > maxDim;
       if (!big) return true;
-      const needs = ops => ops.some(o => (o.k === 'adj' && o.plane) || (o.k === 'group' && (o.mask || needs(o.ops))));
+      const needs = ops => ops.some(o => (o.k === 'adj' && o.plane) || (o.ops && (o.mask || needs(o.ops))));
       return !needs(list.ops);
     },
     destroy() {

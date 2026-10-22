@@ -24,6 +24,55 @@
 
 
 
+import { virtualArray } from './sparse-pixels.js';
+
+
+
+const SPARSE_MIN = 32e6;
+const SEL_TILE = 256;
+
+
+
+
+
+function coverageFromTiles(width, height, fill, tiles, base = null, neg = null, extra = null) {
+  const cols = Math.ceil(width / SEL_TILE), TS = SEL_TILE;
+  const slot = (i, create) => {
+    const y = (i / width) | 0, x = i - y * width;
+    const tx = (x / TS) | 0, ty = (y / TS) | 0, k = ty * cols + tx;
+    let t = tiles.get(k);
+    if (!t && create) { t = new Uint8Array(TS * TS).fill(fill); tiles.set(k, t); }
+    return t ? { t, o: (y - ty * TS) * TS + (x - tx * TS) } : null;
+  };
+  return virtualArray(width * height,
+    i => { const s = slot(i, false); return s ? s.t[s.o] : (base ? base(i) : fill); },
+    (i, v) => { const s = slot(i, true); s.t[s.o] = v & 255; },
+
+
+
+
+    { __virtual: true, __tiles: tiles, __fill: fill, __base: base, __neg: neg,
+      __tileSize: TS, __width: width, __height: height, ...(extra || {}) });
+}
+
+
+
+
+
+
+const isSparseSel = d => !!(d && d.__virtual);
+
+
+function tileExtent(width, height, k, cols) {
+  const tx = k % cols, ty = (k / cols) | 0;
+  return {
+    x: tx * SEL_TILE, y: ty * SEL_TILE,
+    w: Math.min(SEL_TILE, width - tx * SEL_TILE),
+    h: Math.min(SEL_TILE, height - ty * SEL_TILE),
+  };
+}
+function makeCoverage(width, height, fill = 0) { return coverageFromTiles(width, height, fill, new Map()); }
+
 
 function assertDoc(docW, docH) {
   if (!Number.isInteger(docW) || !Number.isInteger(docH) || docW <= 0 || docH <= 0)
@@ -35,6 +84,9 @@ function selData(sel) {
   const d = sel.data;
   if (d instanceof Uint8Array) return d;
   if (d instanceof Uint8ClampedArray) return new Uint8Array(d.buffer, d.byteOffset, d.length);
+
+
+  if (d && d.__virtual) return d;
   return Uint8Array.from(d || []);
 }
 
@@ -75,8 +127,56 @@ export function createSelection(docW, docH, x, y, width, height, data) {
 }
 
 
+
+
+
+export function brushSelection(docW, docH, tiles, base = null) {
+  assertDoc(docW, docH);
+  if (base) assertSel(base);
+  const cols = Math.ceil(docW / SEL_TILE), map = new Map();
+  for (const [key, t] of tiles || []) {
+    let tx, ty;
+    if (typeof key === 'number') { tx = key % cols; ty = (key / cols) | 0; }
+    else { const p = String(key).split(':'); tx = +p[0]; ty = +p[1]; }
+    if (!(tx >= 0 && ty >= 0 && tx * SEL_TILE < docW && ty * SEL_TILE < docH)) continue;
+    if (!t || t.length !== SEL_TILE * SEL_TILE) continue;
+    map.set(ty * cols + tx, t);
+  }
+  const b = base && base.width > 0 && base.height > 0 ? base : null;
+  if (!map.size && !b) return emptySelection(docW, docH);
+  let baseFn = null;
+  if (b) {
+    const bd = selData(b), bx = b.x, by = b.y, bw = b.width, bh = b.height;
+    baseFn = i => {
+      const y = (i / docW) | 0, x = i - y * docW, si = x - bx, sj = y - by;
+      return si < 0 || sj < 0 || si >= bw || sj >= bh ? 0 : bd[sj * bw + si];
+    };
+  }
+  return {
+    x: 0, y: 0, width: docW, height: docH, docW, docH,
+    data: coverageFromTiles(docW, docH, 0, map, baseFn, null, { __brushBase: b }),
+  };
+}
+
+
 export function cloneSelection(sel) {
   assertSel(sel);
+  const d = sel.data;
+
+
+  if (d && d.__virtual) {
+    if (d.__brushBase) {
+      const tiles = new Map();
+      for (const [k, t] of d.__tiles) tiles.set(k, Uint8Array.from(t));
+      return { x: sel.x, y: sel.y, width: sel.width, height: sel.height,
+        data: coverageFromTiles(sel.width, sel.height, d.__fill, tiles, d.__base, null, { __brushBase: d.__brushBase }), docW: sel.docW, docH: sel.docH };
+    }
+    if (d.__base) return { x: sel.x, y: sel.y, width: sel.width, height: sel.height, data: d, docW: sel.docW, docH: sel.docH };
+    const tiles = new Map();
+    for (const [k, t] of d.__tiles) tiles.set(k, Uint8Array.from(t));
+    return { x: sel.x, y: sel.y, width: sel.width, height: sel.height,
+      data: coverageFromTiles(sel.width, sel.height, d.__fill, tiles), docW: sel.docW, docH: sel.docH };
+  }
   return {
     x: sel.x, y: sel.y, width: sel.width, height: sel.height,
     data: Uint8Array.from(selData(sel)), docW: sel.docW, docH: sel.docH,
@@ -88,6 +188,14 @@ export function isEmptySelection(sel) {
   assertSel(sel);
   if (sel.width === 0 || sel.height === 0) return true;
   const d = selData(sel);
+  if (isSparseSel(d)) {
+    if (d.__neg) return selectionArea(sel) === 0;
+    if (d.__brushBase) return selectionArea(sel) === 0;
+    if (!d.__tiles.size) return !d.__fill;
+    if (d.__fill) return false;
+    for (const t of d.__tiles.values()) for (let i = 0; i < t.length; i++) if (t[i]) return false;
+    return true;
+  }
   for (let i = 0; i < d.length; i++) if (d[i] !== 0) return false;
   return true;
 }
@@ -104,6 +212,30 @@ export function selectionValueAt(sel, x, y) {
 export function selectionArea(sel) {
   assertSel(sel);
   const d = selData(sel);
+  if (isSparseSel(d)) {
+
+    if (d.__neg) return d.__neg.docW * d.__neg.docH - selectionArea(d.__neg.src);
+    const { width: w, height: h } = sel, cols = Math.ceil(w / SEL_TILE);
+    if (d.__brushBase) {
+      let sum = selectionArea(d.__brushBase) * 255;
+      for (const [k, t] of d.__tiles) {
+        const e = tileExtent(w, h, k, cols);
+        for (let y = 0; y < e.h; y++) for (let x = 0; x < e.w; x++) {
+          const di = (e.y + y) * w + e.x + x;
+          sum += t[y * SEL_TILE + x] - (d.__base ? d.__base(di) : 0);
+        }
+      }
+      return sum / 255;
+    }
+    let sum = w * h * d.__fill;
+    for (const [k, t] of d.__tiles) {
+      const e = tileExtent(w, h, k, cols);
+      let s = 0;
+      for (let y = 0; y < e.h; y++) for (let x = 0; x < e.w; x++) s += t[y * SEL_TILE + x];
+      sum += s - e.w * e.h * d.__fill;
+    }
+    return sum / 255;
+  }
   let sum = 0;
   for (let i = 0; i < d.length; i++) sum += d[i];
   return sum / 255;
@@ -124,6 +256,52 @@ function tightBox(sel) {
   const { width: w, height: h } = sel;
   if (w === 0 || h === 0) return null;
   const d = selData(sel);
+  if (isSparseSel(d)) {
+    if (d.__neg) return selectionArea(sel) === 0 ? null : { i0: 0, i1: w - 1, j0: 0, j1: h - 1 };
+
+
+    if (d.__brushBase) {
+      let i0 = w, i1 = -1, j0 = h, j1 = -1;
+      const bb = selectionBounds(d.__brushBase);
+      if (bb) { i0 = bb.x; i1 = bb.x + bb.width - 1; j0 = bb.y; j1 = bb.y + bb.height - 1; }
+      const cols = Math.ceil(w / SEL_TILE);
+      for (const [k, t] of d.__tiles) {
+        const e = tileExtent(w, h, k, cols);
+        for (let y = 0; y < e.h; y++) {
+          const row = y * SEL_TILE, gy = e.y + y;
+          let l = -1, r = -1;
+          for (let x = 0; x < e.w; x++) if (t[row + x]) { l = x; break; }
+          if (l < 0) continue;
+          for (let x = e.w - 1; x >= l; x--) if (t[row + x]) { r = x; break; }
+          if (j0 < 0 || gy < j0) j0 = gy;
+          if (gy > j1) j1 = gy;
+          if (e.x + l < i0) i0 = e.x + l;
+          if (e.x + r > i1) i1 = e.x + r;
+        }
+      }
+      return i1 < 0 ? null : { i0, i1, j0, j1 };
+    }
+
+    if (d.__fill) return { i0: 0, i1: w - 1, j0: 0, j1: h - 1 };
+    const cols = Math.ceil(w / SEL_TILE);
+    let i0 = w, i1 = -1, j0 = -1, j1 = -1;
+    for (const [k, t] of d.__tiles) {
+      const e = tileExtent(w, h, k, cols);
+      for (let y = 0; y < e.h; y++) {
+        const row = y * SEL_TILE, gy = e.y + y;
+        let l = -1;
+        for (let x = 0; x < e.w; x++) if (t[row + x]) { l = x; break; }
+        if (l < 0) continue;
+        let r = e.w - 1;
+        while (r > l && !t[row + r]) r--;
+        if (j0 < 0 || gy < j0) j0 = gy;
+        if (gy > j1) j1 = gy;
+        if (e.x + l < i0) i0 = e.x + l;
+        if (e.x + r > i1) i1 = e.x + r;
+      }
+    }
+    return i1 < 0 ? null : { i0, i1, j0, j1 };
+  }
   let i0 = w, i1 = -1, j0 = -1, j1 = -1;
   for (let j = 0; j < h; j++) {
     const row = j * w;
@@ -148,6 +326,10 @@ function tightBox(sel) {
 
 export function trimSelection(sel) {
   assertSel(sel);
+
+
+  if (sel.data && sel.data.__virtual)
+    return { x: sel.x, y: sel.y, width: sel.width, height: sel.height, data: sel.data, docW: sel.docW, docH: sel.docH };
   const box = tightBox(sel);
   if (!box) return emptySelection(sel.docW, sel.docH);
   const { i0, i1, j0, j1 } = box;
@@ -188,6 +370,13 @@ function blitInto(out, w, h, ox, oy, sel) {
   const src = selData(sel);
   const i0 = Math.max(0, sel.x - ox), i1 = Math.min(w, sel.x + sel.width - ox);
   const j0 = Math.max(0, sel.y - oy), j1 = Math.min(h, sel.y + sel.height - oy);
+
+
+  if (isSparseSel(src) && !src.__tiles.size && !src.__base) {
+    if (!src.__fill) return;
+    for (let j = j0; j < j1; j++) out.fill(src.__fill, j * w + i0, j * w + i1);
+    return;
+  }
   for (let j = j0; j < j1; j++) {
     const sj = (j + oy - sel.y) * sel.width - sel.x + ox;
     out.set(src.subarray(sj + i0, sj + i1), j * w + i0);
@@ -263,9 +452,41 @@ export function rectSelection(docW, docH, x, y, w, h, opts = {}) {
   const bx = Math.floor(x0), by = Math.floor(y0);
   const bw = Math.ceil(x1) - bx, bh = Math.ceil(y1) - by;
   
+  if (feather > 0 && bw * bh > SPARSE_MIN)
+    return featherSelection(rectSelection(docW, docH, x, y, w, h, { antialias }), feather);
+
+
+  const wholePixels = x0 === bx && y0 === by && x1 === bx + bw && y1 === by + bh;
+  if (!feather && wholePixels && bw * bh > SPARSE_MIN)
+    return { x: bx, y: by, width: bw, height: bh, data: makeCoverage(bw, bh, 255), docW, docH };
+
   const covX = new Float64Array(bw), covY = new Float64Array(bh);
   for (let i = 0; i < bw; i++) covX[i] = Math.max(0, Math.min(x1, bx + i + 1) - Math.max(x0, bx + i));
   for (let j = 0; j < bh; j++) covY[j] = Math.max(0, Math.min(y1, by + j + 1) - Math.max(y0, by + j));
+
+
+  if (!feather && bw * bh > SPARSE_MIN) {
+    const cols = Math.ceil(bw / SEL_TILE), tiles = new Map();
+    for (let ty = 0; ty < bh; ty += SEL_TILE) {
+      const ty1 = Math.min(bh, ty + SEL_TILE);
+      const edgeY = covY[ty] < 1 - 1e-9 || covY[ty1 - 1] < 1 - 1e-9;
+      for (let tx = 0; tx < bw; tx += SEL_TILE) {
+        const tx1 = Math.min(bw, tx + SEL_TILE);
+        const edgeX = covX[tx] < 1 - 1e-9 || covX[tx1 - 1] < 1 - 1e-9;
+        if (!edgeX && !edgeY) continue;
+        const t = new Uint8Array(SEL_TILE * SEL_TILE);
+        for (let y = ty; y < ty1; y++) {
+          const cy = covY[y];
+          for (let x = tx; x < tx1; x++) {
+            const v = covX[x] * cy;
+            t[(y - ty) * SEL_TILE + (x - tx)] = antialias === false ? (v >= 0.5 ? 255 : 0) : Math.round(v * 255);
+          }
+        }
+        tiles.set(((ty / SEL_TILE) | 0) * cols + ((tx / SEL_TILE) | 0), t);
+      }
+    }
+    return { x: bx, y: by, width: bw, height: bh, data: coverageFromTiles(bw, bh, 255, tiles), docW, docH };
+  }
   const acc = new Float64Array(bw * bh);
   for (let j = 0; j < bh; j++) for (let i = 0; i < bw; i++) acc[j * bw + i] = covX[i] * covY[j];
 
@@ -294,6 +515,60 @@ export function ellipseSelection(docW, docH, x, y, w, h, opts = {}) {
   const bx = Math.max(0, Math.floor(x0)), by = Math.max(0, Math.floor(y0));
   const bw = Math.min(docW, Math.ceil(x1)) - bx, bh = Math.min(docH, Math.ceil(y1)) - by;
   if (bw <= 0 || bh <= 0) return emptySelection(docW, docH);
+
+
+  if (bw * bh > SPARSE_MIN) {
+    const cols = Math.ceil(bw / SEL_TILE), tiles = new Map();
+    const tileAt = (tx, ty) => {
+      const k = ty * cols + tx;
+      let t = tiles.get(k);
+      if (!t) { t = new Uint8Array(SEL_TILE * SEL_TILE); tiles.set(k, t); }
+      return t;
+    };
+    const fillRow = (j, a, b, v) => {
+      a = Math.max(0, Math.ceil(a)); b = Math.min(bw, Math.floor(b));
+      if (b <= a) return;
+      const ty = (j / SEL_TILE) | 0, off = (j - ty * SEL_TILE) * SEL_TILE;
+      for (let tx = (a / SEL_TILE) | 0; tx * SEL_TILE < b; tx++) {
+        const t = tileAt(tx, ty);
+        t.fill(v, off + Math.max(a, tx * SEL_TILE) - tx * SEL_TILE, off + Math.min(b, (tx + 1) * SEL_TILE) - tx * SEL_TILE);
+      }
+    };
+    const setPixel = (j, i, v) => {
+      const ty = (j / SEL_TILE) | 0, tx = (i / SEL_TILE) | 0;
+      tileAt(tx, ty)[(j - ty * SEL_TILE) * SEL_TILE + (i - tx * SEL_TILE)] = v;
+    };
+    const N2 = 8, inv2 = 1 / N2, hw2 = new Float64Array(N2);
+    for (let j = 0; j < bh; j++) {
+      const py = by + j;
+      let hwMin = Infinity, hwMax = 0;
+      for (let k = 0; k < N2; k++) {
+        const yy = py + (k + 0.5) * inv2;
+        const t = (yy - cy) / ry;
+        hw2[k] = t * t >= 1 ? 0 : rx * Math.sqrt(1 - t * t);
+        if (hw2[k] < hwMin) hwMin = hw2[k];
+        if (hw2[k] > hwMax) hwMax = hw2[k];
+      }
+      if (hwMax <= 0) continue;
+      const fullA = Math.max(0, Math.ceil(cx - hwMin - bx)), fullB = Math.min(bw, Math.floor(cx + hwMin - bx));
+      fillRow(j, fullA, fullB, 255);
+      const edgeA = Math.max(0, Math.floor(cx - hwMax - bx)), edgeB = Math.min(bw, Math.ceil(cx + hwMax - bx));
+      for (let i = edgeA; i < edgeB; i++) {
+        if (i >= fullA && i < fullB) continue;
+        const pl = bx + i, pr = pl + 1;
+        let s = 0;
+        for (let k = 0; k < N2; k++) {
+          const l = Math.max(cx - hw2[k], pl), r = Math.min(cx + hw2[k], pr);
+          if (r > l) s += r - l;
+        }
+        const v = s * inv2;
+        const q = antialias === false ? (v >= 0.5 ? 255 : 0) : Math.round(v * 255);
+        if (q) setPixel(j, i, q);
+      }
+    }
+    const out = { x: bx, y: by, width: bw, height: bh, data: coverageFromTiles(bw, bh, 0, tiles), docW, docH };
+    return feather > 0 ? featherSelection(out, feather) : out;
+  }
 
   const N = 8, inv = 1 / N;
   const acc = new Float64Array(bw * bh);
@@ -354,6 +629,60 @@ export function lassoSelection(docW, docH, points, opts = {}) {
   const bx = Math.max(0, Math.floor(minX)), by = Math.max(0, Math.floor(minY));
   const bw = Math.min(docW, Math.ceil(maxX)) - bx, bh = Math.min(docH, Math.ceil(maxY)) - by;
   if (bw <= 0 || bh <= 0) return emptySelection(docW, docH);
+
+  if (bw * bh > SPARSE_MIN) {
+    const cols = Math.ceil(bw / SEL_TILE), tiles = new Map();
+    const tileAt = (tx, ty) => {
+      const k = ty * cols + tx;
+      let t = tiles.get(k);
+      if (!t) { t = new Uint8Array(SEL_TILE * SEL_TILE); tiles.set(k, t); }
+      return t;
+    };
+    const N2 = 8, inv2 = 1 / N2, rowAcc = new Float64Array(bw);
+    const xs2 = new Float64Array(np), dirs2 = new Int8Array(np), idx2 = new Int32Array(np);
+    let any = false;
+    for (let j = 0; j < bh; j++) {
+      let lo = Infinity, hi = -Infinity;
+      for (let k = 0; k < N2; k++) {
+        const sy = by + j + (k + 0.5) * inv2;
+        let n = 0;
+        for (let e = 0; e < np; e++) {
+          const ax = pts[e * 2], ay = pts[e * 2 + 1];
+          const f = (e + 1) % np;
+          const bx2 = pts[f * 2], by2 = pts[f * 2 + 1];
+          if ((ay <= sy) === (by2 <= sy)) continue;
+          xs2[n] = ax + (sy - ay) / (by2 - ay) * (bx2 - ax);
+          dirs2[n] = by2 > ay ? 1 : -1;
+          idx2[n] = n; n++;
+        }
+        if (n < 2) continue;
+        const order = Array.prototype.slice.call(idx2, 0, n).sort((a, b) => xs2[a] - xs2[b]);
+        let wind = 0;
+        for (let m = 0; m < n - 1; m++) {
+          wind += dirs2[order[m]];
+          if (wind === 0) continue;
+          const s = xs2[order[m]], e = xs2[order[m + 1]];
+          if (e <= bx || s >= bx + bw) continue;
+          addSpan(rowAcc, bx, bw, s, e, inv2);
+          if (s < lo) lo = s; if (e > hi) hi = e;
+        }
+      }
+      if (!(hi > lo)) continue;
+      const i0 = Math.max(0, Math.floor(lo - bx)), i1 = Math.min(bw, Math.ceil(hi - bx));
+      const ty = (j / SEL_TILE) | 0, off = (j - ty * SEL_TILE) * SEL_TILE;
+      for (let i = i0; i < i1;) {
+        const tx = (i / SEL_TILE) | 0, t = tileAt(tx, ty), end = Math.min(i1, (tx + 1) * SEL_TILE);
+        for (let lx = i - tx * SEL_TILE; i < end; i++, lx++) {
+          const v = antialias === false ? (rowAcc[i] >= 0.5 ? 255 : 0) : Math.round(rowAcc[i] * 255);
+          if (v) { t[off + lx] = v; any = true; }
+        }
+      }
+      rowAcc.fill(0, i0, i1);
+    }
+    if (!any) return emptySelection(docW, docH);
+    const out = { x: bx, y: by, width: bw, height: bh, data: coverageFromTiles(bw, bh, 0, tiles), docW, docH };
+    return feather > 0 ? featherSelection(out, feather) : out;
+  }
 
   const N = 8, inv = 1 / N;
   const acc = new Float64Array(bw * bh);
@@ -535,6 +864,39 @@ export const SELECTION_MODES = ['replace', 'add', 'subtract', 'intersect', 'xor'
 
 
 
+const SPARSE_COMBINE_MAX = 64e6;
+
+function fullDoc255(sel, docW, docH) {
+  if (!sel || sel.x !== 0 || sel.y !== 0 || sel.width !== docW || sel.height !== docH) return false;
+  const d = sel.data;
+  return !!(isSparseSel(d) && !d.__tiles.size && !d.__base && !d.__neg && (d.__fill | 0) === 255);
+}
+
+
+function combineSmallB(A, B, mode, docW, docH) {
+  if (!(B.width > 0 && B.height > 0) || B.width * B.height > SPARSE_COMBINE_MAX) return null;
+  const ax = A.x, ay = A.y, aw = A.width, ah = A.height, ad = selData(A);
+  const bx = B.x, by = B.y, bw = B.width, bh = B.height, bd = selData(B);
+  const av = (x, y) => { const i = x - ax, j = y - ay; return i < 0 || j < 0 || i >= aw || j >= ah ? 0 : ad[j * aw + i]; };
+  const bv = (x, y) => { const i = x - bx, j = y - by; return i < 0 || j < 0 || i >= bw || j >= bh ? 0 : bd[j * bw + i]; };
+  const cols = Math.ceil(docW / SEL_TILE), tiles = new Map();
+  const tx0 = Math.max(0, Math.floor(bx / SEL_TILE) * SEL_TILE), ty0 = Math.max(0, Math.floor(by / SEL_TILE) * SEL_TILE);
+  const tx1 = Math.min(docW, Math.ceil((bx + bw) / SEL_TILE) * SEL_TILE), ty1 = Math.min(docH, Math.ceil((by + bh) / SEL_TILE) * SEL_TILE);
+  for (let ty = ty0; ty < ty1; ty += SEL_TILE) for (let tx = tx0; tx < tx1; tx += SEL_TILE) {
+    const t = new Uint8Array(SEL_TILE * SEL_TILE);
+    for (let yy = 0; yy < SEL_TILE; yy++) {
+      const gy = ty + yy; if (gy >= docH) break;
+      for (let xx = 0; xx < SEL_TILE; xx++) {
+        const gx = tx + xx; if (gx >= docW) break;
+        const v = blendCoverage(av(gx, gy), bv(gx, gy), mode);
+        t[yy * SEL_TILE + xx] = v < 0 ? 0 : v > 255 ? 255 : Math.round(v);
+      }
+    }
+    tiles.set(((ty / SEL_TILE) | 0) * cols + ((tx / SEL_TILE) | 0), t);
+  }
+  return brushSelection(docW, docH, tiles, mode === 'intersect' ? null : A);
+}
+
 export function combineSelection(a, b, mode = 'replace') {
   if (!SELECTION_MODES.includes(mode))
     throw new RangeError(`mode 只能是 ${SELECTION_MODES.map(m => `'${m}'`).join(' / ')}，收到 ${JSON.stringify(mode)}`);
@@ -546,11 +908,32 @@ export function combineSelection(a, b, mode = 'replace') {
     throw new RangeError(`两个选区的文档尺寸不一致：${a.docW}×${a.docH} vs ${b.docW}×${b.docH}`);
   const A = a || emptySelection(docW, docH), B = b || emptySelection(docW, docH);
 
+
+
+  if (mode === 'replace') return trimSelection(cloneSelection(B));
+
+  const aEmpty = isEmptySelection(A), bEmpty = isEmptySelection(B);
+  if (aEmpty || bEmpty) {
+    if (aEmpty) return mode === 'add' || mode === 'xor' ? trimSelection(cloneSelection(B)) : emptySelection(docW, docH);
+    return mode === 'intersect' ? emptySelection(docW, docH) : trimSelection(cloneSelection(A));
+  }
+  const aFull = fullDoc255(A, docW, docH), bFull = fullDoc255(B, docW, docH);
+  if (aFull || bFull) {
+    if (aFull && bFull) return mode === 'subtract' || mode === 'xor' ? emptySelection(docW, docH) : cloneSelection(A);
+    if (aFull) return mode === 'intersect' ? trimSelection(cloneSelection(B))
+      : mode === 'subtract' || mode === 'xor' ? invertSelection(B) : cloneSelection(A);
+    return mode === 'intersect' ? trimSelection(cloneSelection(A))
+      : mode === 'subtract' ? emptySelection(docW, docH)
+      : mode === 'xor' ? invertSelection(A) : cloneSelection(B);
+  }
+
+  const local = combineSmallB(A, B, mode, docW, docH);
+  if (local) return local;
+
   const ra = { x: A.x, y: A.y, w: A.width, h: A.height };
   const rb = { x: B.x, y: B.y, w: B.width, h: B.height };
   let box;
-  if (mode === 'replace') box = rb;
-  else if (mode === 'subtract') box = ra;
+  if (mode === 'subtract') box = ra;
   else if (mode === 'intersect') box = rectIntersect(ra, rb);
   else box = rectUnion(ra, rb);
   if (!box || box.w <= 0 || box.h <= 0) return emptySelection(docW, docH);
@@ -561,24 +944,70 @@ export function combineSelection(a, b, mode = 'replace') {
   const w = x1 - x0, h = y1 - y0;
   if (w <= 0 || h <= 0) return emptySelection(docW, docH);
 
+
+
+  const va0 = uniformOver(A, x0, y0, w, h), vb0 = uniformOver(B, x0, y0, w, h);
+  if (va0 >= 0 && vb0 >= 0) {
+    const v = blendCoverage(va0, vb0, mode);
+    return v ? { x: x0, y: y0, width: w, height: h, data: makeCoverage(w, h, v), docW, docH }
+             : emptySelection(docW, docH);
+  }
+
+
+  if (w * h > 64e6) {
+    const cols = Math.ceil(w / SEL_TILE), tiles = new Map();
+    for (let ty = 0; ty < h; ty += SEL_TILE) for (let tx = 0; tx < w; tx += SEL_TILE) {
+      const tw = Math.min(SEL_TILE, w - tx), th = Math.min(SEL_TILE, h - ty);
+      const ba = blitSelRect(A, x0 + tx, y0 + ty, tw, th);
+      const bb = blitSelRect(B, x0 + tx, y0 + ty, tw, th);
+      const t = new Uint8Array(SEL_TILE * SEL_TILE);
+      let any = false;
+      for (let yy = 0; yy < th; yy++) for (let xx = 0; xx < tw; xx++) {
+        const i = yy * tw + xx, v = blendCoverage(ba[i], bb[i], mode);
+        if (v) { t[yy * SEL_TILE + xx] = v; any = true; }
+      }
+      if (any) tiles.set(((ty / SEL_TILE) | 0) * cols + ((tx / SEL_TILE) | 0), t);
+    }
+    return trimSelection({ x: x0, y: y0, width: w, height: h, data: coverageFromTiles(w, h, 0, tiles), docW, docH });
+  }
   const bufA = new Uint8Array(w * h), bufB = new Uint8Array(w * h);
   blitInto(bufA, w, h, x0, y0, A);
   blitInto(bufB, w, h, x0, y0, B);
   const out = new Uint8Array(w * h);
   for (let i = 0; i < out.length; i++) {
-    const va = bufA[i], vb = bufB[i];
-    let v;
-    switch (mode) {
-      case 'replace': v = vb; break;
-      case 'add': v = va + vb - va * vb / 255; break;
-      case 'intersect': v = va * vb / 255; break;
-      case 'subtract': v = va * (255 - vb) / 255; break;
-      default: v = va + vb - 2 * va * vb / 255; break;   
-    }
-    v = Math.round(v);
+    const v = blendCoverage(bufA[i], bufB[i], mode);
     out[i] = v < 0 ? 0 : v > 255 ? 255 : v;
   }
   return trimSelection({ x: x0, y: y0, width: w, height: h, data: out, docW, docH });
+}
+
+
+function blendCoverage(va, vb, mode) {
+  let v;
+  switch (mode) {
+    case 'replace': v = vb; break;
+    case 'add': v = va + vb - va * vb / 255; break;
+    case 'intersect': v = va * vb / 255; break;
+    case 'subtract': v = va * (255 - vb) / 255; break;
+    default: v = va + vb - 2 * va * vb / 255; break;
+  }
+  v = Math.round(v);
+  return v < 0 ? 0 : v > 255 ? 255 : v;
+}
+
+
+
+
+
+
+function uniformOver(sel, x0, y0, w, h) {
+  if (sel.width === 0 || sel.height === 0) return 0;
+  const d = sel.data;
+  if (!isSparseSel(d) || d.__tiles.size || d.__base) return -1;
+  const inside = x0 >= sel.x && y0 >= sel.y && x0 + w <= sel.x + sel.width && y0 + h <= sel.y + sel.height;
+  if (inside) return d.__fill | 0;
+  const apart = x0 + w <= sel.x || y0 + h <= sel.y || x0 >= sel.x + sel.width || y0 >= sel.y + sel.height;
+  return apart ? 0 : -1;
 }
 
 function rectUnion(p, q) {
@@ -600,6 +1029,30 @@ function rectIntersect(p, q) {
 export function invertSelection(sel) {
   assertSel(sel);
   const { docW, docH } = sel;
+  const src0 = sel.width > 0 && sel.height > 0 ? selData(sel) : null;
+  const sparseSrc = isSparseSel(src0);
+
+
+  if (sparseSrc || docW * docH > SPARSE_MIN) {
+
+    const coversAll = sel.x === 0 && sel.y === 0 && sel.width === docW && sel.height === docH;
+    if (sparseSrc && coversAll && !src0.__tiles.size && !src0.__base) {
+      const v = 255 - (src0.__fill | 0);
+      return v ? { x: 0, y: 0, width: docW, height: docH, data: makeCoverage(docW, docH, v), docW, docH }
+               : emptySelection(docW, docH);
+    }
+
+    const src = src0;
+    const base = (i) => {
+      const y = (i / docW) | 0, x = i - y * docW;
+      if (!src) return 255;
+      const si = x - sel.x, sj = y - sel.y;
+      if (si < 0 || sj < 0 || si >= sel.width || sj >= sel.height) return 255;
+      return 255 - src[sj * sel.width + si];
+    };
+    return { x: 0, y: 0, width: docW, height: docH,
+      data: coverageFromTiles(docW, docH, 255, new Map(), base, { src: sel, docW, docH }), docW, docH };
+  }
   const out = new Uint8Array(docW * docH).fill(255);
   if (sel.width > 0 && sel.height > 0) {
     const src = selData(sel);
@@ -618,11 +1071,127 @@ export function invertSelection(sel) {
 
 
 
+
+
+function sparseSoftSelection(sel, pad, run) {
+  const top = sel.data;
+  if (!isSparseSel(top) || !top.__tiles.size) return undefined;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, cur = sel, rootSel = sel, guard = 0;
+  while (cur && guard++ < 32) {
+    rootSel = cur;
+    const d = cur.data; if (!isSparseSel(d)) return undefined;
+    const cols = Math.ceil(cur.width / SEL_TILE);
+    for (const [k, t] of d.__tiles) {
+      const e = tileExtent(cur.width, cur.height, k, cols);
+      const gx = cur.x + e.x, gy = cur.y + e.y;
+      if (gx < x0) x0 = gx; if (gy < y0) y0 = gy;
+      if (gx + e.w > x1) x1 = gx + e.w; if (gy + e.h > y1) y1 = gy + e.h;
+    }
+    cur = d.__brushBase || null;
+  }
+  if (!(x1 > x0 && y1 > y0)) return undefined;
+  const root = rootSel, rd = root?.data;
+  const fullRoot = !!root && root.x === 0 && root.y === 0 && root.width === sel.docW && root.height === sel.docH
+    && isSparseSel(rd) && !rd.__tiles.size && !rd.__base && !rd.__neg && (rd.__fill | 0) === 255;
+  const emptyRoot = !!root && isSparseSel(rd) && !rd.__base && !rd.__neg && (rd.__fill | 0) === 0;
+  if (!fullRoot && !emptyRoot) return undefined;
+  const cx0 = Math.max(0, x0 - pad), cy0 = Math.max(0, y0 - pad);
+  const cx1 = Math.min(sel.docW, x1 + pad), cy1 = Math.min(sel.docH, y1 + pad);
+  const cw = cx1 - cx0, ch = cy1 - cy0;
+  if (!(cw > 0 && ch > 0) || cw * ch > 32e6) return undefined;
+  const reader = s => {
+    const d = selData(s), sx = s.x, sy = s.y, sw = s.width, sh = s.height;
+    return (x, y) => { const i = x - sx, j = y - sy; return i < 0 || j < 0 || i >= sw || j >= sh ? 0 : d[j * sw + i]; };
+  };
+  const orig = reader(sel), data = new Uint8Array(cw * ch);
+  for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++) data[y * cw + x] = orig(cx0 + x, cy0 + y);
+  const res = run({ x: cx0, y: cy0, width: cw, height: ch, data, docW: sel.docW, docH: sel.docH });
+  if (!res) return emptySelection(sel.docW, sel.docH);
+  const resAt = reader(res), cols = Math.ceil(sel.docW / SEL_TILE), tiles = new Map();
+  for (let ty = Math.floor(cy0 / SEL_TILE) * SEL_TILE; ty < cy1; ty += SEL_TILE)
+    for (let tx = Math.floor(cx0 / SEL_TILE) * SEL_TILE; tx < cx1; tx += SEL_TILE) {
+      const t = new Uint8Array(SEL_TILE * SEL_TILE);
+      for (let yy = 0; yy < SEL_TILE; yy++) {
+        const gy = ty + yy; if (gy >= sel.docH) break;
+        for (let xx = 0; xx < SEL_TILE; xx++) {
+          const gx = tx + xx; if (gx >= sel.docW) break;
+          t[yy * SEL_TILE + xx] = (gx >= cx0 && gx < cx1 && gy >= cy0 && gy < cy1) ? resAt(gx, gy) : orig(gx, gy);
+        }
+      }
+      tiles.set(((ty / SEL_TILE) | 0) * cols + ((tx / SEL_TILE) | 0), t);
+    }
+  return brushSelection(sel.docW, sel.docH, tiles, sel);
+}
+function sparseRootInfo(sel) {
+  let cur = sel, guard = 0;
+  while (cur && guard++ < 32) {
+    const d = cur.data; if (!isSparseSel(d)) return null;
+    if (!d.__brushBase) {
+      const full = !d.__tiles.size && !d.__base && !d.__neg && (d.__fill | 0) === 255
+        && cur.x === 0 && cur.y === 0 && cur.width === sel.docW && cur.height === sel.docH;
+      const empty = !d.__base && !d.__neg && (d.__fill | 0) === 0;
+      return full ? { full: true } : empty ? { empty: true } : null;
+    }
+    cur = d.__brushBase;
+  }
+  return null;
+}
+function sparseUniformFull(sel) {
+  const d = sel.data;
+  return isSparseSel(d) && !d.__tiles.size && !d.__base && !d.__neg && (d.__fill | 0) === 255
+    && sel.x === 0 && sel.y === 0 && sel.width === sel.docW && sel.height === sel.docH;
+}
+
+function smoothTiled(sel, r) {
+  const pad = r + 1, docW = sel.docW, docH = sel.docH;
+  const x0 = sel.x, y0 = sel.y, W = sel.width, H = sel.height;
+  if (!(W > 0 && H > 0)) return emptySelection(docW, docH);
+  const cols = Math.ceil(W / SEL_TILE), tiles = new Map();
+  for (let gtY = y0; gtY < y0 + H; gtY += SEL_TILE) for (let gtX = x0; gtX < x0 + W; gtX += SEL_TILE) {
+    const tw = Math.min(SEL_TILE, x0 + W - gtX), th = Math.min(SEL_TILE, y0 + H - gtY);
+    const cx0 = Math.max(0, gtX - pad), cy0 = Math.max(0, gtY - pad);
+    const cx1 = Math.min(docW, gtX + tw + pad), cy1 = Math.min(docH, gtY + th + pad);
+    const cw = cx1 - cx0, ch = cy1 - cy0;
+    if (!(cw > 0 && ch > 0)) continue;
+    const bytes = blitSelRect(sel, cx0, cy0, cw, ch);
+    let mn = 255, mx = 0;
+    for (let i = 0; i < bytes.length; i++) { const v = bytes[i]; if (v < mn) mn = v; if (v > mx) mx = v; if (mn === 0 && mx === 255) break; }
+    const key = ((gtY - y0) / SEL_TILE) * cols + ((gtX - x0) / SEL_TILE);
+    const t = new Uint8Array(SEL_TILE * SEL_TILE);
+    if (mn === mx) {
+
+      if (mn * 2 >= 255) { t.fill(255); tiles.set(key, t); }
+      continue;
+    }
+    const cw1 = cw + 1, ps = new Uint32Array((ch + 1) * (cw + 1));
+    for (let yy = 0; yy < ch; yy++) {
+      let row = 0;
+      for (let xx = 0; xx < cw; xx++) { row += bytes[yy * cw + xx]; ps[(yy + 1) * cw1 + xx + 1] = ps[yy * cw1 + xx + 1] + row; }
+    }
+    const offX = gtX - cx0, offY = gtY - cy0;
+    let any = false;
+    for (let yy = offY; yy < offY + th; yy++) {
+      const ya = Math.max(0, yy - r), yb = Math.min(ch - 1, yy + r);
+      for (let xx = offX; xx < offX + tw; xx++) {
+        const xa = Math.max(0, xx - r), xb = Math.min(cw - 1, xx + r);
+        const sum = ps[(yb + 1) * cw1 + xb + 1] - ps[ya * cw1 + xb + 1] - ps[(yb + 1) * cw1 + xa] + ps[ya * cw1 + xa];
+        const n = (yb - ya + 1) * (xb - xa + 1);
+        if (sum * 2 >= n * 255) { t[(yy - offY) * SEL_TILE + (xx - offX)] = 255; any = true; }
+      }
+    }
+    if (any) tiles.set(key, t);
+  }
+  return { x: x0, y: y0, width: W, height: H, data: coverageFromTiles(W, H, 0, tiles), docW, docH };
+}
 export function smoothSelection(sel, radius = 0) {
   assertSel(sel);
   const r = Math.max(0, Math.round(+radius || 0));
   if (!r) return cloneSelection(sel);
   if (sel.width === 0 || sel.height === 0) return emptySelection(sel.docW, sel.docH);
+  if (sparseUniformFull(sel)) return cloneSelection(sel);
+  const cropped = sparseSoftSelection(sel, r + 2, c => smoothSelection(c, r));
+  if (cropped !== undefined) return cropped;
+  if (sel.width * sel.height > 32e6) return smoothTiled(sel, r);
   const W = sel.width, H = sel.height, d = selData(sel);
   const ps = new Uint32Array((H + 1) * (W + 1));               
   for (let yy = 0; yy < H; yy++) {
@@ -652,6 +1221,156 @@ export function smoothSelection(sel, radius = 0) {
 
 
 
+
+function blitSelRect(sel, x0, y0, w, h) {
+  const out = new Uint8Array(w * h);
+  if (!(w > 0 && h > 0)) return out;
+  const d = selData(sel), sx = sel.x, sy = sel.y, sw = sel.width, sh = sel.height;
+  const ix0 = Math.max(x0, sx), iy0 = Math.max(y0, sy), ix1 = Math.min(x0 + w, sx + sw), iy1 = Math.min(y0 + h, sy + sh);
+  if (!isSparseSel(d)) {
+    for (let y = iy0; y < iy1; y++) {
+      const so = (y - sy) * sw + (ix0 - sx), dof = (y - y0) * w + (ix0 - x0);
+      out.set(d.subarray(so, so + (ix1 - ix0)), dof);
+    }
+    return out;
+  }
+
+  for (let y = iy0; y < iy1; y++) out.fill(d.__fill | 0, (y - y0) * w + (ix0 - x0), (y - y0) * w + (ix1 - x0));
+  const TS = SEL_TILE, cols = Math.ceil(sw / TS);
+  for (const [k, t] of d.__tiles) {
+    const e = tileExtent(sw, sh, k, cols);
+    const gx0 = sx + e.x, gy0 = sy + e.y, gx1 = gx0 + e.w, gy1 = gy0 + e.h;
+    const ax0 = Math.max(ix0, gx0), ax1 = Math.min(ix1, gx1), ay0 = Math.max(iy0, gy0), ay1 = Math.min(iy1, gy1);
+    if (ax1 <= ax0) continue;
+    for (let y = ay0; y < ay1; y++) {
+      const so = (y - gy0) * TS + (ax0 - gx0), dof = (y - y0) * w + (ax0 - x0);
+      out.set(t.subarray(so, so + (ax1 - ax0)), dof);
+    }
+  }
+  if (d.__base) {
+    for (let y = iy0; y < iy1; y++) for (let x = ix0; x < ix1; x++) {
+      const i = (y - sy) * sw + (x - sx);
+      const k = (((y - sy) / TS) | 0) * cols + (((x - sx) / TS) | 0);
+      if (!d.__tiles.has(k)) out[(y - y0) * w + (x - x0)] = d.__base(i) | 0;
+    }
+  }
+  return out;
+}
+
+export function selectionCropDense(sel, x0, y0, w, h) {
+  assertSel(sel);
+  return { x: 0, y: 0, width: w, height: h, data: blitSelRect(sel, x0, y0, w, h), docW: w, docH: h };
+}
+
+export function selectionFromTiles(x, y, width, height, tiles, fill = 0, docW = width, docH = height) {
+  return { x, y, width, height, data: coverageFromTiles(width, height, fill, tiles), docW, docH };
+}
+
+
+
+
+export function selectionBorderTiles(sel, pad = 0, tile = SEL_TILE) {
+  assertSel(sel);
+  const { docW, docH } = sel;
+  const out = new Map();
+  const add = (gx0, gy0, gx1, gy1) => {
+    gx0 = Math.max(0, Math.floor((gx0 - pad) / tile) * tile);
+    gy0 = Math.max(0, Math.floor((gy0 - pad) / tile) * tile);
+    gx1 = Math.min(docW, Math.ceil((gx1 + pad) / tile) * tile);
+    gy1 = Math.min(docH, Math.ceil((gy1 + pad) / tile) * tile);
+    for (let y = gy0; y < gy1; y += tile) for (let x = gx0; x < gx1; x += tile) {
+      const w = Math.min(tile, docW - x), h = Math.min(tile, docH - y);
+      out.set(`${x}:${y}`, { x, y, width: w, height: h });
+    }
+  };
+  const d = selData(sel);
+  if (!isSparseSel(d) || d.__base || d.__neg || d.__brushBase || !d.__tiles.size) {
+    if (isSparseSel(d) && !d.__tiles.size && !d.__base && !d.__neg) {
+      if ((d.__fill | 0) === 0) return [];
+
+      const gx0 = Math.floor(sel.x / tile) * tile, gy0 = Math.floor(sel.y / tile) * tile;
+      const gx1 = Math.ceil((sel.x + sel.width) / tile) * tile, gy1 = Math.ceil((sel.y + sel.height) / tile) * tile;
+      for (let y = gy0; y < gy1; y += tile) for (let x = gx0; x < gx1; x += tile) {
+        if (x === gx0 || y === gy0 || x + tile >= gx1 || y + tile >= gy1)
+          add(x, y, Math.min(docW, x + tile), Math.min(docH, y + tile));
+      }
+      return [...out.values()];
+    }
+    add(sel.x, sel.y, sel.x + sel.width, sel.y + sel.height);
+    return [...out.values()];
+  }
+  const fill = d.__fill | 0, cols = Math.ceil(sel.width / tile);
+  const uni = new Map();
+  for (const [k, t] of d.__tiles) {
+    let v = t[0], same = true;
+    for (let i = 1; i < t.length; i++) if (t[i] !== v) { same = false; break; }
+    uni.set(k, same ? v : -1);
+  }
+  const val = (tx, ty) => {
+    const k = ty * cols + tx;
+    if (tx < 0 || ty < 0 || tx >= cols || ty * tile >= sel.height) return fill;
+    return uni.has(k) ? uni.get(k) : fill;
+  };
+  const border = new Set();
+  for (const [k, v] of uni) {
+    const tx = k % cols, ty = (k / cols) | 0;
+    if (v === -1) { border.add(k); continue; }
+    let diff = false;
+    for (let dy = -1; dy <= 1 && !diff; dy++) for (let dx = -1; dx <= 1; dx++) {
+      if (!dx && !dy) continue;
+      const nv = val(tx + dx, ty + dy);
+      if (nv !== v) { diff = true; break; }
+    }
+    if (diff) border.add(k);
+  }
+  for (const k of border) {
+    const tx = k % cols, ty = (k / cols) | 0;
+    const gx0 = sel.x + tx * tile, gy0 = sel.y + ty * tile;
+    add(gx0, gy0, Math.min(sel.x + sel.width, gx0 + tile), Math.min(sel.y + sel.height, gy0 + tile));
+  }
+  return [...out.values()];
+}
+
+function featherTiled(sel, r) {
+  const sizes = boxSizesForGauss(r, 3), rs = sizes.map(s => (s - 1) >> 1);
+  const pad = rs[0] + rs[1] + rs[2];
+  if (pad <= 0) return cloneSelection(sel);
+  const docW = sel.docW, docH = sel.docH;
+  const ox0 = Math.max(0, sel.x - pad), oy0 = Math.max(0, sel.y - pad);
+  const ox1 = Math.min(docW, sel.x + sel.width + pad), oy1 = Math.min(docH, sel.y + sel.height + pad);
+  const outW = ox1 - ox0, outH = oy1 - oy0;
+  if (!(outW > 0 && outH > 0)) return emptySelection(docW, docH);
+  const cols = Math.ceil(outW / SEL_TILE), tiles = new Map();
+  for (let gtY = oy0; gtY < oy1; gtY += SEL_TILE) for (let gtX = ox0; gtX < ox1; gtX += SEL_TILE) {
+    const tw = Math.min(SEL_TILE, ox1 - gtX), th = Math.min(SEL_TILE, oy1 - gtY);
+    const cx0 = Math.max(0, gtX - pad), cy0 = Math.max(0, gtY - pad);
+    const cx1 = Math.min(docW, gtX + tw + pad), cy1 = Math.min(docH, gtY + th + pad);
+    const cw = cx1 - cx0, ch = cy1 - cy0;
+    if (!(cw > 0 && ch > 0)) continue;
+    const bytes = blitSelRect(sel, cx0, cy0, cw, ch);
+    let mn = 255, mx = 0;
+    for (let i = 0; i < bytes.length; i++) { const v = bytes[i]; if (v < mn) mn = v; if (v > mx) mx = v; if (mn === 0 && mx === 255) break; }
+    const key = ((gtY - oy0) / SEL_TILE) * cols + ((gtX - ox0) / SEL_TILE);
+    if (mn === mx) {
+      if (mn) { const t = new Uint8Array(SEL_TILE * SEL_TILE); t.fill(mn); tiles.set(key, t); }
+      continue;
+    }
+    let buf = new Float32Array(cw * ch), tmp = new Float32Array(cw * ch);
+    for (let i = 0; i < bytes.length; i++) buf[i] = bytes[i];
+    const colSum = new Float32Array(cw);
+    for (let p = 0; p < 3; p++) { boxBlurH(buf, tmp, cw, ch, rs[p]); boxBlurV(tmp, buf, cw, ch, rs[p], colSum); }
+    const t = new Uint8Array(SEL_TILE * SEL_TILE);
+    let any = false;
+    const offX = gtX - cx0, offY = gtY - cy0;
+    for (let y = 0; y < th; y++) for (let x = 0; x < tw; x++) {
+      const v = Math.round(buf[(offY + y) * cw + offX + x]);
+      const q = v < 0 ? 0 : v > 255 ? 255 : v;
+      if (q) { t[y * SEL_TILE + x] = q; any = true; }
+    }
+    if (any) tiles.set(key, t);
+  }
+  return { x: ox0, y: oy0, width: outW, height: outH, data: coverageFromTiles(outW, outH, 0, tiles), docW, docH };
+}
 export function featherSelection(sel, radius = 0) {
   assertSel(sel);
   const r = +radius;
@@ -659,6 +1378,10 @@ export function featherSelection(sel, radius = 0) {
   if (r < 0) throw new RangeError(`羽化半径不能是负数，收到 ${r}`);
   if (r === 0) return cloneSelection(sel);
   if (sel.width === 0 || sel.height === 0) return emptySelection(sel.docW, sel.docH);
+  if (sparseUniformFull(sel)) return cloneSelection(sel);
+  const cropped = sparseSoftSelection(sel, Math.ceil(r * 2) + 4, c => featherSelection(c, r));
+  if (cropped !== undefined) return cropped;
+  if (sel.width * sel.height > 32e6) return featherTiled(sel, r);
 
   
   const sizes = boxSizesForGauss(r, 3);
@@ -755,6 +1478,44 @@ export function contractSelection(sel, px) {
   return morphSelection(sel, px, false);
 }
 
+
+function morphTiled(sel, r, dilate) {
+  const docW = sel.docW, docH = sel.docH, pad = r + 2;
+  const ox0 = dilate ? Math.max(0, sel.x - r) : sel.x;
+  const oy0 = dilate ? Math.max(0, sel.y - r) : sel.y;
+  const ox1 = dilate ? Math.min(docW, sel.x + sel.width + r) : sel.x + sel.width;
+  const oy1 = dilate ? Math.min(docH, sel.y + sel.height + r) : sel.y + sel.height;
+  const W = ox1 - ox0, H = oy1 - oy0;
+  if (!(W > 0 && H > 0)) return emptySelection(docW, docH);
+  const cols = Math.ceil(W / SEL_TILE), tiles = new Map();
+  for (let gtY = oy0; gtY < oy1; gtY += SEL_TILE) for (let gtX = ox0; gtX < ox1; gtX += SEL_TILE) {
+    const tw = Math.min(SEL_TILE, ox1 - gtX), th = Math.min(SEL_TILE, oy1 - gtY);
+    const cx0 = Math.max(0, gtX - pad), cy0 = Math.max(0, gtY - pad);
+    const cx1 = Math.min(docW, gtX + tw + pad), cy1 = Math.min(docH, gtY + th + pad);
+    const cw = cx1 - cx0, ch = cy1 - cy0;
+    if (!(cw > 0 && ch > 0)) continue;
+    const bytes = blitSelRect(sel, cx0, cy0, cw, ch);
+    let mn = 255, mx = 0;
+    for (let i = 0; i < bytes.length; i++) { const v = bytes[i]; if (v < mn) mn = v; if (v > mx) mx = v; if (mn === 0 && mx === 255) break; }
+    const key = ((gtY - oy0) / SEL_TILE) * cols + ((gtX - ox0) / SEL_TILE);
+    const t = new Uint8Array(SEL_TILE * SEL_TILE);
+    if (mn === mx) {
+      if (mn === 0) continue;
+
+      if (dilate || (gtX > 0 && gtY > 0 && gtX + tw < docW && gtY + th < docH)) {
+        t.fill(mn); tiles.set(key, t); continue;
+      }
+    }
+    const res = morphSelection({ x: cx0, y: cy0, width: cw, height: ch, data: bytes, docW, docH }, r, dilate);
+    let any = false;
+    for (let y = 0; y < th; y++) for (let x = 0; x < tw; x++) {
+      const v = selectionValueAt(res, gtX + x, gtY + y);
+      if (v) { t[y * SEL_TILE + x] = v; any = true; }
+    }
+    if (any) tiles.set(key, t);
+  }
+  return { x: ox0, y: oy0, width: W, height: H, data: coverageFromTiles(W, H, 0, tiles), docW, docH };
+}
 function morphSelection(sel, px, dilate) {
   assertSel(sel);
   const r = Math.round(+px);
@@ -762,6 +1523,15 @@ function morphSelection(sel, px, dilate) {
   if (r < 0) throw new RangeError(`px 不能是负数（要反向请改用另一个函数），收到 ${px}`);
   if (r === 0) return cloneSelection(sel);
   if (sel.width === 0 || sel.height === 0) return emptySelection(sel.docW, sel.docH);
+  const root = sparseRootInfo(sel);
+  if (root?.full && !dilate)
+    throw new RangeError('收缩：带孔的全选/整幅选区需要整幅距离场；请先取消全选，或缩小到局部选区。');
+  if (root) {
+    if (root.full && !sel.data.__tiles.size) return cloneSelection(sel);
+    const cropped = sparseSoftSelection(sel, r + 2, c => morphSelection(c, r, dilate));
+    if (cropped !== undefined) return cropped;
+  }
+  if (sel.width * sel.height > 32e6) return morphTiled(sel, r, dilate);
 
   const { docW, docH } = sel;
   
@@ -1585,7 +2355,18 @@ export function objectFromLabels(found, docW, docH, id, opts = {}) {
 
 export function hardenSelection(sel) {
   assertSel(sel);
-  const d = selData(sel), out = new Uint8Array(d.length);
+  const d = selData(sel);
+  if (isSparseSel(d)) {
+    const tiles = new Map(), fill = (d.__fill | 0) >= 128 ? 255 : 0;
+    for (const [k, t] of d.__tiles) {
+      const out = new Uint8Array(t.length);
+      let any = false;
+      for (let i = 0; i < t.length; i++) { const v = t[i] >= 128 ? 255 : 0; out[i] = v; if (v !== fill) any = true; }
+      if (any) tiles.set(k, out);
+    }
+    return trimSelection({ ...sel, data: coverageFromTiles(sel.width, sel.height, fill, tiles) });
+  }
+  const out = new Uint8Array(d.length);
   for (let i = 0; i < d.length; i++) out[i] = d[i] >= 128 ? 255 : 0;
   return trimSelection({ ...sel, data: out });
 }
@@ -1599,11 +2380,20 @@ export function contrastSelection(sel, pct = 0) {
   if (!c) return cloneSelection(sel);
   if (c >= 100) return hardenSelection(sel);
   const k = 1 / (1 - c / 100);
-  const d = selData(sel), out = new Uint8Array(d.length);
-  for (let i = 0; i < d.length; i++) {
-    const v = Math.round((d[i] - 127.5) * k + 127.5);
-    out[i] = v < 0 ? 0 : v > 255 ? 255 : v;
+  const conv = v => { const q = Math.round((v - 127.5) * k + 127.5); return q < 0 ? 0 : q > 255 ? 255 : q; };
+  const d = selData(sel);
+  if (isSparseSel(d)) {
+    const fill = conv(d.__fill | 0), tiles = new Map();
+    for (const [key, t] of d.__tiles) {
+      const out = new Uint8Array(t.length);
+      let any = false;
+      for (let i = 0; i < t.length; i++) { const v = conv(t[i]); out[i] = v; if (v !== fill) any = true; }
+      if (any) tiles.set(key, out);
+    }
+    return trimSelection({ ...sel, data: coverageFromTiles(sel.width, sel.height, fill, tiles) });
   }
+  const out = new Uint8Array(d.length);
+  for (let i = 0; i < d.length; i++) out[i] = conv(d[i]);
   return trimSelection({ ...sel, data: out });
 }
 
@@ -1620,6 +2410,10 @@ export function refineEdgeSelection(sel, rgba, docW, docH, opts = {}) {
   assertDoc(docW, docH);
   const R = Math.max(0, Math.round(+opts.radius || 0));
   if (!R || sel.width === 0 || sel.height === 0) return cloneSelection(sel);
+
+
+  if (sel.width * sel.height > 16e6)
+    throw new RangeError('边缘细化：选区超过 1600 万像素，当前实现需要整幅浮点缓冲；请先缩小选区。');
   const px = pixelsRGBA(rgba, docW, docH);
   const pad = R * 2 + 2;
   const x0 = Math.max(0, sel.x - pad), y0 = Math.max(0, sel.y - pad);
@@ -1731,6 +2525,15 @@ export function selectionToPath(sel, opts = {}) {
   const threshold = Number.isFinite(opts.threshold) ? opts.threshold : 128;
   const { x: ox, y: oy, width: w, height: h } = sel;
   if (w === 0 || h === 0) return [];
+
+
+
+
+  const dv0 = sel.data;
+  if (dv0 && dv0.__virtual && w * h > SPARSE_MIN) {
+    if (!dv0.__tiles.size && dv0.__fill < threshold) return [];
+    return [[ox, oy, ox + w, oy, ox + w, oy + h, ox, oy + h, ox, oy]];
+  }
   const d = selData(sel);
   const inside = (i, j) => i >= 0 && j >= 0 && i < w && j < h && d[j * w + i] >= threshold;
 

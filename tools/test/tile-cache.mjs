@@ -24,6 +24,7 @@ assert.deepEqual(plan.cells.map(c => c.index), [0, 1, 2, 0]); assert.equal(plan.
 cache.setWanted(plan.cells);
 for (const c of plan.cells) assert.equal(cache.put(c.state, c.key, tile()), true);
 assert.equal(cache.stats.bytes, 64);
+assert.equal(cache.stats.residentWanted, 4);
 for (let i = 0; i < 50; i++) for (const c of plan.cells) assert.ok(cache.get(c.state, c.key));
 assert.equal(cache.stats.evictions, 7, 'revisiting the stable visible set does not evict/redecode it');
 assert.equal(cache.put(a, '0:0', tile(0, 0, 32)), false, 'a larger pinned replacement must not overflow the real byte budget');

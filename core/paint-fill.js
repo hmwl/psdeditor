@@ -27,7 +27,6 @@
 
 
 
-
 const clamp01 = v => v < 0 ? 0 : v > 1 ? 1 : v;
 
 export function srgbToLinear(v) {
@@ -71,9 +70,21 @@ export function methodFromKey(k) {
 }
 
 
-function midCurve(f, mid) {
-  if (!(mid > 0.001 && mid < 0.999) || Math.abs(mid - 0.5) < 1e-3) return f;
-  return Math.pow(f, Math.log(0.5) / Math.log(mid));
+export function gradientMidpoint(f, mid) {
+  if (!(mid > 0 && mid < 1)) return f;
+  return f <= mid ? f / (2 * mid) : 0.5 + (f - mid) / (2 * (1 - mid));
+}
+
+export function gradientMidpointsFromPSD(stops) {
+  return stops.map((s, i) => ({ ...s, mid: stops[(i + 1) % stops.length].mid }));
+}
+export function gradientMidpointsToPSD(stops) {
+  return stops.map((s, i) => ({ ...s, mid: stops[(i + stops.length - 1) % stops.length].mid }));
+}
+
+export function gradientSpan(type, width, height, cs, sn) {
+  return type === 'Lnr ' ? Math.min(width / Math.abs(cs), height / Math.abs(sn))
+    : Math.abs(cs) * width + Math.abs(sn) * height;
 }
 
 function segOf(stops, t) {
@@ -81,24 +92,6 @@ function segOf(stops, t) {
   while (i < stops.length - 2 && t > stops[i + 1].pos) i++;
   return i;
 }
-
-function monotoneTangents(xs, ys) {
-  const n = xs.length, d = new Array(n - 1), m = new Array(n);
-  for (let i = 0; i < n - 1; i++) { const h = xs[i + 1] - xs[i]; d[i] = h > 1e-9 ? (ys[i + 1] - ys[i]) / h : 0; }
-  m[0] = d[0] || 0; m[n - 1] = d[n - 2] || 0;
-  for (let i = 1; i < n - 1; i++) m[i] = d[i - 1] * d[i] <= 0 ? 0 : (d[i - 1] + d[i]) / 2;
-  for (let i = 0; i < n - 1; i++) {
-    if (Math.abs(d[i]) < 1e-12) { m[i] = 0; m[i + 1] = 0; continue; }
-    const a = m[i] / d[i], b = m[i + 1] / d[i], s = a * a + b * b;
-    if (s > 9) { const k = 3 / Math.sqrt(s); m[i] = k * a * d[i]; m[i + 1] = k * b * d[i]; }
-  }
-  return m;
-}
-function hermite(y0, y1, m0, m1, h, f) {
-  const f2 = f * f, f3 = f2 * f;
-  return (2 * f3 - 3 * f2 + 1) * y0 + (f3 - 2 * f2 + f) * h * m0 + (-2 * f3 + 3 * f2) * y1 + (f3 - f2) * h * m1;
-}
-
 
 function normStops(list, pick) {
   const s = (list || []).map(pick).filter(Boolean).sort((a, b) => a.pos - b.pos);
@@ -125,8 +118,6 @@ export function buildGradientLut(g) {
   
   const lab = method === 'perceptual' ? cs.map(s => rgbToOklab(s.c[0], s.c[1], s.c[2])) : null;
   const lin = method === 'linear' ? cs.map(s => s.c.map(srgbToLinear)) : null;
-  const xs = cs.map(s => s.pos);
-  const tan = method === 'classic' && smooth > 0 && cs.length > 2 ? [0, 1, 2].map(ch => monotoneTangents(xs, cs.map(s => s.c[ch]))) : null;
   for (let k = 0; k < size; k++) {
     const t = k / (size - 1), o = k * 4;
     let rgb;
@@ -135,7 +126,7 @@ export function buildGradientLut(g) {
     else {
       const i = segOf(cs, t), A = cs[i], B = cs[i + 1], h = B.pos - A.pos;
       let f = h > 1e-9 ? clamp01((t - A.pos) / h) : 1;
-      f = midCurve(f, A.mid);
+      f = gradientMidpoint(f, A.mid);
       if (method === 'stripes') rgb = f < 1 ? A.c : B.c;
       else if (method === 'perceptual') {
         const P = lab[i], Q = lab[i + 1];
@@ -147,23 +138,8 @@ export function buildGradientLut(g) {
         const e = f * f * (3 - 2 * f);
         rgb = [0, 1, 2].map(ch => A.c[ch] + (B.c[ch] - A.c[ch]) * e);
       } else {
-        rgb = [0, 1, 2].map(ch => {
-          const straight = A.c[ch] + (B.c[ch] - A.c[ch]) * f;
-          if (!tan) {
-            
-
-
-
-
-            if (method === 'classic' && smooth > 0) {
-              const s = f * f * (3 - 2 * f);
-              return straight + (A.c[ch] + (B.c[ch] - A.c[ch]) * s - straight) * (smooth * 0.5);
-            }
-            return straight;
-          }
-          const curved = hermite(A.c[ch], B.c[ch], tan[ch][i], tan[ch][i + 1], h, f);
-          return straight + (curved - straight) * smooth;
-        });
+        const eased = f + (f * f * (3 - 2 * f) - f) * (smooth * 0.5);
+        rgb = [0, 1, 2].map(ch => A.c[ch] + (B.c[ch] - A.c[ch]) * eased);
       }
     }
     lut[o] = rgb[0] < 0 ? 0 : rgb[0] > 255 ? 255 : rgb[0];
@@ -176,9 +152,10 @@ export function buildGradientLut(g) {
       else {
         const i = segOf(as, t), A = as[i], B = as[i + 1], h = B.pos - A.pos;
         let f = h > 1e-9 ? clamp01((t - A.pos) / h) : 1;
-        f = midCurve(f, A.mid);
+        f = gradientMidpoint(f, A.mid);
         if (method === 'stripes') f = f < 1 ? 0 : 1;
         else if (method === 'smooth') f = f * f * (3 - 2 * f);
+        else if (method === 'classic') f += (f * f * (3 - 2 * f) - f) * (smooth * 0.5);
         al = A.a + (B.a - A.a) * f;
       }
     }

@@ -8,18 +8,19 @@ import { createSparsePixels, sparseCoverage } from '../../../core/sparse-pixels.
 import { lazyTileState } from '../../../core/render/tile-cache.js';
 import { onDocumentCacheRelease } from '../document-cache.js';
 import { compositeAll, regionizeDoc, patternToRGBA } from '../../../core/app.js';
+import { blendPixelRGB } from '../../../core/compose.js';
 import {
   compositePaint, hash01, makeTip, sampleTip, dabDynamics, symmetryMaps, tipForDiameter, normalizeDynamics,
   textureLum, textureAt, textureCombine, dualCombine, stampMask,
 } from '../../../core/brush-engine.js';
-import { recomposeLayerRGBA } from '../../../core/psd-raster.js';
+import { readLazyMaskPixel, recomposeLayerRGBA, writeLazyMaskRect } from '../../../core/psd-raster.js';
 import { growNativePlanes } from '../../../core/native-pixel-edit.js';
 import { brushLib } from '../brushes-panel.js';
 import { colorPanel as colorPanelUI } from '../color-panel.js';
 import { presets } from '../presets-panels.js';
 import { psPanels } from '../ps-panels.js';
 import { tools } from '../tools.js';
-import { $, selectionToMaskGray } from './01-boot.js';
+import { $, BRUSHM, SELM, selectionBounds, selectionToMaskGray } from './01-boot.js';
 import {
   CHP, CM, brushHistory, curStroke, doc, docH, docW, layerDeletes, layerTransforms, layerTree, li, maskPaint,
   pixelPaint, proofOn, selection, set_curStroke, set_selPathCache, set_selection, soBaked, soLayerIndex,
@@ -28,9 +29,9 @@ import {
 import { actRecord, histCap, histLog, histPush, syncHistoryPanel, updateUndoButtons } from './03-history.js';
 import { RASTER_KIND, isBackgroundLayer, rasterKindOf } from './05-layer-lock-guides.js';
 import { PAINT_WARP_WHY, paintMap, srcBoxOfDocRect } from './11-paint-common.js';
-import { qmask, qmaskRefresh } from './13-quickmask-apply-image.js';
+import { qmask, qmaskRefresh, qmaskStrokeBegin, qmaskStrokeEnd, qmaskStrokeMove } from './13-quickmask-apply-image.js';
 import { shapeOpts } from './17-shape-pen.js';
-import { lazyPixelSource } from './21-load-document.js';
+import { decodedTileCache, lazyPixelSource } from './21-load-document.js';
 import {
   layerCanvasCache, layerCanvasCacheRaw, maskThumbCache, renderLayerPanel, selLayer, thumbCache,
 } from './23-layers-panel.js';
@@ -40,9 +41,9 @@ import {
 import { transformChanged } from './28-layer-props-transform.js';
 import { displayOrder } from './29-scrubby-live.js';
 import {
-  chanView, cmDisplay, composeDocForOrder, gpuActive, gpuForgetLayer, gpuFrame, gpuInvalidateData,
-  gpuPruneDetailTiles, gpuRekey, gpuRepaintLayer, gpuSparseChanged, presentCanvas, previewCompositeDoc,
-  renderLargeViewportFallback, renderPreviewOnly, scratchCtx,
+  chanView, cmDisplay, composeDocForOrder, compositeRegionRGBA, gpuActive, gpuForgetLayer, gpuFrame,
+  gpuInvalidateData, gpuPruneDetailTiles, gpuRekey, gpuRepaintLayer, gpuSparseChanged, presentCanvas,
+  previewCompositeDoc, renderLargeViewportFallback, renderPreviewOnly, scratchCtx,
 } from './30-render.js';
 import {
   PAINT_TOOLS, bgRGB, brush, docTool, fgRGB, grayOf, hexOf, mixerOpts, set_mixerAmount, set_mixerCarry,
@@ -94,7 +95,9 @@ export function paintGuard(){
   if (target === 'mask') {
     const mp = maskPaint[idx];
     if (!mp && !dl.mask) return '';          
-    if (!mp && dl.mask && !isU8(dl.mask.gray)) return `这份文档是 ${doc.depth} 位/通道，蒙版是 16 位样本，暂时只支持涂 8 位蒙版`;
+    if (!mp && dl.mask && !isU8(dl.mask.gray) && dl.mask.lazyChannel == null) {
+    return `这份文档是 ${doc.depth} 位/通道，蒙版是 16 位样本，暂时只支持涂 8 位蒙版`;
+  }
     if (!mp && dl.mask && !(L.mask)) return '这个图层只有真实蒙版(-3)、没有用户蒙版(-2)，暂不支持直接涂';
     const struct = maskStructOp(idx);
     if (struct && (struct.op === 'deleteLayerMask' || struct.op === 'applyLayerMask'))
@@ -145,8 +148,23 @@ export const brushTarget = () => {
 
 
 export function ensureMaskPaint(idx, opts = {}){
-  if (maskPaint[idx]) return maskPaint[idx];
   const dl = doc && doc.layers[idx];
+  const existing = maskPaint[idx];
+  if (existing) {
+
+    if (opts.point && existing.compact && existing.mode === 'existing' && existing.w === 1 && existing.h === 1) {
+      const W = Math.min(docW, 2048), H = Math.min(docH, 2048);
+      const L = Math.max(0, Math.min(docW - W, Math.floor(opts.point.x - W / 2)));
+      const T = Math.max(0, Math.min(docH - H, Math.floor(opts.point.y - H / 2)));
+      const fill = existing.gray[0] != null ? existing.gray[0] : (existing.defaultColor != null ? existing.defaultColor : 255);
+      const gray = new Uint8Array(W * H).fill(fill), orig = Uint8Array.from(gray);
+      const m = dl?.mask;
+      if (m) { m.gray = Uint8Array.from(gray); m.width = W; m.height = H; m.left = L; m.top = T; m.defaultColor = fill; m.relative = false; m.flags = 0; }
+      invalidateLazyMaskCaches(idx);
+      return (maskPaint[idx] = { ...existing, mode: 'existing', gray, orig, w: W, h: H, left: L, top: T, docLeft: L, docTop: T, defaultColor: fill });
+    }
+    return existing;
+  }
   if (!dl) return null;
   const m = dl.mask;
   if (m && isU8(m.gray)) {
@@ -170,8 +188,46 @@ export function ensureMaskPaint(idx, opts = {}){
                                w: m.width, h: m.height, left: m.left, top: m.top, docLeft, docTop,
                                defaultColor: m.defaultColor == null ? 255 : m.defaultColor });
   }
+  if (m && m.lazyChannel != null) {
+
+    if (!opts.point || !Number.isFinite(opts.point.x) || !Number.isFinite(opts.point.y)) {
+      if (opts.create && opts.fill != null && !opts.gray) {
+        const e = dl.lazyMaskEdits || (dl.lazyMaskEdits = { tiles: new Map(), version: 0 });
+        const before = { uniform: e.uniform != null ? e.uniform : null, tiles: e.tiles };
+        e.uniform = opts.fill; e.tiles = new Map(); e.version++;
+        invalidateLazyMaskCaches(idx);
+        return (maskPaint[idx] = { lazyUniform: true, uniformValue: opts.fill, before });
+      }
+      $('#notice').textContent = '超大图层蒙版：请直接在画布上涂；带灰度的整幅蒙版菜单操作暂未接入分块编辑。';
+      return null;
+    }
+    const W = Math.min(docW, 2048), H = Math.min(docH, 2048);
+    const L = Math.max(0, Math.min(docW - W, Math.floor(opts.point.x - W / 2)));
+    const T = Math.max(0, Math.min(docH - H, Math.floor(opts.point.y - H / 2)));
+    const def = m.defaultColor != null ? m.defaultColor : 255;
+    const view = m.disabled ? { ...dl, mask: { ...m, disabled: false } } : dl;
+    const lb = dl.bounds?.left || 0, lt = dl.bounds?.top || 0;
+    const gray = new Uint8Array(W * H);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const v = readLazyMaskPixel(view, L + x - lb, T + y - lt, false);
+      gray[y * W + x] = v == null ? def : v;
+    }
+    return (maskPaint[idx] = { mode: 'existing', compact: true, lazy: true, gray, orig: Uint8Array.from(gray),
+      synced: Uint8Array.from(gray), w: W, h: H, left: L, top: T, docLeft: L, docTop: T, defaultColor: def });
+  }
   if (!opts.create) return null;
   
+  if (docW * docH > 128e6 && !opts.point) {
+    const fill = opts.fill != null ? opts.fill : 255;
+    const gray = opts.gray ? Uint8Array.from(opts.gray) : Uint8Array.of(fill);
+    if (gray.length !== 1) return null;
+    dl.mask = { gray: Uint8Array.of(gray[0]), width: 1, height: 1, left: 0, top: 0, defaultColor: gray[0],
+      flags: 0, relative: false, disabled: false, invert: false, fromOtherData: false };
+    invalidateLazyMaskCaches(idx);
+    return (maskPaint[idx] = { mode: 'new', compact: true, gray, orig: Uint8Array.of(gray[0]),
+      w: 1, h: 1, left: 0, top: 0, docLeft: 0, docTop: 0, defaultColor: gray[0] });
+  }
+
   const empty = !(dl.width > 0 && dl.height > 0);
   if (empty && !(docW > 0 && docH > 0)) return null;
   const compact = docW * docH > 64e6 && opts.point && Number.isFinite(opts.point.x) && Number.isFinite(opts.point.y);
@@ -195,6 +251,29 @@ function registerSparse(pp,root){
 onDocumentCacheRelease((uid,last)=>{for(const e of sparseOwners)if(last||e.uid===uid){e.model.deref()?.clear();const root=e.root?.deref();if(root){if(root.edits){root.edits.tiles.clear();root.edits.version++;}gpuPruneDetailTiles(root);}sparseOwners.delete(e);}});
 export const sparsePaintBusy=()=>sparsePending>0;
 export function flushSparsePaint(){if(curStroke?.sparse)return endStroke();return sparseTail;}
+
+
+
+export function restoreSparsePaint(idx, tiles, meta = {}){
+  if (!tiles || !tiles.size) return null;
+  const dl = doc && doc.layers && doc.layers[idx];
+  if (!dl) return null;
+  const sameTiles = new Map(tiles);
+  if (pixelPaint[idx]?.sparse) { for (const [k, t] of sameTiles) pixelPaint[idx].sparse.tiles.set(k, t); putLayerOp(idx, { op: 'sparsePixels', index: idx }); return pixelPaint[idx]; }
+  const w = meta.w > 0 ? meta.w : dl.width, h = meta.h > 0 ? meta.h : dl.height;
+  if (!(w > 0 && h > 0)) return null;
+  const sparse = createSparsePixels({ width: w, height: h, tiles: sameTiles,
+    readTile: (x, y, tw, th) => ({ x, y, width: tw, height: th, data: new Uint8ClampedArray(tw * th * 4) }) });
+  const root = lazyTileState(dl, doc.editorDocUID);
+  root.edits = sparse.descriptor;
+  const pp = { sparse, root, w, h, left: meta.left || 0, top: meta.top || 0, clean: true, emptySource: !!meta.emptySource, ownerID: doc.editorDocUID };
+  dl.width = w; dl.height = h;
+  dl.bounds = { top: pp.top, left: pp.left, bottom: pp.top + h, right: pp.left + w };
+  dl.lazyPreview = { data: new Uint8ClampedArray(4), width: 1, height: 1 };
+  registerSparse(pp, root);
+  putLayerOp(idx, { op: 'sparsePixels', index: idx });
+  return (pixelPaint[idx] = pp);
+}
 export function forkPixelPaint(pp){
   if(!pp?.sparse)return pp;
   const copy={...pp,sparse:pp.sparse.fork()};registerSparse(copy,pp.root);return copy;
@@ -225,7 +304,10 @@ export function ensurePixelPaint(idx,{sparse:allowSparse=false}={}){
     dl.lazyPreview={data:new Uint8ClampedArray(4),width:1,height:1};
     registerSparse(pp,root);return(pixelPaint[idx]=pp);
   }
-  if(allowSparse&&!dl.rgba&&(dl.lazyChannels||dl.lazyCompressedChannels||dl.lazyImage)&&doc.depth===8&&doc.mode===3&&!dl.mask&&!dl.vectorMask&&!dl.effects&&!dl.fill&&!transformChanged(idx)){
+
+
+
+  if(allowSparse&&!dl.rgba&&(dl.lazyChannels||dl.lazyCompressedChannels||dl.lazyImage||dl.lazyRasterFile||dl.lazyTileStore||dl.lazyPixelOps?.length)&&doc.depth===8&&doc.mode===3&&!dl.mask&&!dl.vectorMask&&!dl.effects&&!dl.fill&&!transformChanged(idx)){
     const sparse=createSparsePixels({width:dl.width,height:dl.height,readTile:lazyPixelSource(dl,doc.depth,doc.mode)}),root=lazyTileState(dl,doc.editorDocUID);
     root.edits=sparse.descriptor;
     const pp={sparse,root,w:dl.width,h:dl.height,left:dl.bounds.left,top:dl.bounds.top,clean:true,ownerID:doc.editorDocUID};
@@ -291,6 +373,7 @@ export function maskAdded(idx){
     const rgba = recomposeLayerRGBA(dl, doc.mode, maskOverrideOf(idx, mp));
     if (rgba) { dl.rgba = rgba; if (pixelPaint[idx]) pixelPaint[idx].rgba = rgba; }
   }
+  if (dl && !dl.rgba && dl.mask) invalidateLazyMaskCaches(idx);
   delete maskThumbCache[idx]; delete layerCanvasCache[idx]; delete thumbCache[idx];
   const t = $('#brTarget'); if (t) t.value = 'mask';
   syncBrushPanel(); renderLayerPanel(); renderProps(); renderPreviewOnly(); updateUndoButtons();
@@ -339,8 +422,17 @@ export function beginStroke(pt, opts = {}){
   if (target === 'qmask') {
     
     if (opts.opFn) { $('#err').textContent = '快速蒙版模式下只能用画笔 / 铅笔 / 橡皮擦涂抹'; return null; }
-    S = { target: 'qmask', idx: -1, buf: qmask.gray, base: Uint8Array.from(qmask.gray), w: docW, h: docH,
-          ox: 0, oy: 0, M: [1, 0, 0, 1, 0, 0], inv: [1, 0, 0, 1, 0, 0], px: 1, tone: grayOf(erase ? bgRGB : fgRGB), label: '快速蒙版' };
+    const ok = qmaskStrokeBegin(pt, {
+      tone: opts.tone !== undefined ? opts.tone : grayOf(erase ? bgRGB : fgRGB),
+      size: opts.size || brush.size,
+      hardness: opts.hardness !== undefined ? opts.hardness : brush.hardness,
+      opacity: opts.opacity !== undefined ? opts.opacity : brush.opacity,
+    });
+    if (!ok) return null;
+    const S = { target: 'qmaskSparse', qmaskStroke: true, last: { x: pt.x, y: pt.y } };
+    set_curStroke(S);
+    $('#err').textContent = '';
+    return S;
   } else if (target === 'alpha') {
     
     if (opts.opFn) { $('#err').textContent = '在 Alpha 通道上只能用画笔 / 铅笔 / 橡皮擦涂抹'; return null; }
@@ -379,15 +471,21 @@ export function beginStroke(pt, opts = {}){
           ox: pp.left, oy: pp.top, M: map.M, inv: map.inv, lockAlpha,
           px: 4, color: eraseBg ? bgRGB.slice() : erase ? null : (opts.color || fgRGB), erase: erase && !eraseBg };
     if(pp.sparse){
+      if(opts.sparseClone && ((pp.left|0)!==0||(pp.top|0)!==0||pp.w!==docW||pp.h!==docH)){
+        $('#err').textContent='仿制 / 图案图章：超大文档目前要求图层位于画布原点且与画布同尺寸。';
+        return null;
+      }
       if(curStroke?.sparse)endStroke();
-      S.sparse=pp.sparse;S.transaction=pp.sparse.begin();S.docRef=doc;S.pending=sparseTail;
+      if(opts.sparseClone){S.sparseClone=true;S.sparseRef=pp.sparse;S.docRef=doc;}
+      else{S.sparse=pp.sparse;S.transaction=pp.sparse.begin();S.docRef=doc;S.pending=sparseTail;}
     }
   }
   strokeSetup(S, pt, opts);
+  if(S.sparseClone)S.acc=sparseCoverage(S.w,S.h);
   if(S.sparse&&(opts.op||S.opFn||S.dual)){$('#err').textContent='此超大图层目前支持画笔、铅笔和普通橡皮擦';return null;}
-  if(S.sparse)sparsePending++;
+  if(S.sparse||S.sparseClone)sparsePending++;
   set_curStroke(S);
-  if(S.sparse)updateUndoButtons();
+  if(S.sparse||S.sparseClone)updateUndoButtons();
   $('#err').textContent = '';
   if (!opts.deferDab) emitDab(S, pt.x, pt.y, S.lastP);
   return S;
@@ -426,7 +524,7 @@ export function strokeSetup(S, pt, opts){
   S.dual = null;
   if (S.dyn && S.dyn.dual && S.dyn.dual.on) {
     const c = S.dyn.dual, tipK = c.sample ? brushLib.ensureSample(c.sample) : c.tip;
-    S.dual = { cfg: c, tip: makeTip(tipK), sq: tipK === 'square', mask: S.sparse?sparseCoverage(S.w,S.h):new Float32Array(S.w * S.h), carry: 0, last: { x: pt.x, y: pt.y } };
+    S.dual = { cfg: c, tip: makeTip(tipK), sq: tipK === 'square', mask: (S.sparse||S.sparseClone)?sparseCoverage(S.w,S.h):new Float32Array(S.w * S.h), carry: 0, last: { x: pt.x, y: pt.y } };
   }
   S.dynBase = { angle: S.angle, roundness: S.round, fg: S.color, bg: bgRGB.slice(),
     pressureSize: !plain && (opts.pressureSize !== undefined ? opts.pressureSize : brush.pressureSize),
@@ -436,7 +534,7 @@ export function strokeSetup(S, pt, opts){
   S.shaped = !!S.tip || S.tipKind === 'square' || S.round < .999 || !!(dynOn && S.dyn.shape.on && (S.dyn.shape.roundJitter > 0 || S.dyn.shape.flipX || S.dyn.shape.flipY));
   S.fancy = S.shaped || dynOn || !!S.sym || S.dynBase.pressureSize || S.dynBase.pressureOpacity || !!S.tex || !!S.dual;
   S.dabIndex = 0; S.dir = 0; S.dir0 = null; S.lastP = pt.p !== undefined ? pt.p : 1; S.pen = opts.noSel ? null : stylusState;
-  S.acc = S.sparse?null:new Float32Array(S.w * S.h);
+  S.acc = (S.sparse||S.sparseClone)?null:new Float32Array(S.w * S.h);
   S.selCov = qmask || opts.noSel ? null : selCovFn();
   S.dirty = null; S.carry = 0; S.last = { x: pt.x, y: pt.y }; S.dabs = 0;
 }
@@ -576,7 +674,16 @@ function queueSparseDab(S,cx,cy,D){
     if(q.length&&!S.error){const next=q.shift();S.sparseBatch=false;queueSparseDab(S,next.cx,next.cy,next.D);}else S.sparseBatch=false;
   });
 }
+
+
+function stampHugeCloneDab(S, cx, cy, D){
+  const sub = { ...S, sparseClone: false, sparse: null, buf: null, base: null, lockAlpha: false, px: 4,
+    opFn: () => {}, dirty: null, dirtyDoc: S.dirtyDoc };
+  stampDab(sub, cx, cy, D);
+  S.dirtyDoc = sub.dirtyDoc;
+}
 export function stampDab(S, cx, cy, D){
+  if(S.sparseClone){stampHugeCloneDab(S,cx,cy,D);return;}
   if(S.sparse){queueSparseDab(S,cx,cy,D);return;}
   if (S.beforeDab) S.beforeDab(cx, cy, D);
   if (S.skipStamp) return;                          
@@ -680,6 +787,7 @@ export function stampDab(S, cx, cy, D){
 }
 
 export function strokeTo(S, pt){
+  if (S?.qmaskStroke) { qmaskStrokeMove(pt); S.last = { x: pt.x, y: pt.y }; return; }
   if (S.recPts) S.recPts.push([Math.round(pt.x * 10) / 10, Math.round(pt.y * 10) / 10, pt.p !== undefined ? Math.round(pt.p * 100) / 100 : 1]);   
   const step = Math.max(0.5, S.spacing * S.radius * 2);
   const x = S.last.x, y = S.last.y;
@@ -756,6 +864,8 @@ function sparseDirtyDocRect(S){
 }
 
 export function repaintStrokeLayer(S){
+  if (S?.qmaskStroke) { drawGizmo(); return; }
+  if (S?.sparseClone) { drawGizmo(); return; }
   if(S.sparse){
     if(doc===S.docRef){
       delete thumbCache[S.idx];
@@ -771,6 +881,12 @@ export function repaintStrokeLayer(S){
   if (S.target === 'alpha') { markAlphaPainted(S.idx, true); renderPreviewOnly(); return; }
   if (S.target === 'mask') {
     const mp = maskPaint[S.idx], dl = doc.layers[S.idx];
+    if (dl?.mask && !dl.rgba && (dl.mask.lazyChannel != null || dl.lazyChannels || dl.lazyImage || dl.lazyRasterFile || dl.lazyTileStore)) {
+
+      invalidateLazyMaskCaches(S.idx);
+      if (curStroke === S) renderPreviewOnly();
+      return;
+    }
     const Lm = layerTree && layerTree.flat && layerTree.flat[S.idx];
     
     const adjL = !!(Lm && Lm.adjustment && Lm.adjustment.kind !== 'fill');
@@ -827,8 +943,120 @@ export function strokeLineTo(pt, keepOpen){
   syncBrushPanel();
   return true;
 }
+
+
+async function finishHugeClone(S){
+  if (doc !== S.docRef) return null;
+  const pp = S.sparseRef, d = S.dirtyDoc;
+  if (!pp || !d || !isFinite(d.x0) || !isFinite(d.y0) || !isFinite(d.x1) || !isFinite(d.y1)) return null;
+  const bx = Math.max(0, Math.floor(d.x0) - 1), by = Math.max(0, Math.floor(d.y0) - 1);
+  const bx1 = Math.min(docW, Math.ceil(d.x1) + 1), by1 = Math.min(docH, Math.ceil(d.y1) + 1);
+  const bw = bx1 - bx, bh = by1 - by;
+  if (!(bw > 0 && bh > 0)) return null;
+  const base = await pp.readRect({ x: bx, y: by, w: bw, h: bh });
+  const out = new Uint8ClampedArray(base);
+  let src = null, sw = 0, sh = 0, sx0 = 0, sy0 = 0;
+  if (S.cloneMap) {
+    const xs = [], ys = [];
+    for (const [x, y] of [[bx, by], [bx + bw, by], [bx, by + bh], [bx + bw, by + bh]]) {
+      const q = S.cloneMap(x, y); xs.push(q.x); ys.push(q.y);
+    }
+    sx0 = Math.max(0, Math.floor(Math.min(...xs)) - 2); sy0 = Math.max(0, Math.floor(Math.min(...ys)) - 2);
+    const sx1 = Math.min(docW, Math.ceil(Math.max(...xs)) + 2), sy1 = Math.min(docH, Math.ceil(Math.max(...ys)) + 2);
+    sw = sx1 - sx0; sh = sy1 - sy0;
+    if (sw > 0 && sh > 0) {
+      if (S.sampleScope && S.sampleScope !== 'layer') {
+        const comp = await compositeRegionRGBA(sx0, sy0, sx1, sy1, {
+          belowIdx: S.sampleScope === 'below' ? S.idx : null, ignoreAdj: S.ignoreAdj,
+        });
+        if (comp) { src = comp.data; sw = comp.width; sh = comp.height; sx0 = comp.x; sy0 = comp.y; }
+      } else {
+        try { src = await pp.readRect({ x: sx0, y: sy0, w: sw, h: sh }); } catch { src = null; }
+      }
+    }
+  }
+  const mode = S.pattern ? (S.patMode || 'norm') : (S.cloneMode || 'norm');
+  const org = S.patOrigin || { x: 0, y: 0 }, lockA = !!S.lockAlpha;
+  const blend = (dst, o, srcCol, na, px, py) => {
+    let ca = na * (srcCol[3] / 255);
+    if (mode === 'diss') {
+      const h = (((Math.floor(px) * 73856093) ^ (Math.floor(py) * 19349663)) >>> 0) % 4096;
+      ca = ca > h / 4096 ? 1 : 0;
+    }
+    const ba = base[o + 3] / 255, oa = ca + ba * (1 - ca);
+    if (oa <= 0) { dst[o + 3] = lockA ? base[o + 3] : 0; return; }
+    let r = srcCol[0], g = srcCol[1], b = srcCol[2];
+    if (mode && mode !== 'norm' && mode !== 'diss' && ba > 0) {
+      const bl = blendPixelRGB(mode, [base[o], base[o + 1], base[o + 2]], [srcCol[0], srcCol[1], srcCol[2]]);
+      r = srcCol[0] * (1 - ba) + bl[0] * ba; g = srcCol[1] * (1 - ba) + bl[1] * ba; b = srcCol[2] * (1 - ba) + bl[2] * ba;
+    }
+    dst[o] = Math.round((r * ca + base[o] * ba * (1 - ca)) / oa);
+    dst[o + 1] = Math.round((g * ca + base[o + 1] * ba * (1 - ca)) / oa);
+    dst[o + 2] = Math.round((b * ca + base[o + 2] * ba * (1 - ca)) / oa);
+    dst[o + 3] = lockA ? base[o + 3] : Math.round(oa * 255);
+  };
+  for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) {
+    const docX = bx + x, docY = by + y, c = S.acc[docY * docW + docX];
+    if (!(c > 0)) continue;
+    let col = null;
+    if (S.pattern) col = BRUSHM.patternAt(S.pattern, docX - org.x, docY - org.y);
+    else if (src) { const u = S.cloneMap(docX + 0.5, docY + 0.5); col = BRUSHM.cloneAt(src, sw, sh, u.x - sx0 - 0.5, u.y - sy0 - 0.5); }
+    if (!col) continue;
+    blend(out, (y * bw + x) * 4, col, c, docX, docY);
+  }
+  const tx = pp.begin();
+  try {
+    await tx.prepare({ x: bx, y: by, w: bw, h: bh });
+    for (const t of tx.contexts({ x: bx, y: by, w: bw, h: bh })) {
+      const x0 = Math.max(bx, t.x), x1 = Math.min(bx + bw, t.x + t.width);
+      const y0 = Math.max(by, t.y), y1 = Math.min(by + bh, t.y + t.height);
+      let changed = false;
+      for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+        if (!(S.acc[y * docW + x] > 0)) continue;
+        const si = ((y - by) * bw + (x - bx)) * 4, di = ((y - t.y) * t.width + (x - t.x)) * 4;
+        for (let k = 0; k < 4; k++) t.rgba[di + k] = out[si + k];
+        changed = true;
+      }
+      if (changed) tx.dirty(t.key, { x0: 0, y0: 0, x1: t.width - 1, y1: t.height - 1 });
+    }
+    const patches = tx.finish();
+    if (patches.length) {
+      brushHistory.undo.push({ kind: 'sparsePixels', idx: S.idx, patches });
+      if (brushHistory.undo.length > histCap('brush')) brushHistory.undo.shift();
+      brushHistory.redo.length = 0;
+      histPush(S.cloneLabel || '仿制图章', 'brush');
+    }
+    if (S.last) lastPaintPt = { x: S.last.x, y: S.last.y, idx: S.idx, target: S.target, tool: docTool };
+    commitPixelPaint(S.idx); renderLayerPanel(); renderPreviewOnly(); updateUndoButtons();
+    return { x: bx, y: by, w: bw, h: bh };
+  } catch (e) {
+    try { tx.rollback(); } catch {}
+    $('#err').textContent = (S.cloneLabel || '仿制图章') + '失败：' + humanEditError(e && e.message || e);
+    return null;
+  }
+}
 export function endStroke(){
   const S = curStroke;
+  if (S?.qmaskStroke) {
+    if (curStroke === S) set_curStroke(null);
+    qmaskStrokeEnd();
+    updateUndoButtons();
+    return null;
+  }
+  if(S?.sparseClone){
+    if(S.ending)return S.ending;
+    if(paintGest?.S===S)endPaintGesture(false);
+    S.closed=true;S.forced=true;
+    S.ending=(async()=>{
+      if(curStroke===S)set_curStroke(null);
+      let out=null;
+      try{out=await finishHugeClone(S);}catch(e){S.error=e;if(doc===S.docRef)$('#err').textContent=(S.cloneLabel||'仿制图章')+'未能完成：'+humanEditError(e&&e.message||e);}
+      updateUndoButtons();
+      return out;
+    })().finally(()=>{sparsePending--;updateUndoButtons();});
+    sparseTail=S.ending.catch(()=>{});
+    return S.ending;
+  }
   if(S?.sparse){
     if(S.ending)return S.ending;
     if(paintGest?.S===S)endPaintGesture(false);
@@ -874,9 +1102,56 @@ function commitPaint(target, idx){
   if (target === 'mask') return commitMaskPaint(idx);
   return commitPixelPaint(idx);
 }
+function invalidateLazyMaskCaches(idx){
+  const dl = doc && doc.layers[idx];
+  if (!dl) return;
+  dl.lazyTileCache = null; dl.lazyHighTiles = new Map(); dl.lazyImageTiles = new Map(); dl.lazyMaskFeatherCache = null;
+  dl.lazyTileVersion = (dl.lazyTileVersion || 0) + 1;
+  try { decodedTileCache.releaseOwner(doc.editorDocUID); } catch {}
+  delete layerCanvasCache[idx]; delete thumbCache[idx]; delete maskThumbCache[idx];
+  gpuSparseChanged();
+}
+function commitLazyMaskPaint(idx, mp){
+  const dl = doc && doc.layers[idx], m = dl && dl.mask;
+  if (!m || m.lazyChannel == null) return false;
+  const box = diffBox(mp.gray, mp.synced, mp.w, mp.h, 1);
+  if (!box) return true;
+  const lb = dl.bounds?.left || 0, lt = dl.bounds?.top || 0;
+  const docX = mp.docLeft + box.x, docY = mp.docTop + box.y;
+  const mx = (m.relative ? docX - lb : docX) - (m.left || 0);
+  const my = (m.relative ? docY - lt : docY) - (m.top || 0);
+  const x0 = Math.max(0, mx), y0 = Math.max(0, my);
+  const x1 = Math.min(m.width, mx + box.w), y1 = Math.min(m.height, my + box.h);
+  if (x1 > x0 && y1 > y0) {
+    const data = new Uint8Array((x1 - x0) * (y1 - y0));
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++)
+      data[(y - y0) * (x1 - x0) + x - x0] = mp.gray[(box.y + y - my) * mp.w + box.x + x - mx];
+    writeLazyMaskRect(dl, x0, y0, x1 - x0, y1 - y0, data);
+  }
+  for (let y = 0; y < box.h; y++)
+    mp.synced.set(mp.gray.subarray((box.y + y) * mp.w + box.x, (box.y + y) * mp.w + box.x + box.w), (box.y + y) * mp.w + box.x);
+
+  invalidateLazyMaskCaches(idx);
+  renderLayerPanel(); renderPreviewOnly(); updateUndoButtons();
+  return true;
+}
 export function commitMaskPaint(idx){
   const mp = maskPaint[idx];
   if (!mp) return false;
+  if (mp.lazyUniform) {
+    const dl = doc && doc.layers[idx];
+    if (!dl) return false;
+    const before = mp.before || { uniform: null, tiles: new Map() };
+    const after = { uniform: mp.uniformValue, tiles: new Map(dl.lazyMaskEdits?.tiles || []) };
+    brushHistory.undo.push({ kind: 'maskEdits', idx, before, after });
+    if (brushHistory.undo.length > histCap('brush')) brushHistory.undo.shift();
+    brushHistory.redo.length = 0;
+    histPush('蒙版', 'brush');
+    delete maskPaint[idx];
+    invalidateLazyMaskCaches(idx); renderLayerPanel(); renderPreviewOnly(); updateUndoButtons();
+    return true;
+  }
+  if (mp.lazy) return commitLazyMaskPaint(idx, mp);
   const box = diffBox(mp.gray, mp.orig, mp.w, mp.h, 1);
   const ok = commitLayerOps(idx, () => {
     if (mp.mode === 'new') {
@@ -895,6 +1170,21 @@ export function commitMaskPaint(idx){
     }
   });
   if (!ok) return false;
+  if (mp.mode === 'new') { mp.mode = 'existing'; mp.orig = Uint8Array.from(mp.gray); }
+  const dl = doc.layers[idx], mask = dl && dl.mask;
+  if (mask && mask.lazyChannel == null && isU8(mask.gray)
+      && (dl.lazyChannels || dl.lazyImage || dl.lazyRasterFile || dl.lazyTileStore)) {
+    if (mp.compact && mp.w === mask.width && mp.h === mask.height && mp.left === mask.left && mp.top === mask.top)
+      mask.gray = Uint8Array.from(mp.gray);
+    else if (box && box.w > 0 && box.h > 0) {
+      for (let y = 0; y < box.h; y++) for (let x = 0; x < box.w; x++) {
+        const mx = x + box.x + (mp.docLeft - (mask.relative ? dl.bounds.left : 0) - mask.left);
+        const my = y + box.y + (mp.docTop - (mask.relative ? dl.bounds.top : 0) - mask.top);
+        if (mx >= 0 && my >= 0 && mx < mask.width && my < mask.height) mask.gray[my * mask.width + mx] = mp.gray[(y + box.y) * mp.w + x + box.x];
+      }
+    }
+    invalidateLazyMaskCaches(idx);
+  }
   
 
   updateUndoButtons();
@@ -934,9 +1224,68 @@ export function commitPixelPaint(idx){
   return true;
 }
 
+export function sparsePixelHistory(idx, before, after, w, h, extra = {}){
+  const pp = pixelPaint[idx], left = pp?.left || 0, top = pp?.top || 0, tileSize = 256, patches = [];
+  for (let ty = 0; ty < h; ty += tileSize) for (let tx = 0; tx < w; tx += tileSize) {
+    const tw = Math.min(tileSize, w - tx), th = Math.min(tileSize, h - ty);
+    let x0 = tw, y0 = th, x1 = -1, y1 = -1;
+    for (let y = 0; y < th; y++) for (let x = 0; x < tw; x++) {
+      const q = ((ty + y) * w + tx + x) * 4;
+      if (before[q] !== after[q] || before[q + 1] !== after[q + 1] || before[q + 2] !== after[q + 2] || before[q + 3] !== after[q + 3]) {
+        if (x < x0) x0 = x; if (y < y0) y0 = y; if (x > x1) x1 = x; if (y > y1) y1 = y;
+      }
+    }
+    if (x1 < x0) continue;
+    const rect = { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 }, cut = data => {
+      const out = new Uint8ClampedArray(rect.w * rect.h * 4);
+      for (let y = 0; y < rect.h; y++) out.set(data.subarray(((ty + rect.y + y) * w + tx + rect.x) * 4, ((ty + rect.y + y) * w + tx + rect.x + rect.w) * 4), y * rect.w * 4);
+      return out;
+    };
+    const tile = { key: `${tx}:${ty}`, x: tx, y: ty, width: tw, height: th };
+    patches.push({ ...tile, rect, before: cut(before), after: cut(after), original: cut(before) });
+  }
+  return { kind: 'sparsePixels', idx, patches, w, h, left, top, ...extra };
+}
+
 function brushApply(e, which){
+  if(e.kind==='pixelOps'){
+    const l=doc?.layers?.[e.idx]; if(!l)return false;
+    const s=which==='before'?e.before:e.after;
+    l.lazyPixelOps=s.ops||[]; l.lazyPreview=s.preview||null;
+    l.lazyPreviewCanvas=null; l.lazyHighTiles=new Map(); l.lazyImageTiles=new Map();
+    l.lazyImageChunks=new Map(); l.lazyImageCanvas=null; l.lazyGpuDetail=null; l.lazyTileCache=null;
+    l.lazyTileVersion=(l.lazyTileVersion||0)+1;
+    delete layerCanvasCache[e.idx]; delete thumbCache[e.idx];
+    renderPreviewOnly(); renderLayerPanel();
+    return true;
+  }
+  if(e.kind==='tileStore'){
+    const l=doc?.layers?.[e.idx]; if(!l)return false;
+    const s=which==='before'?e.before:e.after;
+    l.lazyTileStore=s.store||null;
+    l.lazyPixelOps=s.ops||[];
+    l.lazyPreview=s.preview||null;
+    l.lazyPreviewCanvas=null; l.lazyHighTiles=new Map(); l.lazyImageTiles=new Map();
+    l.lazyImageChunks=new Map(); l.lazyImageCanvas=null; l.lazyGpuDetail=null; l.lazyTileCache=null;
+    l.lazyTileVersion=(l.lazyTileVersion||0)+1;
+    const pp=pixelPaint[e.idx];
+    if(pp?.sparse){ pp.sparse.tiles.clear(); if(s.sparseTiles)for(const [k,t] of s.sparseTiles)pp.sparse.tiles.set(k,t); pp.sparse.descriptor.version++; }
+    commitPixelPaint(e.idx);
+    delete layerCanvasCache[e.idx]; delete thumbCache[e.idx];
+    renderPreviewOnly(); renderLayerPanel();
+    return true;
+  }
+  if(e.kind==='maskEdits'){
+    const l=doc?.layers?.[e.idx]; if(!l)return false;
+    const side=which==='before'?e.before:e.after;
+    l.lazyMaskEdits={ uniform: side.uniform != null ? side.uniform : null, tiles:new Map(side.tiles||[]),
+      version:(l.lazyMaskEdits?.version||0)+1 };
+    invalidateLazyMaskCaches(e.idx);renderLayerPanel();renderPreviewOnly();return true;
+  }
   if(e.kind==='sparsePixels'){
-    const pp=pixelPaint[e.idx];if(!pp?.sparse)return false;
+    let pp=pixelPaint[e.idx];
+    if(!pp?.sparse&&e.w>0&&e.h>0)pp=restoreSparsePaint(e.idx,new Map(),{w:e.w,h:e.h,left:e.left,top:e.top});
+    if(!pp?.sparse)return false;
     pp.sparse.apply(e.patches,which);commitPixelPaint(e.idx);renderLayerPanel();renderPreviewOnly();return true;
   }
   const t = e.kind === 'qmask' ? (qmask && { gray: qmask.gray, w: docW }) : e.kind === 'alpha' ? (alphaPaintBuffer(e.idx) && { gray: alphaPaintBuffer(e.idx), w: docW })
@@ -987,10 +1336,152 @@ export const brushUndoable = () => !li && brushHistory.undo.length > 0 && (PIXEL
 export const brushRedoable = () => !li && brushHistory.redo.length > 0 && (PAINT_TOOLS.has(docTool) || topIsAdjust(brushHistory.redo));
 
 
+function maskFromSelectionLazy(idx, dl){
+  const m = dl.mask; if (!m || m.lazyChannel == null) return false;
+  const sel = selection, d = sel && sel.data;
+  if (!sel) return false;
+  const sb = selectionBounds(sel);
+  if (!sb || !(sb.width > 0 && sb.height > 0)) return false;
+  const e = dl.lazyMaskEdits || (dl.lazyMaskEdits = { tiles: new Map(), version: 0 });
+  const before = { uniform: e.uniform != null ? e.uniform : null, tiles: e.tiles };
+  const lb = dl.bounds?.left || 0, lt = dl.bounds?.top || 0;
+  const toMask = (x, y) => ({ x: (m.relative ? x - lb : x) - (m.left || 0), y: (m.relative ? y - lt : y) - (m.top || 0) });
+  e.tiles = new Map();
+  let wrote = false;
+  const fillRect = (docX, docY, rw, rh, value) => {
+    const p = toMask(docX, docY);
+    const x0 = Math.max(0, p.x), y0 = Math.max(0, p.y);
+    const x1 = Math.min(m.width, p.x + rw), y1 = Math.min(m.height, p.y + rh);
+    for (let ty = Math.floor(y0 / 256) * 256; ty < y1; ty += 256)
+      for (let tx = Math.floor(x0 / 256) * 256; tx < x1; tx += 256) {
+        const w = Math.min(256, x1 - tx), h = Math.min(256, y1 - ty);
+        if (!(w > 0 && h > 0)) continue;
+        writeLazyMaskRect(dl, tx, ty, w, h, new Uint8Array(w * h).fill(value & 255));
+      }
+  };
+  if (d?.__virtual && !d.__base && !d.__neg) {
+    const fill = d.__fill | 0;
+    const coversAll = sel.x === 0 && sel.y === 0 && sel.width === docW && sel.height === docH;
+    if (fill === 255 && !coversAll) {
+
+      e.uniform = 0;
+      fillRect(sel.x, sel.y, sel.width, sel.height, 255); wrote = true;
+    } else e.uniform = fill;
+    const cols = Math.ceil(sel.width / 256), ts = d.__tileSize || 256;
+    for (const [k, t] of d.__tiles) {
+      const tx = k % cols, ty = (k / cols) | 0;
+      const sx = sel.x + tx * ts, sy = sel.y + ty * ts, tw = Math.min(ts, sel.width - tx * ts), th = Math.min(ts, sel.height - ty * ts);
+      const p = toMask(sx, sy);
+      const x0 = Math.max(0, p.x), y0 = Math.max(0, p.y);
+      const x1 = Math.min(m.width, p.x + tw), y1 = Math.min(m.height, p.y + th);
+      if (!(x1 > x0 && y1 > y0)) continue;
+      const w = x1 - x0, h = y1 - y0, data = new Uint8Array(w * h);
+      for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++)
+        data[(y - y0) * w + x - x0] = t[(y - p.y) * ts + x - p.x];
+      writeLazyMaskRect(dl, x0, y0, w, h, data); wrote = true;
+    }
+    if (!wrote && e.uniform === 255) {
+
+    }
+  } else if (d?.__virtual && d.__neg?.src) {
+
+
+    const src = d.__neg.src, sb2 = selectionBounds(src);
+    e.uniform = 255;
+    if (sb2 && src.width > 0 && src.height > 0) {
+      for (let ty = Math.floor(sb2.y / 256) * 256; ty < sb2.y + sb2.height; ty += 256)
+        for (let tx = Math.floor(sb2.x / 256) * 256; tx < sb2.x + sb2.width; tx += 256) {
+          const ix0 = Math.max(sb2.x, tx), iy0 = Math.max(sb2.y, ty);
+          const ix1 = Math.min(sb2.x + sb2.width, tx + 256), iy1 = Math.min(sb2.y + sb2.height, ty + 256);
+          const w = ix1 - ix0, h = iy1 - iy0;
+          if (!(w > 0 && h > 0)) continue;
+          const crop = SELM.selectionCropDense(src, ix0, iy0, w, h);
+          const p = toMask(ix0, iy0);
+          const x0 = Math.max(0, p.x), y0 = Math.max(0, p.y);
+          const x1 = Math.min(m.width, p.x + w), y1 = Math.min(m.height, p.y + h);
+          if (!(x1 > x0 && y1 > y0)) continue;
+          const data = new Uint8Array((x1 - x0) * (y1 - y0));
+          for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++)
+            data[(y - y0) * (x1 - x0) + x - x0] = 255 - crop.data[(y - p.y) * w + x - p.x];
+          writeLazyMaskRect(dl, x0, y0, x1 - x0, y1 - y0, data); wrote = true;
+        }
+    }
+
+    const cols = Math.ceil(sel.width / (d.__tileSize || 256)), ts = d.__tileSize || 256;
+    for (const [k, t] of d.__tiles) {
+      const tx = k % cols, ty = (k / cols) | 0;
+      const sx = sel.x + tx * ts, sy = sel.y + ty * ts, tw = Math.min(ts, sel.width - tx * ts), th = Math.min(ts, sel.height - ty * ts);
+      const p = toMask(sx, sy);
+      const x0 = Math.max(0, p.x), y0 = Math.max(0, p.y);
+      const x1 = Math.min(m.width, p.x + tw), y1 = Math.min(m.height, p.y + th);
+      if (!(x1 > x0 && y1 > y0)) continue;
+      const data = new Uint8Array((x1 - x0) * (y1 - y0));
+      for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) data[(y - y0) * (x1 - x0) + x - x0] = t[(y - p.y) * ts + x - p.x];
+      writeLazyMaskRect(dl, x0, y0, x1 - x0, y1 - y0, data); wrote = true;
+    }
+  } else {
+    if (sb.width * sb.height > 64e6) {
+      $('#notice').textContent = '超大图层蒙版：这个选区不是稀疏选区，转换需要为整个包围盒分配覆盖率；请先用矩形/稀疏选区，或缩小选区。';
+      return false;
+    }
+    e.uniform = 0;
+    const { gray } = selectionToMaskGray(sel, { x: sb.x, y: sb.y, width: sb.width, height: sb.height });
+    const p = toMask(sb.x, sb.y);
+    const x0 = Math.max(0, p.x), y0 = Math.max(0, p.y);
+    const x1 = Math.min(m.width, p.x + sb.width), y1 = Math.min(m.height, p.y + sb.height);
+    if (x1 > x0 && y1 > y0) {
+      const w = x1 - x0, h = y1 - y0, data = new Uint8Array(w * h);
+      for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) data[(y - y0) * w + x - x0] = gray[(y - p.y) * sb.width + x - p.x];
+      writeLazyMaskRect(dl, x0, y0, w, h, data); wrote = true;
+    }
+  }
+  e.version++;
+  const after = { uniform: e.uniform != null ? e.uniform : null,
+    tiles: new Map([...e.tiles].map(([k, v]) => [k, v.slice()])) };
+  brushHistory.undo.push({ kind: 'maskEdits', idx, before, after });
+  if (brushHistory.undo.length > histCap('brush')) brushHistory.undo.shift();
+  brushHistory.redo.length = 0;
+  histPush('蒙版', 'brush');
+  invalidateLazyMaskCaches(idx); renderLayerPanel(); renderPreviewOnly(); updateUndoButtons();
+  return true;
+}
+function maskFromSelectionHugeNew(idx, dl){
+  const sel = selection, d = sel && sel.data;
+  if (!sel) return false;
+  const sb = selectionBounds(sel);
+  if (!sb || !(sb.width > 0 && sb.height > 0)) return false;
+  const full = sel.x === 0 && sel.y === 0 && sel.width === docW && sel.height === docH
+    && d?.__virtual && !d.__tiles.size && !d.__base && !d.__neg && (d.__fill | 0) === 255;
+  let gray, w, h, left, top, def;
+  if (full) {
+    gray = Uint8Array.of(255); w = h = 1; left = top = 0; def = 255;
+  } else {
+
+
+    const r = selectionToMaskGray(sel, { x: sb.x, y: sb.y, width: sb.width, height: sb.height });
+    gray = r.gray; w = sb.width; h = sb.height; left = sb.x; top = sb.y; def = 0;
+  }
+  dl.mask = { gray, width: w, height: h, left, top, defaultColor: def, flags: 0, relative: false,
+    disabled: false, invert: false, fromOtherData: false };
+  const mp = { mode: 'new', compact: true, gray, orig: Uint8Array.from(gray), w, h, left, top,
+    docLeft: left, docTop: top, defaultColor: def };
+  maskPaint[idx] = mp;
+  invalidateLazyMaskCaches(idx);
+  const ok = commitMaskPaint(idx);
+  if (ok) { mp.mode = 'existing'; mp.orig = Uint8Array.from(mp.gray); maskPaint[idx] = mp; }
+  else { dl.mask = null; delete maskPaint[idx]; }
+  return ok;
+}
 export function maskFromSelection(idx){
   if (!selection || !doc) return false;
   const dl = doc.layers[idx];
   if (!dl) return false;
+  if (dl.mask?.lazyChannel != null) return maskFromSelectionLazy(idx, dl);
+  if (!dl.mask && docW * docH > 128e6) return maskFromSelectionHugeNew(idx, dl);
+  if (docW * docH > 128e6) {
+    $('#notice').textContent = '超大图层新建蒙版还未接入分块写回；已有蒙版可以直接用选区/画笔编辑。';
+    return false;
+  }
   try {
     if (dl.mask && isU8(dl.mask.gray)) {                       
       const mp = ensureMaskPaint(idx);

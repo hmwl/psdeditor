@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {writePsd}from'../../core/psd-write.js';
+import {applyEdits}from'../../core/psd-edit.js';
 import {parsePsdRaster}from'../../core/psd-raster.js';
 import {patchPsdSparsePixels}from'../../core/psd-sparse-write.js';
 import {decodeCompositeImage}from'../../core/psd-image.js';
@@ -30,8 +31,22 @@ for(const compression of['raw','zip','prediction','rle']){
  const result=await patchPsdSparsePixels(input,[{index:0,tiles:[p]}],{merged:true}),doc=await parsePsdRaster(result.buffer),merged=decodeCompositeImage(result.buffer);
  assert.deepEqual([...doc.layers[0].rgba.slice(0,4)],[9,11,77,88]);assert.deepEqual(merged.toRGBA(),doc.layers[0].rgba);
  assert.equal(parsePsdFull(result.buffer).sections.layerCountRaw,-1);
+ const blobResult=await patchPsdSparsePixels(input,[{index:0,tiles:[p]}],{merged:true,asBlob:true});
+ assert.ok(blobResult.blob instanceof Blob);
+ assert.equal(blobResult.blob.size,result.buffer.byteLength);
+ assert.deepEqual(new Uint8Array(await blobResult.blob.arrayBuffer()),new Uint8Array(result.buffer));
  const fast=await patchPsdSparsePixels(input,[{index:0,tiles:[p]}]);const a=parsePsdFull(input).sections.lmiEndAbs,b=parsePsdFull(fast.buffer).sections.lmiEndAbs;
  assert.deepEqual(new Uint8Array(fast.buffer).subarray(b),new Uint8Array(input).subarray(a),'structural fast write preserves the exact old composite');
+}
+
+
+{
+ const one=writePsd({width,height,layers:[{name:'base',bounds:{left:0,top:0,right:width,bottom:height},rgba:original}]});
+ const groupedInput=applyEdits(one,[{op:'groupLayers',indices:[0],name:'组 1'}]).buffer;
+ const grouped=parsePsdFull(groupedInput);assert.ok(grouped.layers.some(l=>l.groupType!=null&&l.groupType!==0));
+ const tile2={x:2,y:2,width:1,height:1,data:new Uint8ClampedArray([12,34,56,255]),original:original.slice((2*width+2)*4,(2*width+3)*4)};
+ const out=await patchPsdSparsePixels(groupedInput,[{index:1,tiles:[tile2]}],{merged:false}),doc2=await parsePsdRaster(out.buffer);
+ assert.deepEqual([...doc2.layers[1].rgba.slice((2*width+2)*4,(2*width+3)*4)],[12,34,56,255]);
 }
 const psb=await largeZipFixture(2,30001,{compression:'rle'});const p={x:0,y:29999,width:2,height:2,data:new Uint8ClampedArray(16).fill(255)};
 const saved=await patchPsdSparsePixels(psb,[{index:0,tiles:[p]}],{merged:true});const doc=await parsePsdRaster(saved.buffer);

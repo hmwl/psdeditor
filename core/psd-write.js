@@ -12,11 +12,13 @@
 
 
 import { patchFilterEffectsTail } from './psd-filter-effects.js';
-import { SAMPLE16_PS, byteTo16, encodeChannel, encodeCompositeImage, decodeCompositeImage, Compression } from './psd-image.js';
+import { SAMPLE16_PS, byteTo16, encodeChannel, decodeChannel, encodeCompositeImage, decodeCompositeImage, hasMergedTransparency, Compression } from './psd-image.js';
 
 import { getModeCodec, displayByteToFloat, makeCodec } from './color-convert.js';
 import { parseIcc } from './icc.js';
 import { parsePsdDocument } from './psd-document.js';
+import { parseLayerMask } from './psd-layer.js';
+import { featherDensityPlane } from './mask-feather.js';
 import { mergeNativePixelEdits } from './native-pixel-edit.js';
 const NATIVE_EDIT_CODECS=new WeakMap();
 function nativeEditCodec(bytes,intent,bpc){
@@ -245,7 +247,18 @@ export function replacePsdCompositeImage(buffer, mergedRgba, options = {}) {
     if(channels>extraStart){const previous=decodeCompositeImage(src,null,null,{strict:true});planes.push(...previous.channels.slice(extraStart,channels));}
     if(newChannels>56||planes.length!==newChannels)throw new Error('CMYK合成透明度/附加通道数量不一致');
     image=encodeCompositeImage({planes,width:W,height:H,depth,psb,compression:depth===8?Compression.RLE:Compression.RAW});
-  }else image = mergedImageData(mergedPlanesFromRgba(mergedRgba, W, H, channels, mode, options.codec), W, H, depth, psb, SAMPLE16_PS, colorCountOf(mode));
+  } else {
+    const nColor = colorCountOf(mode), mergedChannels = nColor + (hasMergedTransparency(src) ? 1 : 0);
+    let planes = mergedPlanesFromRgba(mergedRgba, W, H, mergedChannels, mode, options.codec);
+    if (channels > mergedChannels) {
+
+      if (depth === 16) planes = planes.map(p => Uint16Array.from(p, v => byteTo16(v)));
+      else if (depth === 32) planes = planes.map((p, c) => Float32Array.from(p, v => c < nColor ? displayByteToFloat(v) : v / 255));
+      const previous = decodeCompositeImage(src, null, null, { strict: true });
+      planes.push(...previous.channels.slice(mergedChannels));
+      image = encodeCompositeImage({ planes, width: W, height: H, depth, psb, compression: depth === 8 ? Compression.RLE : Compression.RAW });
+    } else image = mergedImageData(planes, W, H, depth, psb, SAMPLE16_PS, nColor);
+  }
   const out = new Uint8Array(o + image.length); out.set(src.subarray(0, o)); out.set(image, o);
   if(options.nativeComposite){
     const newDv=new DataView(out.buffer);newDv.setUint16(12,newChannels);
@@ -478,41 +491,7 @@ function patchLinkedFileBytes(tail, origin, p) {
 
 
 
-function patchMaskOriginDelta(u8, rec, delta) {
-  const seg = u8.subarray(rec.afterChanInfo, rec.recEnd);
-  if (!delta || (!delta.top && !delta.left) || seg.length < 38) return seg;
-  const dv = new DataView(seg.buffer, seg.byteOffset, seg.byteLength);
-  const maskLen = dv.getUint32(16);
-  if (maskLen < 18) return seg;   
-  const flags = seg[16 + 4 + 16 + 1];   
-  if (!(flags & 1)) return seg;
-  const out = seg.slice();
-  const v = new DataView(out.buffer);
-  v.setInt32(16 + 4, v.getInt32(16 + 4) + delta.top);
-  v.setInt32(16 + 8, v.getInt32(16 + 8) + delta.left);
-  return out;
-}
-
-
-
-
-
-
-function packBitsDecode(src, expected) {
-  const out = new Uint8Array(expected);
-  let o = 0, w = 0;
-  while (o < src.length && w < expected) {
-    const n = src[o++];
-    if (n === 128) continue;
-    if (n > 128) { const run = 257 - n; out.fill(src[o++], w, Math.min(w + run, expected)); w += run; }
-    else { const run = n + 1; out.set(src.subarray(o, Math.min(o + run, src.length)), w); o += run; w += run; }
-  }
-  return out;
-}
-
-
-
-function originalMaskPlane(u8, dv, rec) {
+function originalMaskPlane(u8, dv, rec, depth, psb) {
   const es = rec.afterChanInfo + 16;
   if (es + 4 > u8.length) return null;
   const maskLen = dv.getUint32(es);
@@ -524,12 +503,11 @@ function originalMaskPlane(u8, dv, rec) {
   const top = dv.getInt32(es + 4), left = dv.getInt32(es + 4 + 4);
   const bottom = dv.getInt32(es + 4 + 8), right = dv.getInt32(es + 4 + 12);
   const w = right - left, h = bottom - top;
-  if (w <= 0 || h <= 0) return null;
-  const compression = dv.getUint16(chan._off);
-  const data = u8.subarray(chan._off + 2, chan._off + chan.len);
-  const gray = compression === 1 ? packBitsDecode(data, w * h)
-    : new Uint8Array(data.subarray(0, Math.min(w * h, data.length)));
-  return { gray, w, h, left, top, flags, defaultColor: u8[es + 4 + 16], layerLeft: rec.left, layerTop: rec.top };
+  if (w < 0 || h < 0) return null;
+  const samples = w && h ? decodeChannel({ bytes: u8.subarray(chan._off, chan._off + chan.len), width: w, height: h, depth, psb, strict: true }) : new Uint8Array(0);
+  const gray = depth === 8 ? samples : Uint8Array.from(samples, v => Math.round(v * 255 / (depth === 16 ? 65535 : 1)));
+  const params = flags & 0x10 ? parseLayerMask(u8.subarray(es + 4, es + 4 + maskLen), { withLength: false }).parameters : null;
+  return { gray, w, h, left, top, flags, defaultColor: u8[es + 4 + 16], density: params?.userMaskDensity, feather: params?.userMaskFeather };
 }
 
 
@@ -537,11 +515,15 @@ function originalMaskPlane(u8, dv, rec) {
 
 function unmultiplyMask(rgba, bounds, m) {
   const W = bounds.right - bounds.left, H = bounds.bottom - bounds.top;
+  if (m.feather > 0.2 || m.density != null && m.density < 255) {
+    const plane = featherDensityPlane({ ...m, width: m.w, height: m.h }, { ...bounds, width: W, height: H }, m.feather, m.density);
+    m = { ...m, ...plane, w: W, h: H };
+  }
   const out = new Uint8ClampedArray(rgba);
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
     const dx = bounds.left + x, dy = bounds.top + y;
-    const ox = (m.flags & 1 ? dx - m.layerLeft : dx) - m.left;
-    const oy = (m.flags & 1 ? dy - m.layerTop : dy) - m.top;
+    const ox = dx - m.left;
+    const oy = dy - m.top;
     let v = m.defaultColor;
     if (ox >= 0 && ox < m.w && oy >= 0 && oy < m.h) v = m.gray[oy * m.w + ox];
     if (m.flags & 4) v = 255 - v;
@@ -565,6 +547,8 @@ export function rebuildPsdReplacingLayerPixels(buffer, layerIndex, newRgba, newB
   const version = dv.getUint16(4); const psb = version === 2;
   const depth = dv.getUint16(22);
   if (depth !== 8 && depth !== 16 && depth !== 32) throw new Error(`不支持 ${depth} 位/通道的 PSD（仅 8/16/32 位）`);
+  if (opts.premultiplied && depth !== 8 && !opts.nativePlanes && !opts.nativeSource)
+    throw new Error(`预乘蒙版写回暂不支持 ${depth} 位文档；请传入未预乘的 nativePlanes/nativeSource，避免破坏高位深原始像素`);
   const lenPSB = () => psb ? u64() : u32();
   rd.o = 26;
   rd.o += 4 + u32();                       
@@ -619,7 +603,7 @@ export function rebuildPsdReplacingLayerPixels(buffer, layerIndex, newRgba, newB
   
   let encodeRgba = newRgba;
   if (opts.premultiplied && depth === 8 && !opts.nativePlanes && !opts.nativeSource) {
-    const m = originalMaskPlane(u8src, dv, recs[layerIndex]);
+    const m = originalMaskPlane(u8src, dv, recs[layerIndex], depth, psb);
     if (m) encodeRgba = unmultiplyMask(newRgba, newBounds, m);
   }
 
@@ -702,7 +686,7 @@ export function rebuildPsdReplacingLayerPixels(buffer, layerIndex, newRgba, newB
       li.u16(newChanIds.length + r.kept.length);
       for (let c = 0; c < newChanIds.length; c++) { li.i16(newChanIds[c]); if (psb) { li.u32(0); li.u32(newChans[c].length); } else li.u32(newChans[c].length); }
       for (const ch of r.kept) { li.i16(ch.id); if (psb) { li.u32(0); li.u32(ch.len); } else li.u32(ch.len); }
-      li.bytes(patchMaskOriginDelta(u8src, r, opts.maskOriginDelta)); 
+      li.bytes(u8src.subarray(r.afterChanInfo, r.recEnd));
     } else {
       li.bytes(u8src.subarray(r.recStart, r.recEnd));      
     }
@@ -719,50 +703,6 @@ export function rebuildPsdReplacingLayerPixels(buffer, layerIndex, newRgba, newB
   const liBytes = li.pad(4);         
 
   
-  
-  const W = dv.getUint32(18), H = dv.getUint32(14);
-  const headerCh = dv.getUint16(12);
-  let mplanes = null;
-  if (!mergedRgba) {  }
-  else if (codec) mplanes = mergedPlanesFromRgba(mergedRgba, W, H, headerCh, mode, codec);
-  else if (isCmyk) {
-    const cPl = new Uint8Array(W * H), mPl = new Uint8Array(W * H);
-    const yPl = new Uint8Array(W * H), kPl = new Uint8Array(W * H);
-    const aPl = new Uint8Array(W * H);
-    for (let i = 0; i < W * H; i++) {
-      const r = mergedRgba[i * 4] / 255, g = mergedRgba[i * 4 + 1] / 255, b = mergedRgba[i * 4 + 2] / 255;
-      const k = 1 - Math.max(r, g, b);
-      const ik = 1 - k;
-      const c = ik > 1e-6 ? (1 - r - k) / ik : 0;
-      const m = ik > 1e-6 ? (1 - g - k) / ik : 0;
-      const y = ik > 1e-6 ? (1 - b - k) / ik : 0;
-      cPl[i] = Math.round(255 - c * 255);
-      mPl[i] = Math.round(255 - m * 255);
-      yPl[i] = Math.round(255 - y * 255);
-      kPl[i] = Math.round(255 - k * 255);
-      aPl[i] = mergedRgba[i * 4 + 3];
-    }
-    mplanes = [cPl, mPl, yPl, kPl];
-    if (headerCh > 4) mplanes.push(aPl);
-  } else if (isGray) {
-    const gPl = new Uint8Array(W * H), aPl = new Uint8Array(W * H);
-    for (let i = 0; i < W * H; i++) {
-      gPl[i] = Math.round(0.299 * mergedRgba[i * 4] + 0.587 * mergedRgba[i * 4 + 1] + 0.114 * mergedRgba[i * 4 + 2]);
-      aPl[i] = mergedRgba[i * 4 + 3];
-    }
-    mplanes = [gPl];
-    if (headerCh > 1) mplanes.push(aPl);
-  } else {
-    mplanes = [0, 1, 2].map(ch => plane(mergedRgba, W, H, ch));
-    if (headerCh >= 4) mplanes.push(plane(mergedRgba, W, H, 3));
-  }
-  let mergedNew;
-  if (mplanes) {
-    while (mplanes.length < headerCh) mplanes.push(new Uint8Array(W * H).fill(255));
-    mergedNew = mergedImageData(mplanes, W, H, depth, psb, SAMPLE16_PS, colorCountOf(mode));
-  } else mergedNew = merged;
-
-  
   const out = new BW();
   out.bytes(u8src.subarray(0, prefixEnd));  
   
@@ -773,8 +713,9 @@ export function rebuildPsdReplacingLayerPixels(buffer, layerIndex, newRgba, newB
   const lmiBytes = lmi.pad(psb ? 4 : 2);              
   if (psb) { out.u32(0); out.u32(lmiBytes.length); } else out.u32(lmiBytes.length);
   out.bytes(lmiBytes);
-  out.bytes(mergedNew);
-  return out.build();
+  out.bytes(merged);
+  const result = out.build();
+  return mergedRgba ? replacePsdCompositeImage(result, mergedRgba, { codec }) : result;
 }
 
 
@@ -808,6 +749,8 @@ export function rebuildPsdChannels(buffer, layerPlanes, merged, opts = {}) {
   const psb = dv.getUint16(4) === 2;
   const depth = dv.getUint16(22);
   if (depth !== 8 && depth !== 16 && depth !== 32) throw new Error(`不支持 ${depth} 位/通道的 PSD（仅 8/16/32 位）`);
+  if (opts.premultiplied && depth !== 8 && !opts.nativePlanes && !opts.nativeSource)
+    throw new Error(`预乘蒙版写回暂不支持 ${depth} 位文档；请传入未预乘的 nativePlanes/nativeSource，避免破坏高位深原始像素`);
   const lenPSB = () => psb ? u64() : u32();
   const cmyk = (opts.colorMode || 'rgb') === 'cmyk';
   const nColor = cmyk ? 4 : 3;

@@ -8,7 +8,7 @@ import { onDocumentCacheRelease } from '../document-cache.js';
 import { adjustmentRenderParams } from '../../../core/app.js';
 import { recomposeLayerRGBA } from '../../../core/psd-raster.js';
 import { getTextRuns } from '../../../core/psd-text.js';
-import { propertyContext, organizeProperties } from '../property-panel.js';
+import { propertyContext, organizeProperties, propertyPixelField } from '../property-panel.js';
 import { shell } from '../shell.js';
 import {
   $, ADJ_KINDS_MENU, BLEND_KEYS, BLEND_LABELS, CREATABLE_FX_LABEL, EDIT, EDITM, api, applyEdits,
@@ -308,6 +308,46 @@ export function schedulePanelRebuild(){
 
 let fastCommitDepth = 0;
 export function withFastCommit(fn){ fastCommitDepth++; try { return fn(); } finally { fastCommitDepth--; } }
+
+
+
+
+let opInteractionDepth = 0;
+let opInteractionSnap = null;
+let opInteractionIdx = -1;
+export function beginOpInteraction(){
+  if (opInteractionDepth++ === 0) opInteractionSnap = layerOpsSnapshot();
+}
+export function endOpInteraction(){
+  if (opInteractionDepth === 0) return;
+  opInteractionDepth = 0;
+  const snap = opInteractionSnap; opInteractionSnap = null;
+  const idx = opInteractionIdx; opInteractionIdx = -1;
+  if (!EDITM || idx < 0 || !origBuffer || !Object.keys(layerOps).length) return;
+  const inFile = doc ? doc.layers.length - layerDupes.length : 0;
+  let err = null;
+  try {
+    const r = planEdits(origBuffer, allLayerOps().filter(o => o.op !== 'sparsePixels' && (o.index == null || o.index < inFile)));
+    if (!r.ok) err = r.errors[0].message;
+  } catch (e) { err = e.message; }
+  if (!err) return;
+  if (snap) restoreLayerOps(snap);
+  $('#err').textContent = '这项改动不能写回：' + humanEditError(err);
+  try { renderStaticLayers(); } catch {}
+  try { renderProps(); } catch {}
+}
+
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('pointerdown', e => {
+    const t = e.target;
+    if (t && t.type === 'range' && !t.disabled && !(t.closest && t.closest('dialog'))) beginOpInteraction();
+  }, true);
+  const endOp = () => setTimeout(endOpInteraction, 0);
+  window.addEventListener('pointerup', endOp, true);
+  window.addEventListener('pointercancel', endOp, true);
+  window.addEventListener('blur', endOp, true);
+}
 export function commitLayerOps(idx, mutate){
   const snap = layerOpsSnapshot();
   const sigBefore = maskOpSig(idx);
@@ -317,7 +357,7 @@ export function commitLayerOps(idx, mutate){
 
 
   if (!EDITM) kick(EDIT);
-  else if (!fastCommitDepth) {
+  else if (!fastCommitDepth && !opInteractionDepth) {
     
 
 
@@ -328,14 +368,16 @@ export function commitLayerOps(idx, mutate){
   }
   if (err) { restoreLayerOps(snap); $('#err').textContent = '这项改动不能写回：' + humanEditError(err); renderProps(); return false; }
   $('#err').textContent = '';
+  if (opInteractionDepth) opInteractionIdx = idx;
   delete maskThumbCache[idx];
   
   { const dl0 = doc && doc.layers[idx]; if (dl0 && !(dl0.rgba && dl0.width > 0)) delete thumbCache[idx]; }
+  syncLazyMaskOverrides(idx);
   if (maskOpSig(idx) !== sigBefore) recomposeLayer(idx);   
   schedulePanelRebuild();                                  
   
 
-  if (fastCommitDepth) set_composeLiveIdx(idx);
+  if (fastCommitDepth || opInteractionDepth) set_composeLiveIdx(idx);
   try { renderStaticLayers(); } finally { set_composeLiveIdx(null); }
   return true;
 }
@@ -381,6 +423,22 @@ export function setParamFieldsBatch(idx, target, at, entries){
 
 
 export const opField = (i, key, f) => { const o = findLayerOp(i, key); return o && o[f] !== undefined ? o[f] : undefined; };
+
+export function syncLazyMaskOverrides(idx = null){
+  const list = idx == null ? (doc?.layers || []).map((_, i) => i) : [idx];
+  for (const i of list) {
+    const l = doc?.layers?.[i];
+    if (!l?.mask || !(l.lazyChannels || l.lazyImage || l.lazyRasterFile || l.lazyTileStore)) continue;
+    const op = findLayerOp(i, 'setMaskProps'), ov = {};
+    for (const f of ['disabled', 'invert', 'density', 'feather', 'relative']) if (op && op[f] !== undefined) ov[f] = op[f];
+    const next = Object.keys(ov).length ? ov : null;
+    if (JSON.stringify(l.lazyMaskOverride || null) === JSON.stringify(next)) continue;
+    l.lazyMaskOverride = next;
+    l.lazyMaskFeatherCache = null; l.lazyTileCache = null;
+    l.lazyHighTiles = new Map(); l.lazyImageTiles = new Map();
+    l.lazyTileVersion = (l.lazyTileVersion || 0) + 1;
+  }
+}
 export const effMaskFlag = (i, l, f) => { const v = opField(i, 'setMaskProps', f); return v !== undefined ? v : !!(l.mask && l.mask[f]); };
 
 export const baseMaskNum = (l, f, dflt) => {
@@ -595,7 +653,7 @@ export function renderProps(){
   const propAb = l && !li ? docArtboards().find(a => a.index === l.index) : null;   
   if (propAb) set_propsContext({ kind: 'artboard', label: '画板', icon: 'lock-artboard' });
   const contextButton = $('#propTabs [data-prop-tab="layer"]');
-  contextButton.replaceChildren(icon(propAb ? 'lock-artboard' : l ? layerTypeIconKey(l) : 'layers-3', 16));
+  contextButton.replaceChildren(icon(propAb ? 'lock-artboard' : l ? layerTypeIconKey(l) : 'document-properties', 16));
   contextButton.title = propsContext.label; contextButton.setAttribute('aria-label', propsContext.label);
   if (!l) {
     box.dataset.context = 'document';
@@ -665,20 +723,20 @@ export function renderProps(){
       return i2;
     };
     const xIn = tIn('x', n => pos(n, null)), yIn = tIn('y', n => pos(null, n));
-    const positionRow = row('', makeScrubLabel('X', idx, xIn, n => pos(n, null)), xIn,
-             makeScrubLabel('Y', idx, yIn, n => pos(null, n)), yIn);
-    positionRow.classList.add('prop-transform-row');
     const lock = mk('button', { title: '锁定宽高比（等比缩放）', className: aspectLock ? 'on' : '' });
     lock.style.cssText = 'width:26px;height:22px;padding:0;justify-content:center;flex:none';
     lock.append(icon('link', 12));
     lock.onclick = () => { set_aspectLock(!aspectLock); lock.classList.toggle('on', aspectLock); };
     const wIn = tIn('w', n => size(n, null)), hIn = tIn('h', n => size(null, n));
     const smartDimensions = !!PP && propsContext.kind === 'smart';
-    const sizeRow = smartDimensions
-      ? row('', mk('span', { textContent: 'W', className: 'pp-xy' }), wIn, mk('span', { textContent: 'H', className: 'pp-xy' }), hIn)
-      : row('', makeScrubLabel('W', idx, wIn, n => size(n, null)), wIn,
-        makeScrubLabel('H', idx, hIn, n => size(null, n)), hIn, lock);
-    sizeRow.classList.add('prop-transform-row'); box.insertBefore(sizeRow, positionRow);
+    lock.classList.add('prop-aspect-lock'); lock.setAttribute('aria-pressed', String(aspectLock));
+    lock.addEventListener('click', () => lock.setAttribute('aria-pressed', String(aspectLock)));
+    const geometry = row('', smartDimensions ? mk('span', { className: 'prop-aspect-spacer' }) : lock,
+      smartDimensions ? mk('span', { textContent: 'W', className: 'pp-xy' }) : makeScrubLabel('W', idx, wIn, n => size(n, null)), propertyPixelField(wIn),
+      makeScrubLabel('X', idx, xIn, n => pos(n, null)), propertyPixelField(xIn),
+      smartDimensions ? mk('span', { textContent: 'H', className: 'pp-xy' }) : makeScrubLabel('H', idx, hIn, n => size(null, n)), propertyPixelField(hIn),
+      makeScrubLabel('Y', idx, yIn, n => pos(null, n)), propertyPixelField(yIn));
+    geometry.classList.add('prop-transform-grid');
     const fh = mk('button', { title: '水平翻转（再次点击还原）', className: v.flipX ? 'on' : '' });
     fh.style.cssText = 'flex:1;height:24px;padding:0;justify-content:center';
     fh.append(icon('flip-horizontal', 13));
@@ -688,13 +746,14 @@ export function renderProps(){
     fv.append(icon('flip-vertical', 13));
     fv.onclick = () => { if (!isMeshTransform(idx)) pushDocHistory(); if (shape) setShapePropertyTransform(idx, { flipY: !v.flipY }); else flipLayer(idx, 'y'); };
     (set_TInputs(TInputs || {})).fh = fh; TInputs.fv = fv;
-    const rotSlider = mk('input', { type: 'number', min: -360, max: 360, step: 0.1, value: Math.round(v.rot), title: '旋转角度（顺时针，度）' });
+    const rotSlider = mk('input', { type: 'number', min: -360, max: 360, step: 0.01, value: Math.round(v.rot * 100) / 100, title: '旋转角度（顺时针，度）' });
     rotSlider.dataset.transform = 'rot'; rotSlider.setAttribute('aria-label', '旋转角度');
     rotSlider.style.cssText = 'flex:1;min-width:0;accent-color:var(--accent)';
     rotSlider.addEventListener('pointerdown', () => { if (mesh) beginMeshEdit(); else beginLayerEdit(); });
     rotSlider.addEventListener('change', () => { if (mesh) endMeshEdit(); else endLayerEdit(); });
     rotSlider.onchange = () => { if (!Number.isFinite(+rotSlider.value)) return;
       const currentRot = getPropertyTransformValues(idx).rot || 0;
+      if (+rotSlider.value === Math.round(currentRot * 100) / 100) return;
       if (Math.abs((((+rotSlider.value - currentRot) % 360) + 540) % 360 - 180) < 1e-9) return;
       if (shape) { pushDocHistory('旋转形状'); setShapePropertyTransform(idx, { rot: +rotSlider.value }); return; }
       if (mesh) beginMeshEdit(); else beginLayerEdit();
@@ -709,7 +768,7 @@ export function renderProps(){
       for (const k of ['x', 'y', 'w', 'h', 'rot', 'fh', 'fv']) if (TInputs?.[k]) {
         TInputs[k].disabled = true; TInputs[k].title = lockWhy;
       }
-      for (const scrub of [...positionRow.querySelectorAll('.scrub'), ...sizeRow.querySelectorAll('.scrub')]) {
+      for (const scrub of geometry.querySelectorAll('.scrub')) {
         scrub.style.pointerEvents = 'none'; scrub.title = lockWhy;
       }
       lock.disabled = true; hint(lockWhy, 'warn');
@@ -759,8 +818,11 @@ export function renderProps(){
     }
     if (soIdx >= 0) {
       const so = sos[soIdx], original = so.info?.summary?.originalSize;
-      row('源文件', mk('span', { className: 'prop-source-name', textContent: so.sourceImage?.filename || '链接内容' }));
-      if (original) row('原始尺寸', mk('span', { textContent: `${original.width} × ${original.height} px` }));
+      row(PP ? '' : '源文件', mk('span', { className: 'prop-source-name', textContent: so.sourceImage?.filename || '链接内容' }));
+      if (original) {
+        if (PP) section = { pane, key: 'smart-extra' };
+        row('原始尺寸', mk('span', { textContent: `${original.width} × ${original.height} px` }));
+      }
     }
     if (PP) {
       const model = smartPropertyModel(idx);

@@ -23,4 +23,25 @@ assert.ok(model.stats.editedBytes<=3*256*256*4,'distant marks must not allocate 
 const cancel=model.begin();await cancel.prepare({x:30000,y:25000,w:1,h:1});cancel.rgba[(25000*60000+30000)*4]=77;cancel.rollback();
 assert.deepEqual(await model.readRect({x:30000,y:25000,w:1,h:1}),originalPixel);
 assert.ok(reads>0);model.clear();assert.equal(model.stats.editedBytes,0);
-console.log('✓ 30 亿像素稀疏修改、分块撤销、跨远距离笔迹、写时复制快照与回滚');
+const edge=createSparsePixels({width:513,height:515,tileSize:256,readTile:async(x,y,w,h)=>new Uint8ClampedArray(w*h*4)});
+const edgePaint=edge.begin();await edgePaint.prepare({x:255,y:255,w:3,h:3});
+for(const c of edgePaint.contexts({x:255,y:255,w:3,h:3})){
+  const x=255-c.x,y=255-c.y;if(x<0||y<0||x>=c.width||y>=c.height)continue;
+  const i=(y*c.width+x)*4;c.rgba[i]=200;c.rgba[i+1]=50;c.rgba[i+2]=100;c.rgba[i+3]=255;
+}
+edgePaint.finish();assert.deepEqual(await edge.readRect({x:255,y:255,w:1,h:1}),new Uint8ClampedArray([200,50,100,255]));
+const edgeFilter=edge.begin();await edgeFilter.prepare({x:256,y:256,w:1,h:1});
+for(const c of edgeFilter.contexts({x:256,y:256,w:1,h:1})){
+  const x=256-c.x,y=256-c.y;if(x<0||y<0||x>=c.width||y>=c.height)continue;
+  const i=(y*c.width+x)*4;c.rgba[i]=110;c.rgba[i+1]=100;c.rgba[i+2]=200;
+}
+edgeFilter.finish();assert.deepEqual(await edge.readRect({x:255,y:255,w:1,h:1}),new Uint8ClampedArray([200,50,100,255]));
+assert.deepEqual(await edge.readRect({x:256,y:256,w:1,h:1}),new Uint8ClampedArray([110,100,200,0]));
+
+
+
+const cached=createSparsePixels({width:512,height:512,cacheTiles:4,readTile:async(x,y,w,h)=>new Uint8ClampedArray(w*h*4)});
+assert.equal((await cached.readRect({x:10,y:10,w:2,h:2})).length,16);
+const cacheTx=cached.begin();cacheTx.write(0,123);const cachePatch=cacheTx.finish();
+assert.equal(cachePatch.length,1);assert.equal((await cached.readRect({x:0,y:0,w:1,h:1}))[0],123);
+console.log('✓ 30 亿像素稀疏修改、分块撤销、跨远距离笔迹、写时复制快照与回滚、缓存底片');

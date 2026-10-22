@@ -110,14 +110,11 @@ export function setSmartObjectComp(buffer, index, compId) {
 
 
 export function smartPropertyWithRaster(buffer, index, rendered) {
-  const ab = toAB(buffer), original = parsePsdFull(ab).layers[index];
+  const ab = toAB(buffer);
   if (!rendered || !rendered.rgba || !rendered.bounds) throw new Error('智能对象内容未能重新渲染');
   const bounds = rendered.rgba.length ? rendered.bounds : { left: 0, top: 0, right: 1, bottom: 1 };
   const rgba = rendered.rgba.length ? rendered.rgba : new Uint8Array(4);
-  const old = original.bounds;
-  const maskOriginDelta = original.mask?.relative && (old.left !== bounds.left || old.top !== bounds.top)
-    ? { left: old.left - bounds.left, top: old.top - bounds.top } : undefined;
-  return rebuildPsdReplacingLayerPixels(ab, index, rgba, bounds, null, { maskOriginDelta }).buffer;
+  return rebuildPsdReplacingLayerPixels(ab, index, rgba, bounds, null).buffer;
 }
 
 const pnt = (x, y) => ({ x, y });

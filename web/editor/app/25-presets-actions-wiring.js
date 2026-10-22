@@ -321,7 +321,7 @@ async function installActionsPanelNow(){
         const buf = await psdFromPixels(rgba, w, h, name, 'white');
         if (!buf) return false;
         const dtk = await DOCS.beginOpen(); if (!dtk) return false;
-        try { docStack.length = 0; await initDocument(buf, name + '.psd', { nested: false }); refreshAll(true); } catch (e) { DOCS.abortOpen(dtk); throw e; }
+        try { docStack.length = 0; await initDocument(buf, name + '.psd', { nested: false, freshDoc: true }); refreshAll(true); } catch (e) { DOCS.abortOpen(dtk); throw e; }
         DOCS.endOpen(dtk); return true;
       },
       setSaveHook: fn => { actSaveHook = fn; },
@@ -478,7 +478,7 @@ export function installPresetLibrary(){
     gradCurrentModel: () => gradCurrentModel(),
     onGradientsChanged: () => { try { syncGradBar(); } catch {} },
     
-    getColors: () => ({ fg: fgRGB.slice(), bg: bgRGB.slice() }),
+    getColors: () => ({ fg: (fgRGB || [0, 0, 0]).slice(), bg: (bgRGB || [255, 255, 255]).slice() }),
     setFg: c => setFgBg(c, null), setBg: c => setFgBg(null, c),
     
     setCustomShape: id => setCustomShape(id),

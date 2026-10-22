@@ -4,6 +4,7 @@
 
 
 import './26-layer-create.js';   
+import { gradientMidpoint, gradientMidpointsFromPSD, gradientMidpointsToPSD } from '../../../core/paint-fill.js';
 import { $ } from './01-boot.js';
 import { bumpLayerStateVersion, doc, gradState, layerEdits, paramUI } from './02-doc-state.js';
 import { beginLayerEdit, endLayerEdit } from './03-history.js';
@@ -118,6 +119,8 @@ export function gradModelFrom(gr, op){
     if (mm[1] === 'Clrs') { const c = parseHex6(v2['Clr ']) || [0, 0, 0]; arr.splice(a.insertAt, 0, { src: null, r: c[0], g: c[1], b: c[2], loc, mid }); }
     else arr.splice(a.insertAt, 0, { src: null, opct: +v2.Opct, loc, mid });
   }
+  m.clrs = gradientMidpointsFromPSD(m.clrs);
+  m.trns = gradientMidpointsFromPSD(m.trns);
   return m;
 }
 
@@ -159,8 +162,8 @@ function gradDiff(gr, m){
     }
     for (let p = N + O - 1; p >= N; p--) arrayOps.push({ path, removeAt: p });
   };
-  seg('Grad.Clrs', m.clrs, gr.clrs, 'color');
-  if (gr.hasTrns) seg('Grad.Trns', m.trns, gr.trns, 'op');
+  seg('Grad.Clrs', gradientMidpointsToPSD(m.clrs), gr.clrs, 'color');
+  if (gr.hasTrns) seg('Grad.Trns', gradientMidpointsToPSD(m.trns), gr.trns, 'op');
   return { values, arrayOps };
 }
 
@@ -201,8 +204,7 @@ export function commitGradient(idx, tgt, gr, m){
 
 function gradMix(a, b, mid, u){
   const f = Math.max(0.01, Math.min(0.99, (mid == null ? 50 : mid) / 100));
-  
-  return Math.abs(f - 0.5) < 1e-3 ? u : Math.pow(u, Math.log(0.5) / Math.log(f));
+  return gradientMidpoint(u, f);
 }
 function gradSampleAt(arr, t, pick){
   if (!arr.length) return null;

@@ -479,8 +479,12 @@ export function beginBrushOpStroke(pt, ev){
   
   if (kind === 'backgroundEraser' && isBackgroundLayer(selLayer)) unlockBackground(selLayer);
   const historySrc = kind.startsWith('history') ? historySourceFor(selLayer) : null;
-  const S = beginStroke(pt, { op: kind, deferDab: true, opacity: effOpacity(kind), flow: effFlow(kind) });
+
+  const hugeClone = (kind === 'cloneStamp' || kind === 'patternStamp') && docW * docH > 128e6
+    && !!ensurePixelPaint(selLayer, { sparse: true })?.sparse;
+  const S = beginStroke(pt, { op: kind, deferDab: true, opacity: effOpacity(kind), flow: effFlow(kind), sparseClone: hugeClone });
   if (!S) return null;
+  if (S.sparseClone) S.cloneLabel = kind === 'cloneStamp' ? '仿制图章' : '图案图章';
   
   S.altToggle = !!(ev && ev.altKey);
   let opKind = kind;
@@ -491,10 +495,13 @@ export function beginBrushOpStroke(pt, ev){
   if (boOpts.allLayers && (kind === 'blur' || kind === 'sharpen' || kind === 'smudge')) S.merged = boMergedSnapshot();
   if (kind === 'cloneStamp') {
     
-    if (boOpts.csSample !== 'layer') {
+    if (boOpts.csSample !== 'layer' && !S.sparseClone) {
       const m = retouchSampleImage(boOpts.csSample === 'merged' ? 'all' : boOpts.csSample, boOpts.csIgnoreAdj);
       if (m) S.cloneSrc = { data: m, w: docW, h: docH };
     }
+    S.cloneMode = boOpts.csMode;
+    S.sampleScope = boOpts.csSample;
+    S.ignoreAdj = boOpts.csIgnoreAdj;
     
 
     const cs = csBeginStroke(pt, boOpts.align), anchor = { ...cs.anchor };
@@ -503,6 +510,7 @@ export function beginBrushOpStroke(pt, ev){
   }
   if (kind === 'patternStamp') {
     S.pattern = boPatternImage();
+    S.patMode = boOpts.psMode;
     S.patOrigin = boOpts.patAligned ? { x: 0, y: 0 } : { x: pt.x, y: pt.y };     
     if (boOpts.impressionist && S.pattern) {
       const pat = S.pattern, org = S.patOrigin;
@@ -521,7 +529,7 @@ export function beginBrushOpStroke(pt, ev){
   }
   if (BRUSHOP_SAMPLES.has(kind) && kind !== 'cloneStamp') S.sampleRGB = sampleColorAt(boSample) || fgRGB.slice();
   S.smudge = null; S.historySource = historySrc; S.label = BRUSHOP_LABEL[opKind];
-  S.opFn = brushOpFn(opKind, S);
+  if (!S.sparseClone) S.opFn = brushOpFn(opKind, S);
   
 
   if (boOpts.airbrush && (kind === 'dodge' || kind === 'burn' || kind === 'sponge')) {
@@ -530,7 +538,7 @@ export function beginBrushOpStroke(pt, ev){
       stampDab(S, S.last.x, S.last.y); scheduleStrokeRepaint(S);
     }, 60);
   }
-  if (!S.opFn && kind !== 'pencil') { set_curStroke(null); $('#err').textContent = `${BRUSHOP_LABEL[kind]}没有落笔算子（这是个 bug，请反馈）`; return null; }
+  if (!S.opFn && !S.sparseClone && kind !== 'pencil') { set_curStroke(null); $('#err').textContent = `${BRUSHOP_LABEL[kind]}没有落笔算子（这是个 bug，请反馈）`; return null; }
   
   emitDab(S, pt.x, pt.y, S.lastP);
   return S;

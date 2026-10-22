@@ -19,7 +19,6 @@ import {
   $, QUADM, SELECT, SELM, combineSelection, contractSelection, createSelection, ellipseSelection,
   emptySelection, expandSelection, featherSelection, icon, invertSelection, isEmptySelection, lassoSelection,
   magicWandSelection, rectSelection, runLazy, selectionArea, selectionBounds, selectionToPath, selectionValueAt,
-  trimSelection,
 } from './01-boot.js';
 import {
   brushHistory, curStroke, doc, docH, docW, layerDeletes, li, selDrag, selEdgesOn, selPathCache, selection,
@@ -58,7 +57,9 @@ import { pcropState, syncPCropBar, syncSliceBar } from './34-perspective-crop-sl
 import { abCursorName } from './35-artboard.js';
 import { frameWhy, syncArtboardBar, syncFrameBar } from './36-clipboard-frame.js';
 import { syncBrushOpBar, syncMagBar } from './37-local-pixel-tools.js';
-import { ALT_EYEDROP, commitPixelPaint, cutRect, ensurePixelPaint, paintGuard, sameBytes } from './38-brush-engine.js';
+import {
+  ALT_EYEDROP, commitPixelPaint, cutRect, ensurePixelPaint, paintGuard, sameBytes, sparsePixelHistory,
+} from './38-brush-engine.js';
 import { capsPrecise } from './39-brush-options.js';
 import { smInternal, smOpen, smTakeToolSelection, smViewHidesAnts, syncBrushPanel } from './40-options-bar-wiring.js';
 import { pathGuard } from './44-vector-path.js';
@@ -755,8 +756,69 @@ export function selBracket(dir, hardness){
 
 
 export const sbOpts = { size: 60, hardness: 1, opacity: 1, show: 'overlay', color: [255, 0, 128], overlayOp: 0.5 };
+const SB_TILE = 256;
 export let sbState = null;       
+const sbTileKey = (x, y, cols) => ((y / SB_TILE) | 0) * cols + ((x / SB_TILE) | 0);
+function sbTileSlot(x, y) { return ((y % SB_TILE) * SB_TILE) + (x % SB_TILE); }
+function sbBaseAt(sel, x, y) {
+  if (!sel || sel.width <= 0 || sel.height <= 0) return 0;
+  const i = x - sel.x, j = y - sel.y;
+  return i < 0 || j < 0 || i >= sel.width || j >= sel.height ? 0 : sel.data[j * sel.width + i];
+}
+
+function sbBaseUniform(sel) {
+  if (!sel) return 0;
+  const d = sel.data;
+  if (!d || !d.__virtual || d.__base || d.__neg || d.__tiles?.size) return -1;
+  if (sel.x !== 0 || sel.y !== 0 || sel.width !== docW || sel.height !== docH) return -1;
+  return d.__fill | 0;
+}
 export let selOverlay = null;    
+let qmaskOverlay = null;
+
+
+export function setQuickMaskOverlay(sel, opts = {}) {
+  if (!sel) { qmaskOverlay = null; return; }
+  qmaskOverlay = { sel, color: opts.color || [255, 0, 0], opacity: opts.opacity ?? 0.5, inverted: !!opts.inverted, canvas: qmaskOverlay?.canvas || null, cache: null };
+  selOverlay = null;
+  syncAnts();
+}
+export function drawQuickMaskOverlay(ctx){
+  const q = qmaskOverlay; if (!q || !q.sel) return;
+  const s = q.sel, color = q.color, op = q.opacity;
+  const m = ctx.getTransform ? ctx.getTransform() : null;
+  const sx = (m && m.a) || 1, sy = (m && m.d) || 1, tx = m ? m.e : 0, ty = m ? m.f : 0;
+  const cw = ctx.canvas?.width || docW, ch = ctx.canvas?.height || docH;
+  const x0 = Math.max(0, Math.floor(-tx / sx) - 2), y0 = Math.max(0, Math.floor(-ty / sy) - 2);
+  const x1 = Math.min(docW, Math.ceil((cw - tx) / sx) + 2), y1 = Math.min(docH, Math.ceil((ch - ty) / sy) + 2);
+  const vw = x1 - x0, vh = y1 - y0;
+  if (!(vw > 0 && vh > 0)) return;
+  const k = Math.max(1, Math.ceil(vw / Math.max(1, cw)), Math.ceil(vh / Math.max(1, ch)));
+  const ow = Math.max(1, Math.ceil(vw / k)), oh = Math.max(1, Math.ceil(vh / k));
+  const key = { s, x0, y0, vw, vh, k, color, op, inverted: q.inverted };
+  const cache = q.cache;
+  if (!cache || cache.s !== s || cache.x0 !== x0 || cache.y0 !== y0 || cache.vw !== vw || cache.vh !== vh
+      || cache.k !== k || cache.color !== color || cache.op !== op || cache.inverted !== q.inverted) {
+    const c = q.canvas || document.createElement('canvas');
+    c.width = ow; c.height = oh;
+    const g = c.getContext('2d'), img = g.createImageData(ow, oh), D = img.data;
+    const [r, gg, b] = color, sd = s.data, sxx = s.x, syy = s.y, sw = s.width, sh = s.height;
+    let o = 0;
+    for (let j = 0; j < oh; j++) {
+      const yy = y0 + Math.min(vh - 1, Math.floor((j + .5) * k));
+      for (let i = 0; i < ow; i++) {
+        const xx = x0 + Math.min(vw - 1, Math.floor((i + .5) * k));
+        const qi = xx - sxx, qj = yy - syy;
+        const cov = qi < 0 || qj < 0 || qi >= sw || qj >= sh ? 0 : sd[qj * sw + qi];
+        const v = q.inverted ? cov : 255 - cov;
+        D[o] = r; D[o + 1] = gg; D[o + 2] = b; D[o + 3] = Math.round(v * op); o += 4;
+      }
+    }
+    g.putImageData(img, 0, 0);
+    q.canvas = c; q.cache = key;
+  }
+  ctx.save(); ctx.imageSmoothingEnabled = false; ctx.drawImage(q.canvas, x0, y0, vw, vh); ctx.restore();
+}
 export function set_selOverlay(v) { return (selOverlay = v); }   
 export function syncSelBrushBar(){
   const g = $('#sbOpts'); if (!g) return;
@@ -802,19 +864,15 @@ export function syncSelBrushBar(){
 }
 
 const selBrushOverlayOn = () => !li && !!doc && docTool === 'selectionBrush' && sbOpts.show === 'overlay';
-export function selBrushDown(ev, pt){
+export function selBrushDown(ev, pt, override = {}){
   if (!selReady('选区画笔')) return;
-  const n = docW * docH;
-  const baseCov = new Uint8Array(n);
-  if (selection && selection.width && selection.height) {
-    const sd = selection.data, w = selection.width;
-    for (let y = 0; y < selection.height; y++) {
-      const dy = selection.y + y; if (dy < 0 || dy >= docH) continue;
-      for (let x = 0; x < w; x++) { const dx = selection.x + x; if (dx >= 0 && dx < docW) baseCov[dy * docW + dx] = sd[y * w + x]; }
-    }
-  }
-  sbState = { base: selection, baseCov, cov: Uint8Array.from(baseCov), stroke: new Uint8Array(n), mode: effSelMode(ev),
-              last: { x: pt.x, y: pt.y }, dirty: null, raf: 0, pressure: ev.pointerType === 'pen' && ev.pressure > 0 ? ev.pressure : 1 };
+
+
+  sbState = { base: override.base !== undefined ? override.base : selection, strokeTiles: new Map(), covTiles: new Map(),
+              cols: Math.ceil(docW / SB_TILE), mode: override.mode || effSelMode(ev),
+              last: { x: pt.x, y: pt.y }, dirty: null, raf: 0, opts: override.opts || null,
+              onUpdate: override.onUpdate || null, onEnd: override.onEnd || null,
+              pressure: ev?.pointerType === 'pen' && ev.pressure > 0 ? ev.pressure : 1 };
   sbStamp(pt, pt);
   sbFlush();
 }
@@ -828,8 +886,9 @@ export function selBrushMove(ev, pt){
 
 function sbStamp(a, b){
   const st = sbState; if (!st) return;
-  const r = Math.max(0.5, sbOpts.size / 2), h = Math.max(0, Math.min(1, sbOpts.hardness));
-  const top = Math.round(255 * sbOpts.opacity * st.pressure);
+  const opt = st.opts || sbOpts;
+  const r = Math.max(0.5, opt.size / 2), h = Math.max(0, Math.min(1, opt.hardness));
+  const top = Math.round(255 * opt.opacity * st.pressure);
   const dist = Math.hypot(b.x - a.x, b.y - a.y);
   const steps = Math.max(1, Math.ceil(dist / Math.max(0.5, r * 0.2)));
   const sub = st.mode === 'subtract';
@@ -846,11 +905,31 @@ function sbStamp(a, b){
       let f = 1;
       if (t > h) { const u = 1 - (t - h) / (1 - h || 1); f = u * u * (3 - 2 * u); }
       const v = Math.round(top * f);
-      const i = y * docW + x;
-      if (v <= st.stroke[i]) continue;
-      st.stroke[i] = v;
-      const bse = st.baseCov[i];
-      st.cov[i] = sub ? Math.round(bse * (255 - v) / 255) : Math.round(bse + v * (255 - bse) / 255);
+      const key = sbTileKey(x, y, st.cols), slot = sbTileSlot(x, y);
+      let stroke = st.strokeTiles.get(key);
+      if (!stroke) { stroke = new Uint8Array(SB_TILE * SB_TILE); st.strokeTiles.set(key, stroke); }
+      if (v <= stroke[slot]) continue;
+      stroke[slot] = v;
+      let cov = st.covTiles.get(key);
+      if (!cov) {
+
+        cov = new Uint8Array(SB_TILE * SB_TILE);
+        const uniform = sbBaseUniform(st.base);
+        if (uniform >= 0) cov.fill(uniform);
+        else {
+          const tx0 = (x / SB_TILE) | 0, ty0 = (y / SB_TILE) | 0;
+          for (let yy = 0; yy < SB_TILE; yy++) {
+            const gy = ty0 * SB_TILE + yy; if (gy >= docH) break;
+            for (let xx = 0; xx < SB_TILE; xx++) {
+              const gx = tx0 * SB_TILE + xx; if (gx >= docW) break;
+              cov[yy * SB_TILE + xx] = sbBaseAt(st.base, gx, gy);
+            }
+          }
+        }
+        st.covTiles.set(key, cov);
+      }
+      const bse = sbBaseAt(st.base, x, y);
+      cov[slot] = sub ? Math.round(bse * (255 - v) / 255) : Math.round(bse + v * (255 - bse) / 255);
     }
   }
   if (dx1 < 0) return;
@@ -860,12 +939,12 @@ function sbStamp(a, b){
 
 function sbFlush(){
   const st = sbState; if (!st) return;
-  let sel = SELM.createSelection(docW, docH, 0, 0, docW, docH, st.cov);
-  sel = trimSelection(sel);
-  const d = st.dirty; st.dirty = null;
-  if (selOverlay && selOverlay.key === selection && d && selBrushOverlayOn()) {
-    selOverlayPaint(selOverlay, st.cov, docW, d.x0, d.y0, d.x1 - d.x0 + 1, d.y1 - d.y0 + 1);
-    selOverlay.key = isEmptySelection(sel) ? null : sel;
+  const sel = SELM.brushSelection(docW, docH, st.covTiles, st.base);
+  st.dirty = null;
+  if (st.onUpdate) {
+    st.onUpdate(isEmptySelection(sel) ? null : sel);
+    drawGizmo();
+    return;
   }
   set_selection(isEmptySelection(sel) ? null : sel);
   set_selPathCache(null);
@@ -877,40 +956,48 @@ export function endSelBrush(){
   if (!st) return false;
   if (st.raf) cancelAnimationFrame(st.raf);
   
-  let sel = trimSelection(SELM.createSelection(docW, docH, 0, 0, docW, docH, st.cov));
+  let sel = SELM.brushSelection(docW, docH, st.covTiles, st.base);
   if (isEmptySelection(sel)) sel = null;
+  if (st.onEnd) { st.onEnd(sel); return true; }
   set_selection(st.base);
-  const keepOv = selOverlay && selOverlay.key !== st.base ? selOverlay : null;
   setSelection(sel, { label: '选区画笔' });
-  if (keepOv && sel) { keepOv.key = selection; selOverlay = keepOv; }
   return true;
-}
-
-function selOverlayPaint(ov, cov, stride, x, y, w, h, dx = x, dy = y){
-  if (w <= 0 || h <= 0) return;
-  const g = ov.canvas.getContext('2d');
-  const img = g.createImageData(w, h), D = img.data;
-  const [r, gg, b] = ov.color, op = ov.op;
-  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
-    const v = cov[(y + j) * stride + x + i], o = (j * w + i) * 4;
-    D[o] = r; D[o + 1] = gg; D[o + 2] = b; D[o + 3] = Math.round(v * op);
-  }
-  g.putImageData(img, dx, dy);
 }
 
 export function drawSelBrushOverlay(ctx){
   if (!selBrushOverlayOn() || !selection) return;
-  const color = sbOpts.color, op = sbOpts.overlayOp;
-  if (!selOverlay || selOverlay.key !== selection || selOverlay.canvas.width !== docW || selOverlay.canvas.height !== docH
+  const color = sbOpts.color, op = sbOpts.overlayOp, s = selection;
+  const m = ctx.getTransform ? ctx.getTransform() : null;
+  const sx = (m && m.a) || 1, sy = (m && m.d) || 1, tx = m ? m.e : 0, ty = m ? m.f : 0;
+  const cw = ctx.canvas?.width || docW, ch = ctx.canvas?.height || docH;
+  const x0 = Math.max(0, Math.floor(-tx / sx) - 2), y0 = Math.max(0, Math.floor(-ty / sy) - 2);
+  const x1 = Math.min(docW, Math.ceil((cw - tx) / sx) + 2), y1 = Math.min(docH, Math.ceil((ch - ty) / sy) + 2);
+  const vw = x1 - x0, vh = y1 - y0;
+  if (!(vw > 0 && vh > 0)) return;
+
+  const k = Math.max(1, Math.ceil(vw / Math.max(1, cw)), Math.ceil(vh / Math.max(1, ch)));
+  const ow = Math.max(1, Math.ceil(vw / k)), oh = Math.max(1, Math.ceil(vh / k));
+  if (!selOverlay || selOverlay.key !== s || selOverlay.x0 !== x0 || selOverlay.y0 !== y0
+      || selOverlay.vw !== vw || selOverlay.vh !== vh || selOverlay.k !== k
       || selOverlay.color !== color || selOverlay.op !== op) {
-    const c = (selOverlay && selOverlay.canvas.width === docW && selOverlay.canvas.height === docH) ? selOverlay.canvas : document.createElement('canvas');
-    c.width = docW; c.height = docH;
-    c.getContext('2d').clearRect(0, 0, docW, docH);
-    selOverlay = { key: selection, canvas: c, color, op };
-    const s = selection;
-    if (s.width && s.height) selOverlayPaint(selOverlay, s.data, s.width, 0, 0, s.width, s.height, s.x, s.y);
+    const c = selOverlay?.canvas || document.createElement('canvas');
+    c.width = ow; c.height = oh;
+    const g = c.getContext('2d'), img = g.createImageData(ow, oh), D = img.data;
+    const [r, gg, b] = color, sd = s.data, sxx = s.x, syy = s.y, sw = s.width, sh = s.height;
+    let o = 0;
+    for (let j = 0; j < oh; j++) {
+      const yy = y0 + Math.min(vh - 1, Math.floor((j + .5) * k));
+      for (let i = 0; i < ow; i++) {
+        const xx = x0 + Math.min(vw - 1, Math.floor((i + .5) * k));
+        const qi = xx - sxx, qj = yy - syy;
+        const v = qi < 0 || qj < 0 || qi >= sw || qj >= sh ? 0 : sd[qj * sw + qi];
+        D[o] = r; D[o + 1] = gg; D[o + 2] = b; D[o + 3] = Math.round(v * op); o += 4;
+      }
+    }
+    g.putImageData(img, 0, 0);
+    selOverlay = { key: s, x0, y0, vw, vh, k, canvas: c, color, op };
   }
-  ctx.save(); ctx.imageSmoothingEnabled = false; ctx.drawImage(selOverlay.canvas, 0, 0); ctx.restore();
+  ctx.save(); ctx.imageSmoothingEnabled = false; ctx.drawImage(selOverlay.canvas, x0, y0, vw, vh); ctx.restore();
 }
 
 
@@ -981,7 +1068,9 @@ export function combineInto(next, mode){
   if (!docW) return null;
   const base = selection || emptySelection(docW, docH);
   
-  const out = mode === 'replace' ? next : combineSelection(base, next, mode);
+  let out;
+  try { out = mode === 'replace' ? next : combineSelection(base, next, mode); }
+  catch (e) { $('#notice').textContent = e && e.message || String(e); return null; }
   return setSelection(out);
 }
 export function updateSelInfo(){
@@ -1275,7 +1364,8 @@ export function clearSelectionPixels(){
   }
   const after = cutRect(pp.rgba, pp.w, rect, 4);
   if (!sameBytes(before, after)) {
-    brushHistory.undo.push({ kind: 'pixels', idx, rect, before, after, px: 4 });
+    const base = Uint8ClampedArray.from(pp.rgba); for (let y = 0; y < rect.h; y++) base.set(before.subarray(y * rect.w * 4, (y + 1) * rect.w * 4), ((rect.y + y) * pp.w + rect.x) * 4);
+    brushHistory.undo.push(sparsePixelHistory(idx, base, pp.rgba, pp.w, pp.h));
     if (brushHistory.undo.length > histCap('brush')) brushHistory.undo.shift();
     brushHistory.redo.length = 0;
     histPush('清除', 'brush');
@@ -1315,9 +1405,19 @@ export const selectAllLazy = () => docW ? runLazy(SELECT, '全选', selectAll) :
 export const deselect = () => setSelection(null);
 export function invertSel(){ if (selection) setSelection(invertSelection(selection)); else selectAll(); }
 export const invertSelLazy = () => (selection || docW) ? runLazy(SELECT, '反选', invertSel) : undefined;
-export function featherSel(r){ if (selection && r > 0) setSelection(featherSelection(selection, r)); }
-export function expandSel(px){ if (selection) setSelection(expandSelection(selection, px)); }
-export function contractSel(px){ if (selection) setSelection(contractSelection(selection, px)); }
+export function featherSel(r){
+  if (!(selection && r > 0)) return;
+  try { setSelection(featherSelection(selection, r)); }
+  catch (e) { $('#notice').textContent = e && e.message || String(e); }
+}
+export function expandSel(px){
+  if (!selection) return;
+  try { setSelection(expandSelection(selection, px)); } catch (e) { $('#notice').textContent = e && e.message || String(e); }
+}
+export function contractSel(px){
+  if (!selection) return;
+  try { setSelection(contractSelection(selection, px)); } catch (e) { $('#notice').textContent = e && e.message || String(e); }
+}
 
 
 export async function askPixels(label, def){
@@ -1416,7 +1516,7 @@ export function sampleRGBAViewport(all = true, hide){
       const sx = x - b.left, sy = y - b.top; if (sx < 0 || sy < 0 || sx >= sw || sy >= sh) continue;
       let p = null;
       if (src) { const q = (sy * sw + sx) * 4; p = [src[q], src[q + 1], src[q + 2], src[q + 3]]; }
-      else if (l.lazyChannels || l.lazyImage || l.lazyRasterSource) p = readLazyLayerPixel(l, sx, sy, doc.mode);
+      else if (!l.lazyTileStore && !l.lazyPixelOps?.length && (l.lazyChannels || l.lazyImage || l.lazyRasterSource)) p = readLazyLayerPixel(l, sx, sy, doc.mode);
       if (!p && l.lazyPreview) { const qx = Math.min(l.lazyPreview.width - 1, Math.max(0, Math.floor(sx * l.lazyPreview.width / Math.max(1, l.width)))); const qy = Math.min(l.lazyPreview.height - 1, Math.max(0, Math.floor(sy * l.lazyPreview.height / Math.max(1, l.height)))); const q = (qy * l.lazyPreview.width + qx) * 4; p = [l.lazyPreview.data[q], l.lazyPreview.data[q + 1], l.lazyPreview.data[q + 2], l.lazyPreview.data[q + 3]]; }
       if (p) over(p[0], p[1], p[2], p[3], ((y - y0) * w + x - x0) * 4);
     }
@@ -1470,6 +1570,18 @@ export function selPath(){
 
 
 
+let gizmoSizeCache = { w: -1, h: -1, at: -1e9 };
+function gizmoSize(){
+  const g = $('#gizmo'); if (!g) return null;
+  const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  if (now - gizmoSizeCache.at < 16 && now >= gizmoSizeCache.at) return gizmoSizeCache;
+  const r = g.getBoundingClientRect();
+  gizmoSizeCache = { w: r.width, h: r.height, at: now };
+  return gizmoSizeCache;
+}
+
+
+
 
 
 
@@ -1478,17 +1590,18 @@ export function selPath(){
 
 export function dispPx(n){
   if (viewAngle && zoom>0) return n/zoom;
-  const w = $('#gizmo').getBoundingClientRect().width;
+  const g = gizmoSize();
+  const w = g ? g.w : 0;
   return w > 0 && docW > 0 ? n * viewW() / w : n;
 }
 export let antsOffset = 0, antsRAF = 0;
 function antsWanted(){
-  if (!doc || !docW || !selection) return false;
+  if (!doc || !docW || !selection || qmaskOverlay) return false;
   if (selBrushOverlayOn() || smViewHidesAnts()) return false;
   if (typeof document !== 'undefined' && document.hidden) return false;
   const st = $('#stage'); if (!st || st.hidden) return false;
-  const r = $('#gizmo').getBoundingClientRect();
-  return r.width > 0 && r.height > 0;        
+  const r = gizmoSize();
+  return !!r && r.w > 0 && r.h > 0;
 }
 function antsFrame(){
   antsRAF = 0;

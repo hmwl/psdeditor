@@ -7,17 +7,21 @@ import './53-retouch-clone-pattern.js';
 import { bracketStep } from '../../../core/brush-engine.js';
 import { shell } from '../shell.js';
 import {
-  $, RETOUCH, RETOUCHM, createSelection, icon, kick, lassoSelection, selectionBounds, selectionValueAt,
+  $, RETOUCH, RETOUCHM, createSelection, ensureLazy, icon, kick, lassoSelection, selectionBounds,
+  selectionValueAt,
 } from './01-boot.js';
 import { brushHistory, doc, docH, docW, li, pixelPaint, selection } from './02-doc-state.js';
-import { histCap, histPush } from './03-history.js';
+import { histCap, histPush, updateUndoButtons } from './03-history.js';
+import { readLazyImageTile } from './21-load-document.js';
 import { layerCanvasCache, renderLayerPanel, selLayer, thumbCache } from './23-layers-panel.js';
 import { humanEditError } from './24-layer-ops-queue.js';
-import { renderPreviewOnly } from './30-render.js';
+import { transformChanged } from './28-layer-props-transform.js';
+import { compositeRegionRGBA, renderPreviewOnly } from './30-render.js';
 import { docTool } from './31-selection-brush.js';
 import { combineInto, dispPx, selOpts, selReady, setSelection } from './32-cursors-select-options.js';
 import {
-  commitPixelPaint, cutRect, diffBox, ensurePixelPaint, growPixelPaintToCanvas, selCovFn, strokeRegionRepaint,
+  brushTarget, commitPixelPaint, diffBox, ensurePixelPaint, growPixelPaintToCanvas, paintGuard, selCovFn,
+  sparsePixelHistory, strokeRegionRepaint,
 } from './38-brush-engine.js';
 import { dispThr, drawGizmo, gizmo } from './46-smart-filter-panel.js';
 import {
@@ -95,8 +99,7 @@ export function retouchApply(label, compute, opts = {}){
   const box = diffBox(before, pp.rgba, pp.w, pp.h, 4);
   if (!box) { $('#notice').textContent = `${label}：这一下没有改到任何像素。`; return false; }
   histPush(label, 'brush');
-  brushHistory.undo.push({ kind: 'pixels', idx, rect: box, px: 4, adjust: label,
-                           before: cutRect(before, pp.w, box, 4), after: cutRect(pp.rgba, pp.w, box, 4) });
+  brushHistory.undo.push(sparsePixelHistory(idx, before, pp.rgba, pp.w, pp.h, { adjust: label }));
   if (brushHistory.undo.length > histCap('brush')) brushHistory.undo.shift();
   brushHistory.redo.length = 0;
   const ok = commitPixelPaint(idx);
@@ -169,8 +172,388 @@ function rtScheduleRepaint(S){
 }
 
 
+
+async function rtHugeReadCrop(layer, idx, x0, y0, w, h, pp){
+  const out = new Uint8ClampedArray(w * h * 4);
+  if (layer.rgba && layer.rgba.length >= layer.width * layer.height * 4) {
+    for (let y = 0; y < h; y++) out.set(layer.rgba.subarray(((y0 + y) * layer.width + x0) * 4, ((y0 + y) * layer.width + x0 + w) * 4), y * w * 4);
+    return out;
+  }
+
+  if (!layer.lazyTileStore && !layer.lazyImage && !layer.lazyRasterFile) {
+    try { return await pp.sparse.readRect({ x: x0, y: y0, w, h }); } catch { return null; }
+  }
+  let failed = false;
+  for (let ty = Math.floor(y0 / 256) * 256; ty < y0 + h && !failed; ty += 256)
+    for (let tx = Math.floor(x0 / 256) * 256; tx < x0 + w; tx += 256) {
+      let t = pp?.sparse?.tiles?.get(`${tx}:${ty}`) || null;
+      if (!t) try { t = await readLazyImageTile(layer, tx, ty); } catch { failed = true; break; }
+      if (!t) continue;
+      const ax0 = Math.max(x0, t.x), ax1 = Math.min(x0 + w, t.x + t.width);
+      const ay0 = Math.max(y0, t.y), ay1 = Math.min(y0 + h, t.y + t.height);
+      if (!(ax1 > ax0 && ay1 > ay0)) continue;
+      for (let y = ay0; y < ay1; y++)
+        out.set(t.data.subarray(((y - t.y) * t.width + ax0 - t.x) * 4, ((y - t.y) * t.width + ax1 - t.x) * 4),
+          ((y - y0) * w + ax0 - x0) * 4);
+    }
+  if (!failed) return out;
+  try { return await pp.sparse.readRect({ x: x0, y: y0, w, h }); } catch { return null; }
+}
+let rtHugeBusy = false;
+async function rtHugeStroke(S, label, compute, pad){
+  if (rtHugeBusy) { $('#notice').textContent = '上一次分块润饰还在写盘，完成后再落笔。'; return false; }
+  rtHugeBusy = true;
+  try { return await rtHugeStrokeNow(S, label, compute, pad); } finally { rtHugeBusy = false; }
+}
+
+function rtHugeClipRect(r){
+  const x = Math.max(0, Math.round(r.x)), y = Math.max(0, Math.round(r.y));
+  const x1 = Math.min(docW, Math.round(r.x + r.w)), y1 = Math.min(docH, Math.round(r.y + r.h));
+  return x1 > x && y1 > y ? { x, y, w: x1 - x, h: y1 - y } : null;
+}
+function rtHugeClipMask(m){
+  if (!m) return null;
+  const x = Math.max(0, m.x), y = Math.max(0, m.y);
+  const x1 = Math.min(docW, m.x + m.w), y1 = Math.min(docH, m.y + m.h);
+  const w = x1 - x, h = y1 - y;
+  if (!(w > 0 && h > 0)) return null;
+  if (x === m.x && y === m.y && w === m.w && h === m.h) return { ...m, x, y, w, h };
+  const mask = new Uint8Array(w * h);
+  for (let yy = 0; yy < h; yy++)
+    mask.set(m.mask.subarray((y + yy - m.y) * m.w + x - m.x, (y + yy - m.y) * m.w + x - m.x + w), yy * w);
+  return { x, y, w, h, mask };
+}
+
+async function rtHugeApplyMask(idx, box, mask, label, compute, opts = {}){
+  if (!await ensureLazy(RETOUCH, label)) return false;
+  if (!RETOUCHM) { $('#err').textContent = `${label}：修复模块还没就绪，请再试一次。`; return false; }
+  const dl = doc?.layers[idx], pp = ensurePixelPaint(idx, { sparse: true });
+  if (!dl || !pp?.sparse) { $('#err').textContent = `${label}：这一层没有可分块编辑的像素。`; return false; }
+  if ((dl.bounds?.left | 0) !== 0 || (dl.bounds?.top | 0) !== 0 || transformChanged(idx)) {
+    $('#notice').textContent = `${label}：超大文档目前要求图层位于画布原点且没有未应用的变换。`;
+    return false;
+  }
+  const bx = box.x, by = box.y, bw = box.w, bh = box.h;
+  const pad = Math.max(0, Math.round(opts.pad ?? 32));
+  let cx0, cy0, cx1, cy1;
+  if (opts.crop) {
+    cx0 = Math.max(0, Math.floor(opts.crop.x)); cy0 = Math.max(0, Math.floor(opts.crop.y));
+    cx1 = Math.min(docW, Math.ceil(opts.crop.x + opts.crop.w)); cy1 = Math.min(docH, Math.ceil(opts.crop.y + opts.crop.h));
+  } else {
+    cx0 = Math.max(0, bx - pad); cy0 = Math.max(0, by - pad);
+    cx1 = Math.min(docW, bx + bw + pad); cy1 = Math.min(docH, by + bh + pad);
+  }
+  const cw = cx1 - cx0, ch = cy1 - cy0;
+  if (!(cw > 0 && ch > 0)) return false;
+
+
+  const work = opts.work && opts.work.length === cw * ch * 4 ? opts.work : await rtHugeReadCrop(dl, idx, cx0, cy0, cw, ch, pp);
+  if (!work) { $('#err').textContent = `${label}：局部像素读取失败。`; return false; }
+  const reg = { x: bx - cx0, y: by - cy0, w: bw, h: bh, mask };
+  const t0 = performance.now();
+  let out;
+  try { out = await compute(work, cw, ch, cx0, cy0, reg, { dl, idx, pp }); }
+  catch (e) { $('#err').textContent = `${label}失败：` + humanEditError(e && e.message || e); return false; }
+  if (!out || out.length !== cw * ch * 4) { $('#notice').textContent = `${label}：这一笔没有算出结果。`; return false; }
+  const tx = pp.sparse.begin();
+  try {
+    await tx.prepare({ x: bx, y: by, w: bw, h: bh });
+    const ctxs = tx.contexts({ x: bx, y: by, w: bw, h: bh });
+    for (const t of ctxs) {
+      let changed = false;
+      const x0 = Math.max(bx, t.x), x1 = Math.min(bx + bw, t.x + t.width);
+      const y0 = Math.max(by, t.y), y1 = Math.min(by + bh, t.y + t.height);
+      for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+        const mv = mask[(y - by) * bw + (x - bx)] / 255;
+        if (!(mv > 0)) continue;
+        const si = ((y - cy0) * cw + (x - cx0)) * 4, di = ((y - t.y) * t.width + (x - t.x)) * 4;
+        if (opts.direct) {
+          let diff = false;
+          for (let c = 0; c < 4; c++) if (work[si + c] !== out[si + c]) { diff = true; break; }
+          if (!diff) continue;
+          for (let c = 0; c < 4; c++) t.rgba[di + c] = out[si + c];
+        } else {
+          for (let c = 0; c < 4; c++) t.rgba[di + c] = Math.round(t.rgba[di + c] * (1 - mv) + out[si + c] * mv);
+        }
+        changed = true;
+      }
+      if (changed) tx.dirty(t.key, { x0: 0, y0: 0, x1: t.width - 1, y1: t.height - 1 });
+    }
+    const patches = tx.finish();
+    if (!patches.length) { $('#notice').textContent = `${label}：这一下没有改到像素。`; return false; }
+    brushHistory.undo.push({ kind: 'sparsePixels', idx, patches });
+    if (brushHistory.undo.length > histCap('brush')) brushHistory.undo.shift();
+    brushHistory.redo.length = 0;
+    histPush(label, 'brush');
+    commitPixelPaint(idx);
+    delete layerCanvasCache[idx]; delete thumbCache[idx];
+    renderLayerPanel(); renderPreviewOnly(); updateUndoButtons();
+    shell.status(`${label}（分块）：${bw}×${bh}，${Math.round(performance.now() - t0)} ms`);
+    return true;
+  } catch (e) {
+    try { tx.rollback(); } catch {}
+    $('#err').textContent = `${label}失败：` + humanEditError(e && e.message || e);
+    return false;
+  }
+}
+function rtHugeStrokeMask(S, label){
+  const m = rtHugeClipMask(retouchStrokeMask(S.pts, retouchOpts.size / 2));
+  if (!m) return null;
+  const mask = new Uint8Array(m.w * m.h);
+  let any = false;
+  for (let y = 0; y < m.h; y++) for (let x = 0; x < m.w; x++) {
+    let v = m.mask[y * m.w + x];
+    if (selection) v = Math.round(v * selectionValueAt(selection, m.x + x, m.y + y) / 255);
+    if (v) { mask[y * m.w + x] = v; any = true; }
+  }
+  if (!any) { $('#notice').textContent = `${label}：选区内没有笔迹。`; return null; }
+  return { m, mask };
+}
+async function rtHugeStrokeNow(S, label, compute, padPx){
+  const hit = rtHugeStrokeMask(S, label);
+  if (!hit) return false;
+  return rtHugeApplyMask(S.idx ?? selLayer, { x: hit.m.x, y: hit.m.y, w: hit.m.w, h: hit.m.h }, hit.mask, label, compute, { pad: padPx });
+}
+function rtHugeSpotNow(S){
+  return rtHugeStroke(S, '污点修复画笔', (work, cw, ch, cx0, cy0, reg) =>
+    RETOUCHM.spotHeal(work, cw, ch, reg, { type: retouchOpts.spotType, blend: retouchOpts.spotMode }),
+  Math.max(32, Math.round(retouchOpts.size)));
+}
+
+async function rtHugeHealComposite(S){
+  const hit = rtHugeStrokeMask(S, '修复画笔');
+  if (!hit) return false;
+  const { m, mask } = hit;
+  const pad = Math.max(32, Math.round(retouchOpts.size));
+  let cx0 = Math.max(0, m.x - pad), cy0 = Math.max(0, m.y - pad);
+  let cx1 = Math.min(docW, m.x + m.w + pad), cy1 = Math.min(docH, m.y + m.h + pad);
+  if (S.cloneMap) {
+    const xs = [], ys = [];
+    for (const [x, y] of [[m.x - 3, m.y - 3], [m.x + m.w + 3, m.y - 3], [m.x - 3, m.y + m.h + 3], [m.x + m.w + 3, m.y + m.h + 3]]) {
+      const q = S.cloneMap(x, y); xs.push(q.x); ys.push(q.y);
+    }
+    cx0 = Math.max(0, Math.min(cx0, Math.floor(Math.min(...xs)) - 3));
+    cy0 = Math.max(0, Math.min(cy0, Math.floor(Math.min(...ys)) - 3));
+    cx1 = Math.min(docW, Math.max(cx1, Math.ceil(Math.max(...xs)) + 3));
+    cy1 = Math.min(docH, Math.max(cy1, Math.ceil(Math.max(...ys)) + 3));
+  }
+  const crop = { x: cx0, y: cy0, w: cx1 - cx0, h: cy1 - cy0 };
+  if (!(crop.w > 0 && crop.h > 0)) return false;
+  const comp = await compositeRegionRGBA(cx0, cy0, cx1, cy1, {
+    belowIdx: S.sampleScope === 'below' ? S.idx : null, ignoreAdj: S.ignoreAdj,
+  });
+  if (!comp) { $('#err').textContent = '修复画笔：局部合成失败（图层组蒙版 / 变换暂不支持）。'; return false; }
+  return rtHugeApplyMask(S.idx ?? selLayer, { x: m.x, y: m.y, w: m.w, h: m.h }, mask, '修复画笔',
+    (work, cw, ch, wx0, wy0, reg) => {
+      const p = 3, px0 = reg.x - p, py0 = reg.y - p, pw = reg.w + p * 2, ph = reg.h + p * 2;
+      const data = new Uint8ClampedArray(pw * ph * 4), tmp = [0, 0, 0, 0];
+      if (S.healPattern) {
+        for (let y = 0; y < ph; y++) for (let x = 0; x < pw; x++)
+          if (rtPatternAt(S.healPattern, px0 + x + wx0 - S.patOrigin.x, py0 + y + wy0 - S.patOrigin.y, tmp)) data.set(tmp, (y * pw + x) * 4);
+      } else if (S.cloneMap) {
+        const smp = { data: work, w: cw, h: ch, ox: wx0, oy: wy0 };
+        for (let y = 0; y < ph; y++) for (let x = 0; x < pw; x++) {
+          const q = S.cloneMap(px0 + x + wx0 + 0.5, py0 + y + wy0 + 0.5);
+          if (rtBilinear(smp, q.x, q.y, tmp)) data.set(tmp, (y * pw + x) * 4);
+        }
+      }
+      return RETOUCHM.healRegion(work, cw, ch, reg, { image: { data, width: pw, height: ph, x: px0, y: py0 } },
+        { diffusion: retouchOpts.legacy ? 7 : retouchOpts.diffusion, blend: retouchOpts.healMode });
+    }, { crop, work: comp.data, direct: true });
+}
+
+async function rtHugeHealNow(S){
+  if (S.sampleScope && S.sampleScope !== 'layer') return rtHugeHealComposite(S);
+  return rtHugeStroke(S, '修复画笔', async (work, cw, ch, cx0, cy0, reg, ctx) => {
+    const pad = 3, px0 = reg.x - pad, py0 = reg.y - pad, pw = reg.w + pad * 2, ph = reg.h + pad * 2;
+    const data = new Uint8ClampedArray(pw * ph * 4), tmp = [0, 0, 0, 0];
+    if (S.healPattern) {
+      for (let y = 0; y < ph; y++) for (let x = 0; x < pw; x++)
+        if (rtPatternAt(S.healPattern, px0 + x + cx0 - S.patOrigin.x, py0 + y + cy0 - S.patOrigin.y, tmp)) data.set(tmp, (y * pw + x) * 4);
+    } else if (S.cloneMap) {
+
+      const map = S.cloneMap, xs = [], ys = [];
+      for (const [ux, uy] of [[px0 + cx0, py0 + cy0], [px0 + pw + cx0, py0 + cy0],
+        [px0 + cx0, py0 + ph + cy0], [px0 + pw + cx0, py0 + ph + cy0]]) {
+        const q = map(ux, uy); xs.push(q.x); ys.push(q.y);
+      }
+      const sx0 = Math.max(0, Math.floor(Math.min(...xs)) - 2), sy0 = Math.max(0, Math.floor(Math.min(...ys)) - 2);
+      const sx1 = Math.min(docW, Math.ceil(Math.max(...xs)) + 2), sy1 = Math.min(docH, Math.ceil(Math.max(...ys)) + 2);
+      const sw = sx1 - sx0, sh = sy1 - sy0;
+      let src = null;
+      if (sw > 0 && sh > 0) src = await rtHugeReadCrop(ctx.dl, ctx.idx, sx0, sy0, sw, sh, ctx.pp);
+      if (src) {
+        const smp = { data: src, w: sw, h: sh, ox: sx0, oy: sy0 };
+        for (let y = 0; y < ph; y++) for (let x = 0; x < pw; x++) {
+          const q = map(px0 + x + cx0 + 0.5, py0 + y + cy0 + 0.5);
+          if (rtBilinear(smp, q.x, q.y, tmp)) data.set(tmp, (y * pw + x) * 4);
+        }
+      }
+    }
+    return RETOUCHM.healRegion(work, cw, ch, reg, { image: { data, width: pw, height: ph, x: px0, y: py0 } },
+      { diffusion: retouchOpts.legacy ? 7 : retouchOpts.diffusion, blend: retouchOpts.healMode });
+  }, Math.max(8, Math.round(retouchOpts.size)));
+}
+async function rtHugePatch(dx, dy){
+  if (rtHugeBusy) { $('#notice').textContent = '上一次分块润饰还在写盘，完成后再落笔。'; return false; }
+  rtHugeBusy = true;
+  try { return await rtHugePatchNow(dx, dy); } finally { rtHugeBusy = false; }
+}
+async function rtHugePatchNow(dx, dy){
+  const allLayers = !!retouchOpts.patchAll;
+  const region = retouchSelectionMask();
+  if (!region) { $('#notice').textContent = '修补：没有选区。'; return false; }
+  const fromSource = retouchOpts.patchMode === 'source';
+  const dst = fromSource ? region : { ...region, x: region.x + dx, y: region.y + dy };
+  const off = fromSource ? { dx, dy } : { dx: -dx, dy: -dy };
+  const clip = rtHugeClipMask(dst);
+  if (!clip) { $('#notice').textContent = '修补：落点不在画布内。'; return false; }
+  const pad = Math.max(32, Math.round(retouchOpts.size));
+  const ux0 = Math.min(clip.x, clip.x + off.dx) - pad, uy0 = Math.min(clip.y, clip.y + off.dy) - pad;
+  const ux1 = Math.max(clip.x + clip.w, clip.x + clip.w + off.dx) + pad;
+  const uy1 = Math.max(clip.y + clip.h, clip.y + clip.h + off.dy) + pad;
+  const crop = { x: ux0, y: uy0, w: ux1 - ux0, h: uy1 - uy0 };
+  let work = null;
+  if (allLayers) {
+    const comp = await compositeRegionRGBA(Math.max(0, ux0), Math.max(0, uy0), Math.min(docW, ux1), Math.min(docH, uy1));
+    if (!comp) { $('#err').textContent = '修补：局部合成失败（图层组蒙版 / 变换暂不支持）。'; return false; }
+    work = comp.data;
+  }
+  return rtHugeApplyMask(selLayer, { x: clip.x, y: clip.y, w: clip.w, h: clip.h }, clip.mask, '修补',
+    (w2, cw, ch, cx0, cy0, reg) => retouchOpts.patchKind === 'content'
+      ? RETOUCHM.contentAwarePlace(w2, cw, ch, reg, off, { structure: retouchOpts.patchStructure, color: retouchOpts.patchColor })
+      : RETOUCHM.healRegion(w2, cw, ch, reg, off, { diffusion: retouchOpts.patchDiffusion, transparent: retouchOpts.transparent }),
+    { crop, work, direct: allLayers });
+}
+async function rtHugeRedEye(S){
+  if (rtHugeBusy) { $('#notice').textContent = '上一次分块润饰还在写盘，完成后再落笔。'; return false; }
+  rtHugeBusy = true;
+  try { return await rtHugeRedEyeNow(S); } finally { rtHugeBusy = false; }
+}
+async function rtHugeRedEyeNow(S){
+  if (!await ensureLazy(RETOUCH, '红眼')) return false;
+  if (!RETOUCHM) { $('#err').textContent = '红眼：修复模块还没就绪，请再试一次。'; return false; }
+  const idx = S.idx ?? selLayer, dl = doc?.layers[idx], pp = ensurePixelPaint(idx, { sparse: true });
+  if (!dl || !pp?.sparse) { $('#err').textContent = '红眼：这一层没有可分块编辑的像素。'; return false; }
+  const w = Math.abs(S.x1 - S.x0), h = Math.abs(S.y1 - S.y0), single = w < 3 || h < 3;
+  const o = { pupilSize: retouchOpts.pupilSize, amount: retouchOpts.amount, single };
+  const read = async r => rtHugeReadCrop(dl, idx, r.x, r.y, r.w, r.h, pp);
+  let box = null, n = 0;
+  if (single) {
+    let r = Math.max(12, Math.min(150, Math.round(Math.min(docW, docH) * 0.04)));
+    for (let k = 0; k < 3 && !n; k++, r *= 2) {
+      const clip = rtHugeClipRect({ x: S.x0 - r, y: S.y0 - r, w: r * 2, h: r * 2 });
+      if (!clip) continue;
+      const work = await read(clip);
+      if (!work) continue;
+      n = RETOUCHM.countRedEye(work, clip.w, clip.h, { x: 0, y: 0, w: clip.w, h: clip.h }, o);
+      if (n) box = clip;
+    }
+  } else {
+    const clip = rtHugeClipRect({ x: Math.min(S.x0, S.x1), y: Math.min(S.y0, S.y1), w, h });
+    if (!clip) { $('#notice').textContent = '红眼：框不在画布内。'; return false; }
+    const work = await read(clip);
+    if (work) n = RETOUCHM.countRedEye(work, clip.w, clip.h, { x: 0, y: 0, w: clip.w, h: clip.h }, o);
+    if (n) box = clip;
+  }
+  if (!n || !box) {
+    $('#notice').textContent = '红眼：这里没找到红色的瞳孔（点在瞳孔上，或拖框把眼睛框住；也可以调大「瞳孔大小」）。';
+    return false;
+  }
+  const mask = new Uint8Array(box.w * box.h); mask.fill(255);
+  const ok = await rtHugeApplyMask(idx, box, mask, '红眼',
+    (work, cw, ch, cx0, cy0, reg) => RETOUCHM.removeRedEye(work, cw, ch, reg, o), { pad: 8 });
+  if (ok) shell.status(`红眼（分块）：处理了 ${n} 个像素（瞳孔大小 ${retouchOpts.pupilSize}%、变暗量 ${retouchOpts.amount}%）`);
+  return ok;
+}
+function rtHugeDown(ev, pt){
+  if (rtHugeBusy) { $('#notice').textContent = '上一次分块润饰还在写盘，完成后再落笔。'; return false; }
+  if (docTool !== 'spotHeal' && docTool !== 'healBrush' && docTool !== 'patch' && docTool !== 'contentMove' && docTool !== 'redEye') {
+    $('#notice').textContent = `超大文档暂不支持${RETOUCH_LABEL[docTool] || '这个润饰工具'}。`;
+    return false;
+  }
+
+  const why = paintGuard();
+  if (why) { $('#err').textContent = `${RETOUCH_LABEL[docTool]}用不了：${why}`; syncRetouchBar(); return false; }
+  if (brushTarget() === 'mask' && docTool !== 'redEye') {
+    $('#err').textContent = `${RETOUCH_LABEL[docTool]}只作用在图层像素上（把「作用于」切回「图层像素」）。`;
+    return false;
+  }
+  if (docTool === 'healBrush' && (ev.altKey || ev.metaKey || ev.ctrlKey)) {
+    if (retouchOpts.healSource === 'pattern') { $('#notice').textContent = '修复画笔：源是「图案」时不用取样。'; return false; }
+    csSetSample(pt);
+    shell.status(`修复画笔取样点：${Math.round(pt.x)}, ${Math.round(pt.y)}（仿制源 ${cloneSrc.active + 1}）`);
+    syncRetouchBar(); drawGizmo();
+    return true;
+  }
+  if (docTool === 'healBrush') {
+    if (retouchOpts.healSource === 'sample' && !csCur()) {
+      $('#notice').textContent = '修复画笔：先按住 Alt/⌥ 在干净的地方点一下取样，再涂要修的地方（PS 同）。';
+      return false;
+    }
+  }
+  const pp = ensurePixelPaint(selLayer, { sparse: true });
+  if (!pp?.sparse) { $('#err').textContent = `${RETOUCH_LABEL[docTool]}用不了：这一层没有可分块编辑的像素。`; return false; }
+  if (docTool === 'redEye') {
+    set_retouchState({ kind: 'redEye', idx: selLayer, x0: pt.x, y0: pt.y, x1: pt.x, y1: pt.y });
+    $('#err').textContent = '';
+    gizmo.classList.add('drag');
+    try { gizmo.setPointerCapture(ev.pointerId); } catch {}
+    drawGizmo();
+    return true;
+  }
+  if (docTool === 'patch' || docTool === 'contentMove') {
+    const inSel = selection && selectionValueAt(selection, Math.floor(pt.x), Math.floor(pt.y)) > 0;
+    const mod = ev.shiftKey || ev.altKey;
+    if (!inSel || mod) {
+      if (!selReady(RETOUCH_LABEL[docTool])) return false;
+      const mode = ev.shiftKey && ev.altKey ? 'intersect' : ev.shiftKey ? 'add' : ev.altKey ? 'subtract' : retouchOpts.selMode;
+      set_retouchState({ kind: 'lasso', pts: [{ x: pt.x, y: pt.y }], mode });
+    } else {
+      set_retouchState({ kind: 'drag', start: { x: pt.x, y: pt.y }, cur: { x: pt.x, y: pt.y }, prev: null });
+    }
+    $('#err').textContent = '';
+    gizmo.classList.add('drag');
+    try { gizmo.setPointerCapture(ev.pointerId); } catch {}
+    drawGizmo();
+    return true;
+  }
+  const S = { kind: 'hugeSpot', tool: docTool, idx: selLayer, pts: [{ x: pt.x, y: pt.y, r: retouchOpts.size / 2 }],
+    last: { x: pt.x, y: pt.y }, carry: 0, pen: ev.pointerType === 'pen', selCov: selCovFn() };
+  if (docTool === 'healBrush') {
+    S.sampleScope = retouchOpts.sample;
+    S.ignoreAdj = retouchOpts.ignoreAdj;
+    if (retouchOpts.healSource === 'pattern') {
+      S.healPattern = rtPatternImage(retouchOpts.healPattern);
+      S.patOrigin = retouchOpts.aligned ? { x: 0, y: 0 } : { x: pt.x, y: pt.y };
+    } else {
+      const cs = csBeginStroke(pt, retouchOpts.aligned), anchor = { ...cs.anchor };
+      S.cloneMap = (x, y) => csMap(cs, anchor, x, y);
+    }
+  }
+  set_retouchState(S);
+  gizmo.classList.add('drag');
+  try { gizmo.setPointerCapture(ev.pointerId); } catch {}
+  $('#err').textContent = '';
+  drawGizmo();
+  return true;
+}
+function rtHugeMove(ev, pt){
+  const S = retouchState; if (!S) return;
+  const step = Math.max(1, retouchOpts.size * retouchOpts.spacing);
+  const dx = pt.x - S.last.x, dy = pt.y - S.last.y, dist = Math.hypot(dx, dy);
+  if (dist < 1e-6) return;
+  let t = S.carry > 0 ? S.carry : step;
+  while (t <= dist) { S.pts.push({ x: S.last.x + dx * t / dist, y: S.last.y + dy * t / dist, r: retouchOpts.size / 2 }); t += step; }
+  S.carry = t - dist;
+  S.last = { x: pt.x, y: pt.y };
+  drawGizmo();
+}
+
+
 export function retouchDown(ev, pt){
   if (rtPending) return rtPendingDown(ev, pt);
+  if (docW * docH > 128e6) return rtHugeDown(ev, pt);
   const why = retouchGuard();
   if (why) { $('#err').textContent = `${RETOUCH_LABEL[docTool]}用不了：${why}`; syncRetouchBar(); return false; }
   $('#err').textContent = '';
@@ -241,6 +624,7 @@ let rtLastPt = null;
 export function retouchMove(ev, pt){
   if (rtPending && rtPending.drag) { rtPendingMove(ev, pt); return; }
   const S = retouchState; if (!S) return;
+  if (S.kind === 'hugeSpot') { rtHugeMove(ev, pt); return; }
   if (S.kind === 'redEye') { S.x1 = pt.x; S.y1 = pt.y; }
   else if (S.kind === 'drag') { S.cur = { x: pt.x, y: pt.y }; }
   else if (S.kind === 'stroke') { rtStrokeTo(S, pt, ev.pressure); rtScheduleRepaint(S); return; }
@@ -276,14 +660,15 @@ function rtDrawDragPreview(ctx, P, srcDx, srcDy, atDx, atDy){
 }
 
 
-export function retouchUp(){
+export async function retouchUp(){
   if (rtPending && rtPending.drag) { rtPending.drag = null; drawGizmo(); return true; }
   const S = retouchState; set_retouchState(null);
   gizmo.classList.remove('drag');
   if (!S) return false;
   const idx = selLayer, pp = pixelPaint[idx];
   let ok = false;
-  if (S.kind === 'redEye') ok = rtRedEye(S, pp);
+  if (S.kind === 'hugeSpot') ok = S.tool === 'healBrush' ? await rtHugeHealNow(S) : await rtHugeSpotNow(S);
+  else if (S.kind === 'redEye') ok = pp?.sparse ? await rtHugeRedEye(S) : rtRedEye(S, pp);
   else if (S.kind === 'lasso') {
     if (S.pts.length < 3) { drawGizmo(); return false; }
     try { combineInto(lassoSelection(docW, docH, S.pts, selOpts()), S.mode || 'replace'); }
@@ -293,9 +678,9 @@ export function retouchUp(){
   } else if (S.kind === 'drag') {
     const dx = Math.round(S.cur.x - S.start.x), dy = Math.round(S.cur.y - S.start.y);
     if (!dx && !dy) { $('#notice').textContent = '没有拖动：源和目标是同一块。'; drawGizmo(); return false; }
-    if (docTool === 'patch') ok = rtPatch(dx, dy);
+    if (docTool === 'patch') ok = await rtPatch(dx, dy);
     else if (retouchOpts.transformOnDrop) { rtBeginPending(dx, dy); ok = true; }
-    else ok = rtContentMove({ dx, dy, s: 1, th: 0 });
+    else ok = await rtContentMove({ dx, dy, s: 1, th: 0 });
   } else if (S.kind === 'stroke') {
     rtLastPt = { x: S.last.x, y: S.last.y, idx: S.idx };
     ok = rtFinishStroke(S);
@@ -340,6 +725,7 @@ function rtFinishStroke(S){
 
 
 function rtPatch(dx, dy){
+  if (docW * docH > 128e6) return rtHugePatch(dx, dy);
   const region = retouchSelectionMask();
   if (!region) { $('#notice').textContent = '没有选区。'; return false; }
   if (!RETOUCHM) { kick(RETOUCH); shell.status(RETOUCH.statusText()); return false; }
@@ -360,8 +746,28 @@ function rtPatch(dx, dy){
   if (ok) shell.status(`修补（${retouchOpts.patchKind === 'content' ? '内容识别' : '正常'} · ${src ? '源' : '目标'}${retouchOpts.transparent && retouchOpts.patchKind !== 'content' ? ' · 透明' : ''}）：偏移 ${dx}, ${dy}，${Math.round(performance.now() - t0)} ms`);
   return ok;
 }
+async function rtHugePatchPattern(){
+  if (rtHugeBusy) { $('#notice').textContent = '上一次分块润饰还在写盘，完成后再落笔。'; return false; }
+  rtHugeBusy = true;
+  try { return await rtHugePatchPatternNow(); } finally { rtHugeBusy = false; }
+}
+async function rtHugePatchPatternNow(){
+  const clip = rtHugeClipMask(retouchSelectionMask());
+  if (!clip) { $('#notice').textContent = '使用图案：先圈一个选区。'; return false; }
+  const pat = rtPatternImage(retouchOpts.patchPattern), pad = Math.max(32, Math.round(retouchOpts.size));
+  return rtHugeApplyMask(selLayer, { x: clip.x, y: clip.y, w: clip.w, h: clip.h }, clip.mask, '修补',
+    (work, cw, ch, cx0, cy0, reg) => {
+      const p = 3, px0 = reg.x - p, py0 = reg.y - p, pw = reg.w + p * 2, ph = reg.h + p * 2;
+      const data = new Uint8ClampedArray(pw * ph * 4), tmp = [0, 0, 0, 0];
+      for (let y = 0; y < ph; y++) for (let x = 0; x < pw; x++)
+        if (rtPatternAt(pat, px0 + x + cx0, py0 + y + cy0, tmp)) data.set(tmp, (y * pw + x) * 4);
+      return RETOUCHM.healRegion(work, cw, ch, reg, { image: { data, width: pw, height: ph, x: px0, y: py0 } },
+        { diffusion: retouchOpts.patchDiffusion, transparent: retouchOpts.transparent });
+    }, { crop: { x: clip.x - pad, y: clip.y - pad, w: clip.w + pad * 2, h: clip.h + pad * 2 } });
+}
 
 export function rtPatchWithPattern(){
+  if (docW * docH > 128e6) return rtHugePatchPattern();
   const why = retouchGuard(); if (why) { $('#err').textContent = '使用图案：' + why; return false; }
   const region = retouchSelectionMask();
   if (!region) { $('#notice').textContent = '使用图案：先圈一个选区。'; return false; }
@@ -405,7 +811,88 @@ function rtSelBilinear(sel, x, y){
   const v = (i, j) => selectionValueAt(sel, i, j);
   return Math.round((v(x0, y0) * (1 - ax) + v(x0 + 1, y0) * ax) * (1 - ay) + (v(x0, y0 + 1) * (1 - ax) + v(x0 + 1, y0 + 1) * ax) * ay);
 }
+
+async function rtHugeContentMove(t, sel = selection){
+  if (rtHugeBusy) { $('#notice').textContent = '上一次分块润饰还在写盘，完成后再落笔。'; return false; }
+  rtHugeBusy = true;
+  try { return await rtHugeContentMoveNow(t, sel); } finally { rtHugeBusy = false; }
+}
+async function rtHugeContentMoveNow(t, sel){
+  const allLayers = !!retouchOpts.moveAll;
+  const G = rtMoveGeometry(sel, t);
+  if (!G) { $('#notice').textContent = '没有选区。'; return false; }
+  const src = rtHugeClipMask(G.src), dst = rtHugeClipMask(G.dst);
+  if (!src || !dst) { $('#notice').textContent = '内容感知移动：落点不在画布内。'; return false; }
+  const move = retouchOpts.moveMode === 'move';
+  let hole = null;
+  if (move) {
+
+    const hx = src.x - 2, hy = src.y - 2, hw = src.w + 4, hh = src.h + 4;
+    const mask = new Uint8Array(hw * hh);
+    for (let y = 0; y < hh; y++) for (let x = 0; x < hw; x++) {
+      let v = 0;
+      for (let j = -2; j <= 2 && !v; j++) for (let i = -2; i <= 2; i++) {
+        const X = x - 2 + i, Y = y - 2 + j;
+        if (X < 0 || Y < 0 || X >= src.w || Y >= src.h) continue;
+        if (src.mask[Y * src.w + X]) { v = 255; break; }
+      }
+      mask[y * hw + x] = v;
+    }
+    hole = rtHugeClipMask({ x: hx, y: hy, w: hw, h: hh, mask });
+    if (!hole) { $('#notice').textContent = '内容感知移动：源选区不在画布内。'; return false; }
+  }
+  const pad = Math.max(32, Math.min(240, Math.round(Math.max(src.w, src.h) * 1.2) + 8));
+  const boxes = hole ? [hole, dst] : [dst];
+  const ux0 = Math.min(...boxes.map(b => b.x)) - pad, uy0 = Math.min(...boxes.map(b => b.y)) - pad;
+  const ux1 = Math.max(...boxes.map(b => b.x + b.w)) + pad, uy1 = Math.max(...boxes.map(b => b.y + b.h)) + pad;
+  const crop = { x: ux0, y: uy0, w: ux1 - ux0, h: uy1 - uy0 };
+
+  const wx0 = Math.max(0, ux0), wy0 = Math.max(0, uy0), wx1 = Math.min(docW, ux1), wy1 = Math.min(docH, uy1);
+  if (!(wx1 > wx0 && wy1 > wy0)) return false;
+  const wb = { x: wx0, y: wy0, w: wx1 - wx0, h: wy1 - wy0, mask: new Uint8Array((wx1 - wx0) * (wy1 - wy0)) };
+  for (const b of boxes) {
+    const ox = b.x - wb.x, oy = b.y - wb.y;
+    for (let y = 0; y < b.h; y++) for (let x = 0; x < b.w; x++) {
+      const X = ox + x, Y = oy + y;
+      if (X < 0 || Y < 0 || X >= wb.w || Y >= wb.h) continue;
+      const i = Y * wb.w + X, v = b.mask[y * b.w + x];
+      if (v > wb.mask[i]) wb.mask[i] = v;
+    }
+  }
+  let work = null;
+  if (allLayers) {
+    const comp = await compositeRegionRGBA(wx0, wy0, wx1, wy1);
+    if (!comp) { $('#err').textContent = '内容感知移动：局部合成失败（图层组蒙版 / 变换暂不支持）。'; return false; }
+    work = comp.data;
+  }
+  const t0 = performance.now();
+  const ok = await rtHugeApplyMask(selLayer, { x: wb.x, y: wb.y, w: wb.w, h: wb.h }, wb.mask, '内容感知移动',
+    (work, cw, ch, cx0, cy0) => {
+      const orig = work;
+      let cur = work;
+      if (hole) {
+        const hreg = { x: hole.x - cx0, y: hole.y - cy0, w: hole.w, h: hole.h, mask: hole.mask };
+        cur = RETOUCHM.spotHeal(orig, cw, ch, hreg, { type: 'content' });
+      }
+      const dreg = { x: dst.x - cx0, y: dst.y - cy0, w: dst.w, h: dst.h, mask: dst.mask };
+      const p = 3, px0 = dreg.x - p, py0 = dreg.y - p, pw = dreg.w + p * 2, ph = dreg.h + p * 2;
+      const data = new Uint8ClampedArray(pw * ph * 4), tmp = [0, 0, 0, 0], smp = { data: orig, w: cw, h: ch, ox: cx0, oy: cy0 };
+      for (let y = 0; y < ph; y++) for (let x = 0; x < pw; x++) {
+        const q = G.inv(px0 + x + cx0 + 0.5, py0 + y + cy0 + 0.5);
+        if (rtBilinear(smp, q.x, q.y, tmp)) data.set(tmp, (y * pw + x) * 4);
+      }
+      return RETOUCHM.contentAwarePlace(cur, cw, ch, dreg,
+        { image: { data, width: pw, height: ph, x: px0, y: py0 } },
+        { structure: retouchOpts.structure, color: retouchOpts.color });
+    }, { crop, work, direct: allLayers });
+  if (ok) {
+    try { setSelection(createSelection(docW, docH, G.dst.x, G.dst.y, G.dst.w, G.dst.h, G.dst.mask), { history: false }); } catch {}
+    shell.status(`内容感知移动（分块 · ${move ? '移动' : '扩展'} · 结构 ${retouchOpts.structure} · 颜色 ${retouchOpts.color}）：${Math.round(performance.now() - t0)} ms`);
+  }
+  return ok;
+}
 function rtContentMove(t, sel = selection){
+  if (docW * docH > 128e6) return rtHugeContentMove(t, sel);
   const G = rtMoveGeometry(sel, t);
   if (!G) { $('#notice').textContent = '没有选区。'; return false; }
   if (!RETOUCHM) { kick(RETOUCH); shell.status(RETOUCH.statusText()); return false; }
@@ -477,11 +964,11 @@ function rtPendingMove(ev, pt){
   else { let th = D.th0 + Math.atan2(pt.y - Q.C.y, pt.x - Q.C.x) - D.a0; if (ev.shiftKey) th = Math.round(th / (Math.PI / 12)) * (Math.PI / 12); t.th = th; }
   drawGizmo();
 }
-export function rtPendingCommit(){
+export async function rtPendingCommit(){
   const P = rtPending; if (!P) return false;
   set_rtPending(null);
   const t = { ...P.t, dx: Math.round(P.t.dx), dy: Math.round(P.t.dy) };
-  const ok = rtContentMove(t, P.sel);
+  const ok = await rtContentMove(t, P.sel);
   syncRetouchBar(); drawGizmo();
   return ok;
 }
@@ -549,7 +1036,7 @@ export function drawRetouchGizmo(ctx){
         ctx.strokeStyle = 'rgba(255,255,255,.95)'; ctx.strokeRect(R.x + dx, R.y + dy, R.w, R.h);
         dash(4, 3); ctx.strokeStyle = 'rgba(0,0,0,.7)'; ctx.strokeRect(R.x + dx, R.y + dy, R.w, R.h);
       }
-    } else if (S.kind === 'stroke' && S.tool === 'spotHeal') {
+    } else if (S.kind === 'hugeSpot' || (S.kind === 'stroke' && S.tool === 'spotHeal')) {
       
       ctx.fillStyle = 'rgba(0,0,0,.35)';
       ctx.beginPath();

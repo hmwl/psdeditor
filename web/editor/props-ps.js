@@ -19,6 +19,7 @@
 
 
 import { PRESET_FORMATS, PRESET_UNSUPPORTED, flattenModel } from './adj-preset-files.js';
+import { propertyPixelField } from './property-panel.js';
 
 let A = null;
 const mk = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); for (const k of kids) if (k != null) e.append(k); return e; };
@@ -98,6 +99,7 @@ function pickFile(accept) {
 let cur = { tab: 'layer', ctx: { kind: 'document', label: '文档' }, layer: null };
 function syncHeader(tab, ctx, layer) {
   cur = { tab, ctx, layer };
+  document.getElementById('propTabs').hidden = ctx.kind === 'group' && !layer?.mask && !layer?.vectorMask;
   const title = document.getElementById('propHeadTitle');
   if (title) title.textContent = tab === 'mask' ? maskTitle(layer) : ctx.kind === 'group' ? '' : ctx.label;
   if (ctx.kind === 'group' && !layer?.mask && !layer?.vectorMask) {
@@ -117,24 +119,28 @@ function maskTitle(l) {
 const DOC_MODES = [['rgb', 'RGB 颜色'], ['grayscale', '灰度'], ['cmyk', 'CMYK 颜色'], ['lab', 'Lab 颜色'],
   ['bitmap', '位图'], ['indexed', '索引颜色'], ['duotone', '双色调'], ['multichannel', '多通道']];
 const RULER_UNITS = [['px', '像素'], ['in', '英寸'], ['cm', '厘米'], ['mm', '毫米'], ['pt', '点'], ['pc', '派卡']];
+let canvasAspectLock = false;
 function renderDocument(box) {
   const P = 'layer';
   
-  const w = numInput(A.docW(), { min: 1, max: 30000, attr: 'doc-width', title: '画布宽度（改动 = 以中心为锚点调整画布大小）', onchange: v => A.resizeCanvas(Math.round(v), A.docH()) });
-  const h = numInput(A.docH(), { min: 1, max: 30000, attr: 'doc-height', title: '画布高度（改动 = 以中心为锚点调整画布大小）', onchange: v => A.resizeCanvas(A.docW(), Math.round(v)) });
-  row(box, P, 'canvas', '', scrubLabel('W'), w, scrubLabel('H'), h, unit('像素')).classList.add('prop-transform-row');
+  const w = numInput(A.docW(), { min: 1, max: 30000, attr: 'doc-width', title: '画布宽度（像素）', onchange: v => A.resizeCanvas(Math.round(v), canvasAspectLock ? Math.max(1, Math.round(v * A.docH() / A.docW())) : A.docH()) });
+  const h = numInput(A.docH(), { min: 1, max: 30000, attr: 'doc-height', title: '画布高度（像素）', onchange: v => A.resizeCanvas(canvasAspectLock ? Math.max(1, Math.round(v * A.docW() / A.docH())) : A.docW(), Math.round(v)) });
+  const link = iconBtn('link', '保持画布长宽比', () => { canvasAspectLock = !canvasAspectLock; link.classList.toggle('on', canvasAspectLock); link.setAttribute('aria-pressed', String(canvasAspectLock)); }, 'doc-proportions');
+  link.classList.add('prop-aspect-lock'); link.classList.toggle('on', canvasAspectLock); link.setAttribute('aria-pressed', String(canvasAspectLock));
+  row(box, P, 'canvas', '', link, scrubLabel('W'), propertyPixelField(w), scrubLabel('X'), propertyPixelField(numInput(0, { disabled: true, title: '画布 X 位置' })),
+    scrubLabel('H'), propertyPixelField(h), scrubLabel('Y'), propertyPixelField(numInput(0, { disabled: true, title: '画布 Y 位置' }))).classList.add('prop-transform-grid');
   const portrait = A.docH() >= A.docW();
   const orient = mk('span', { className: 'pp-seg' });
   const ob = (isPortrait, title) => {
     const b = mk('button', { type: 'button', className: 'pp-orient' + (portrait === isPortrait ? ' on' : ''), title });
-    b.append(mk('i', { className: isPortrait ? 'pp-o-p' : 'pp-o-l' }));
+    b.append(A.icon(isPortrait ? 'canvas-portrait' : 'canvas-landscape', 22));
     b.onclick = () => { if (portrait !== isPortrait && A.docW() !== A.docH()) A.resizeCanvas(A.docH(), A.docW()); };
     b.dataset.attr = isPortrait ? 'doc-portrait' : 'doc-landscape';
     return b;
   };
   orient.append(ob(true, '纵向'), ob(false, '横向'));
   row(box, P, 'canvas', '方向', orient);
-  const res = numInput(Math.round(A.resolution() * 1000) / 1000, { min: 1, max: 10000, step: 1, attr: 'doc-resolution', onchange: v => A.setResolution(v) });
+  const res = mk('output', { value: String(Math.round(A.resolution() * 1000) / 1000) }); res.dataset.attr = 'doc-resolution';
   row(box, P, 'canvas', '分辨率', res, unit('像素/英寸'));
   const modeNow = (DOC_MODES.find(([k]) => A.actions.checked('image.mode.' + k)) || ['rgb'])[0];
   const modeSel = selectEl(DOC_MODES.map(([k, t]) => [k, t, !(A.actions.has('image.mode.' + k) && (A.actions.enabled('image.mode.' + k) || k === modeNow))]),
@@ -205,10 +211,10 @@ function transformBox(box, list, section = 'transform') {
   const locked = list.map(i => A.moveLockWhy(i)).find(Boolean) || '';
   const W = numInput(Math.round(b.w), { attr: 'multi-w', disabled: true, title: '合并包围盒宽度（多个图层时只读；缩放请用自由变换 ⌘T）' });
   const H = numInput(Math.round(b.h), { attr: 'multi-h', disabled: true, title: '合并包围盒高度（多个图层时只读；缩放请用自由变换 ⌘T）' });
-  row(box, P, section, '', scrubLabel('W'), W, scrubLabel('H'), H).classList.add('prop-transform-row');
   const X = numInput(Math.round(b.x), { attr: 'multi-x', disabled: !!locked, title: locked || 'X 位置', onchange: v => move(v - b.x, 0) });
   const Y = numInput(Math.round(b.y), { attr: 'multi-y', disabled: !!locked, title: locked || 'Y 位置', onchange: v => move(0, v - b.y) });
-  row(box, P, section, '', scrubLabel('X'), X, scrubLabel('Y'), Y).classList.add('prop-transform-row');
+  row(box, P, section, '', mk('span', { className: 'prop-aspect-spacer' }), scrubLabel('W'), propertyPixelField(W), scrubLabel('X'), propertyPixelField(X),
+    scrubLabel('H'), propertyPixelField(H), scrubLabel('Y'), propertyPixelField(Y)).classList.add('prop-transform-grid');
 }
 let propertyAlignTo = LS.get('psd_editor.props.alignTo', 'selection') === 'canvas' ? 'canvas' : 'selection';
 function alignBox(box, count, options = {}) {
@@ -261,8 +267,9 @@ function renderFrame(box, idx, l, options = {}) {
       onchange: v => { if (!['w', 'h'].includes(key) || v > 0) update(key, v); } });
   const link = iconBtn('link', '保持长宽比', () => { frameAspectLock = !frameAspectLock; link.classList.toggle('on', frameAspectLock); }, 'frame-proportions');
   link.classList.toggle('on', frameAspectLock); link.disabled = !!options.why;
-  row(box, 'layer', 'frame-bounds', '', scrubLabel('W'), field('w'), scrubLabel('H'), field('h'), link).classList.add('prop-transform-row');
-  row(box, 'layer', 'frame-bounds', '', scrubLabel('X'), field('x'), scrubLabel('Y'), field('y'), unit('像素')).classList.add('prop-transform-row');
+  link.classList.add('prop-aspect-lock');
+  row(box, 'layer', 'frame-bounds', '', link, scrubLabel('W'), propertyPixelField(field('w')), scrubLabel('X'), propertyPixelField(field('x')),
+    scrubLabel('H'), propertyPixelField(field('h')), scrubLabel('Y'), propertyPixelField(field('y'))).classList.add('prop-transform-grid');
   const stroke = A.doc()?.layers[idx]?.vectorStroke?.desc;
   const strokeWhy = options.why || (!stroke || !options.setStroke ? '图框描边数据不可用' : '');
   const fieldset = mk('fieldset', { className: 'pp-frame-stroke', disabled: !!strokeWhy, title: strokeWhy });
@@ -315,10 +322,10 @@ function renderSmart(box, idx, l, so, properties = null) {
     }, 'so-layer-comp');
     comp.disabled = !!properties.why || !list.length;
     comp.title = properties.why || (list.length ? '选择图层复合' : '源文档没有图层复合');
-    row(box, P, 'smart', '图层复合', comp);
+    row(box, P, 'smart', '', comp);
   }
-  wideRow(box, P, 'quick', actBtn('转换为图层', 'layer.smart.convertToLayers', { attr: 'so-to-layers' }),
-    info && info.linked ? actBtn('嵌入', 'layer.smart.embed', { attr: 'so-embed' }) : actBtn('转换为链接对象…', 'layer.smart.convertToLinked', { attr: 'so-to-linked' }));
+  wideRow(box, P, 'quick', info && info.linked ? actBtn('嵌入', 'layer.smart.embed', { attr: 'so-embed' }) : actBtn('转换为链接对象…', 'layer.smart.convertToLinked', { attr: 'so-to-linked' }));
+  wideRow(box, P, 'quick', actBtn('转换为图层', 'layer.smart.convertToLayers', { attr: 'so-to-layers' }));
   if (info && info.linked) wideRow(box, P, 'smart-extra', actBtn('重新链接到文件…', 'layer.smart.relinkFile'), actBtn('更新修改的内容', 'layer.smart.updateModified'));
 }
 
@@ -782,7 +789,7 @@ const CSS = `
 .app.ps .prop-section .pp-foot-row { justify-content: flex-end; border-top: 1px solid var(--ps-line, #333); margin-top: 6px; padding-top: 4px; }
 .app.ps .prop-section .pp-mask-foot { margin: 0; padding: 0; justify-content: flex-end; width: 100%; }
 .app.ps .prop-section .prop-smart-dimension { flex: 1; min-width: 0; font-variant-numeric: tabular-nums; color: #ddd; }
-.app.ps .prop-no-properties { display: grid; place-items: center; min-height: 64px; color: var(--ps-muted, #9a9a9a); font-size: 12px; }
+.app.ps .prop-no-properties { display: flex; align-items: center; min-height: 34px; padding: 0 10px; border-bottom: 1px solid var(--ps-line); color: var(--ps-muted, #9a9a9a); font-size: 12px; }
 .app.ps .pp-frame-stroke { border: 0; padding: 0; margin: 0; min-width: 0; width: 100%; }
 .app.ps .adj-foot { justify-content: flex-end; border-top: 1px solid var(--ps-line, #333); padding-top: 5px; }
 .app.ps .adj-foot .af-btn:disabled { opacity: .4; }

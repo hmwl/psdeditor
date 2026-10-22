@@ -392,7 +392,7 @@ dialog.tb-custom { width: min(640px, 92vw); max-width: none; padding: 14px 16px 
 .app.ps .props .row button[data-align] { border-radius: 3px; }
 
 
-.app.ps .layer-filter { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-bottom: 1px solid var(--ps-line); }
+.app.ps .layer-filter { display: flex; align-items: center; gap: 12px; padding: 6px 4px; border-bottom: 1px solid var(--ps-line); }
 .app.ps .layer-filter .lf-label { flex: none; display: inline-flex; align-items: center; gap: 4px; color: var(--ps-muted); font-size: 11px; }
 .app.ps .layer-filter input { flex: 1; height: 20px; font-size: 11px; background: var(--ps-input); border-color: var(--ps-line-2); }
 .app.ps .layer-controls { display: flex; align-items: center; gap: 5px; padding: 4px 8px; border-bottom: none; }
@@ -401,6 +401,12 @@ dialog.tb-custom { width: min(640px, 92vw); max-width: none; padding: 14px 16px 
 .app.ps .layer-controls .lc-label { color: var(--ps-muted); font-size: 11px; flex: none; white-space: nowrap; }
 .app.ps .layer-controls .lc-pct { color: var(--ps-muted); font-size: 11px; margin-left: -3px; }
 .app.ps .layer-controls.lock-row { border-bottom: 1px solid var(--ps-line); padding-top: 0; }
+.app.ps #panelLayers .layer-controls { gap: 3px; padding: 4px; }
+.app.ps #panelLayers .layer-controls.lock-row { padding-top: 4px; }
+.app.ps #panelLayers #hdrBlend { flex: 0 1 120px; width: 120px; min-width: 72px; }
+.app.ps #panelLayers .layer-controls.lock-row > .grow { flex: 0 0 0; }
+.app.ps .layer-filter.lpf .lpf-kind { height: 20px; background: var(--ps-input); border-color: var(--ps-line-2); border-radius: 3px; }
+.app.ps .layer-filter.lpf .lpf-btn { height: 20px; }
 .lock-btn { width: 20px; height: 18px; padding: 0; font-size: 11px; border: 1px solid transparent; background: transparent; color: var(--ps-muted); display: grid; place-items: center; }
 .lock-btn:hover { background: var(--ps-hover); --icon-bg: var(--ps-hover); }
 .lock-btn.on { background: var(--ps-input); color: #fff; box-shadow: inset 0 0 0 1px #111; --icon-bg: var(--ps-input); }
@@ -408,33 +414,44 @@ dialog.tb-custom { width: min(640px, 92vw); max-width: none; padding: 14px 16px 
 
 .app.ps #layerList { flex: 0 0 auto; min-height: 0; overflow: visible; background: var(--ps-bg); position: relative; }
 
+.app.ps #layerList::-webkit-scrollbar { width: 12px; background: var(--ps-bg); }
+.app.ps #layerList::-webkit-scrollbar-thumb { background: #666; border: 3px solid var(--ps-bg); border-radius: 8px; }
+
 .app.ps #layerList .alt-clipline { position: absolute; left: 2px; right: 2px; height: 0; border-top: 2px solid #4b9cf8; box-shadow: 0 0 5px rgba(75, 156, 248, .75); pointer-events: none; z-index: 6; }
 .panel-group.grow #layerList, .panel-group[style*="height"] #layerList { flex: 1 1 auto; overflow-y: auto; min-height: 60px; }
-.app.ps .lrow { height: 40px; gap: 6px; padding: 0 6px 0 4px; border-bottom: 1px solid #2a2a2a; }
+.app.ps .lrow { height: 34px; gap: 6px; padding: 0 6px 0 4px; border-bottom: 1px solid #2a2a2a; }
+
+.app.ps .lrow .masklink { margin-inline: -6px; }
 .app.ps .lrow:hover { background: #393939; --icon-bg: #393939; }
-.app.ps .lrow.sel { background: var(--ps-sel); --icon-bg: var(--ps-sel); }
+.app.ps .lrow.sel { background: #4a4a4a; --icon-bg: #4a4a4a; }
 
-.app.ps .lrow .thumb, .app.ps .lrow .maskthumb { width: 38px; height: 38px; border-radius: 2px; border: 1px solid transparent; box-shadow: none; }
+.app.ps .lrow .thumb, .app.ps .lrow .maskthumb { width: 32px; height: 32px; border-radius: 0; border: 1px solid #777; box-shadow: none; }
+.app.ps .lrow .thumb:not(.folder) { background: repeating-conic-gradient(#fff 0% 25%, #ccc 0% 50%) 50% / 4px 4px, #ccc; }
+.app.ps .lrow .maskthumb { background: repeating-conic-gradient(#fff 0% 25%, #ccc 0% 50%) 50% / 4px 4px, #ccc; }
 
-.app.ps .lrow .thumb.adj { display: grid; place-items: center; background: #1c1c1d; }
+.app.ps .lrow .thumb.adj { display: grid; place-items: center; background: none; border: none; }
 
 .app.ps .lrow .thumb.folder { border: none; box-shadow: none; background: none; color: #cfcfcf; }
-.app.ps .lrow .eye { width: 18px; height: 18px; color: #d0d0d0; }
+.app.ps .lrow .eye { width: 18px; height: 18px; color: #fff; }
 
 .app.ps .lrow { padding-left: 0; }
-.app.ps .lrow > .eye { width: 32px; height: auto; align-self: stretch; border-radius: 0; border-right: 1px solid #262626; margin-right: 2px; }
+.app.ps .lrow > .eye { width: 31px; height: auto; align-self: stretch; border-radius: 0; border-right: 1px solid #262626; margin-right: 0; }
 .app.ps .lrow > .eye:hover { background: rgba(255,255,255,.05); }
+.app.ps .lrow > .eye.off { color: #5d5d5d; }
+.app.ps .lrow > .eye.off::after { width: 11px; height: 11px; border: 1px solid #5d5d5d; }
 .app.ps .lrow .lindent { flex: none; align-self: stretch; }
 
-.app.ps .lrow.grouprow, .app.ps .lrow.artboard { height: 34px; }
-.app.ps .lrow .thumb.folder { width: auto; height: auto; }
-.app.ps .lrow .thumb.folder .fold-wrap { display: flex; align-items: center; gap: 4px; }
+.app.ps .lrow.grouprow, .app.ps .lrow.artboard { height: 25px; }
+.app.ps .lrow .thumb.folder { width: auto; height: auto; overflow: visible; }
+.app.ps .lrow .thumb.folder .fold-wrap { display: flex; align-items: center; gap: 2px; transform: translateX(-4px); }
 .app.ps .lrow .thumb.folder .fold-icon { color: #d6d6d6; display: grid; place-items: center; }
 .app.ps .lrow.frame-row { height: 40px; }
 .app.ps .lrow .thumb.frame-folder .fold-icon { width: 28px; height: 28px; position: relative; background: var(--ps-input); border: 1px solid var(--ps-line-2); }
 .app.ps .lrow .thumb.frame-folder .layer-type-badge { position: absolute; right: -1px; bottom: -1px; }
 .app.ps .lrow .thumb.frame-content { width: 32px; height: 32px; flex: none; display: grid; place-items: center; }
 .app.ps .lrow .thumb.frame-content canvas { width: 100%; height: 100%; object-fit: contain; }
+.app.ps .lrow .clipmark { width: 16px; }
+.app.ps .lrow:has(.thumb.adj) .clipmark { margin-right: -8px; }
 
 .app.ps .lrow.artboard { background: #2b2b2b; --icon-bg: #2b2b2b; border-bottom-color: #1f1f1f; }
 .app.ps .lrow.artboard:hover { background: #343434; --icon-bg: #343434; }
@@ -453,6 +470,10 @@ dialog.tb-custom { width: min(640px, 92vw); max-width: none; padding: 14px 16px 
 .lf-btn { position: relative; width: 24px; height: 20px; padding: 0; border: 1px solid transparent; border-radius: 3px; background: transparent; color: #c8c8c8; font-size: 12px; display: grid; place-items: center; }
 .lf-btn:hover { background: var(--ps-hover); border-color: transparent; --icon-bg: var(--ps-hover); }
 .lf-btn:disabled { opacity: .4; }
+.app.ps .layer-foot .lf-btn > .ps-icon,
+.app.ps .layer-foot .lf-btn > .ps-icon-bitmap { width: 13px !important; height: 13px !important; }
+.app.ps .layer-foot .lf-btn[data-action="layer.delete"] > .ps-icon,
+.app.ps .layer-foot .lf-btn[data-action="layer.delete"] > .ps-icon-bitmap { width: 12px !important; height: 12px !important; }
 
 
 .app.ps .layer-foot .lf-btn.lf-drop { background: var(--ps-hover); border-color: #4b9cf8; box-shadow: 0 0 0 1px #4b9cf8; }
@@ -778,6 +799,7 @@ button.ltag.lock:hover { border-color: var(--ps-line-2); background: var(--ps-ho
 .app.ps #propTitle { font-size: 12px; font-weight: 500; color: var(--ps-text); }
 .app.ps #propTabs { display: flex; align-items: center; gap: 4px; padding: 5px 10px; min-height: 32px; border-bottom: 1px solid var(--ps-line); }
 .app.ps #propTabs [hidden] { display: none !important; }
+.app.ps #propTabs[hidden] { display: none; }
 .app.ps #propTabs button { width: 24px; height: 24px; border-radius: 2px; }
 .app.ps #propMore { margin-left: auto; width: 72px; height: 22px; background: transparent; border: 0; color: var(--ps-muted); font-size: 11px; }
 .app.ps #propMore option { background: #292929; color: #ddd; }
@@ -797,6 +819,23 @@ button.ltag.lock:hover { border-color: var(--ps-line-2); background: var(--ps-ho
 .app.ps .prop-transform-row { padding-left: 23px !important; padding-right: 12px !important; }
 .app.ps .prop-transform-row .scrub { width: 16px; flex: none; font-size: 11px; color: #aaa; }
 .app.ps .prop-transform-row input { flex: 1 !important; width: 0 !important; }
+.app.ps .prop-section .prop-transform-grid { display: grid; grid-template-columns: 18px 12px minmax(48px, 66px) 12px minmax(48px, 66px); gap: 6px; align-items: center; padding: 5px 12px; }
+.app.ps .prop-transform-grid > .prop-aspect-lock, .app.ps .prop-transform-grid > .prop-aspect-spacer { grid-row: span 2; width: 18px !important; padding: 0; background: transparent; border-color: transparent; }
+.app.ps .prop-transform-grid > input { width: 100% !important; box-sizing: border-box; }
+.app.ps .prop-transform-grid .scrub { width: 12px; font-size: 11px; color: #aaa; }
+.app.ps .prop-pixel-field { display: flex; align-items: center; min-width: 0; height: 20px; box-sizing: border-box; border: 1px solid #454545; background: #252525; padding-right: 3px; }
+.app.ps .prop-pixel-field input[type=number] { width: 0 !important; min-width: 0; flex: 1; height: 18px !important; border: 0 !important; background: transparent !important; padding: 0 3px !important; border-radius: 0 !important; appearance: textfield; font-size: 12px; }
+.app.ps .prop-pixel-field input::-webkit-inner-spin-button { appearance: none; }
+.app.ps .prop-pixel-field:has(input:disabled) { opacity: .45; }
+.app.ps .prop-pixel-field:has(output) { border-color: transparent; background: transparent; }
+.app.ps .prop-pixel-field output { min-width: 0; line-height: 18px; font-size: 12px; }
+.app.ps .prop-pixel-field .pp-unit { flex: none; pointer-events: none; }
+.app.ps .prop-pixel-field:focus-within { outline: 1px solid var(--accent); }
+.app.ps #props[data-context=smart] .prop-section[data-section=smart] > summary { display: none; }
+.app.ps #props[data-context=smart] .prop-section[data-section=smart] { padding-top: 8px; }
+.app.ps #props[data-context=smart] .prop-section[data-section=smart] select { width: 100%; }
+.app.ps #props[data-context=smart] .prop-section[data-section=quick] .prop-wide-row { justify-content: center; }
+.app.ps #props[data-context=smart] .prop-section[data-section=quick] .prop-wide-row > button { flex: none; width: 150px; }
 .app.ps .prop-transform-row:has([data-transform=x]) { padding-right: 44px !important; }
 .app.ps .prop-rotation-row button { flex: none !important; width: 26px; border-color: transparent; }
 .app.ps .prop-rotation-row .val { width: 12px; }
@@ -913,7 +952,7 @@ button.ltag.lock { cursor: var(--ps-cursor-pointer, pointer); }
 .dock-group.collapsed > .pg-body { display: none; }
 .dock-group .dg-title { cursor: var(--ps-cursor-grab, grab); }
 
-.app.ps .lrow .thumb.target, .app.ps .lrow .maskthumb.target { border-color: transparent; box-shadow: 0 0 0 2px #e8e8e8; }
+.app.ps .lrow .thumb.target, .app.ps .lrow .maskthumb.target { border-color: #666; box-shadow: 0 0 0 .5px #4a4a4a, 0 0 0 2px #fff; }
 .app.ps .lrow .thumb.folder.target { box-shadow: none; }
 
 
@@ -985,7 +1024,16 @@ button.ltag.lock { cursor: var(--ps-cursor-pointer, pointer); }
 .app.ps .lrow .thumb.fillthumb > canvas { position:absolute; left:2px; top:2px; width:calc(100% - 4px); height:calc(100% - 10px); object-fit:fill; }
 .app.ps .lrow .thumb.fillthumb.fillthumb-small { border:1px solid #888; }
 .app.ps .lrow.fillrow .maskthumb { border-radius:0; border:1px solid #888; }
-.app.ps .lrow.fillrow .masklink { width:9px; color:#ddd; }
+.app.ps .lrow.fillrow .masklink { margin-inline: -2px; color:#ddd; }
 .app.ps .lrow.fillrow .lname { margin-left:5px; }
 .app.ps .lrow.fillrow:has(.fillthumb-small) { height:24px; }
 .app.ps .lrow.fillrow:has(.fillthumb-small) > .eye { width:24px; }
+
+.app.ps .panel-group[data-group="layers"] > .pg-tabs { height: 28px; }
+.app.ps .panel-group[data-group="layers"] > .pg-tabs > button[data-panel] { height: 28px; }
+.app.ps .layer-filter.lpf .lpf-kind-field { width: 78px; }
+
+.app.ps #panelLayers .lc-percent-field { width: 58px; min-width: 58px; overflow: hidden; }
+.app.ps #panelLayers .lc-percent-field input[type=number] { width: 28px !important; min-width: 28px; flex: 1 1 auto !important; text-align: right; padding: 0 1px; }
+.app.ps #panelLayers .lc-percent-field .lc-pct { flex: 0 0 9px; width: 9px; text-align: center; }
+.app.ps #panelLayers .lc-percent-field .lp-drop { flex: 0 0 12px; width: 12px; }

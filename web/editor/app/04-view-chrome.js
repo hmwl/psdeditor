@@ -27,7 +27,7 @@ import {
 import { selLayer } from './23-layers-panel.js';
 import { renderProps } from './24-layer-ops-queue.js';
 import { dragRowIndex } from './28-layer-props-transform.js';
-import { refreshView, renderWarpNow, replaceImg, scheduleRefreshView } from './30-render.js';
+import { renderWarpNow, replaceImg, scheduleRefreshView } from './30-render.js';
 import { docTool, viewAngle } from './31-selection-brush.js';
 import { frameAt, placeImageInFrame, syncArtboardCheckers } from './36-clipboard-frame.js';
 import { drawGizmo, gizmo, reapplyAllPins, syncDocTab, toDoc } from './46-smart-filter-panel.js';
@@ -244,9 +244,11 @@ export function applyPan(){
   const parK = viewParCorrect && viewPar !== 1 ? viewPar : 1;
   st.style.transform = `translate(${Math.round(panX)}px, ${Math.round(panY)}px) rotate(${viewAngle}deg)${viewFlip ? ' scaleX(-1)' : ''}${parK !== 1 ? ` scaleX(${parK})` : ''}`;
   st.style.transformOrigin = '50% 50%';
-  syncRulers();
+
+
+
   syncViewScrollbars();
-  refreshView();                  
+  scheduleRefreshView();
 }
 
 

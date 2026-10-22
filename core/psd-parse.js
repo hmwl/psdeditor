@@ -496,7 +496,7 @@ function readLayerRecord(r, psb) {
       } else if (key === 'lsct' || key === 'lsdk') {
         
         
-        if (r.o + 4 <= dataEnd) additional.groupType = r.u32();
+        if (r.o + 4 <= dataEnd) { additional.offGroupType = r.dv.byteOffset + r.o; additional.groupType = r.u32(); }
         if (r.o + 8 <= dataEnd) { const sig2 = r.key4(); const bk = r.key4(); if (sig2 === '8BIM') additional.groupBlendKey = bk; }
       } else if (key === 'frgb') {
         if (len >= 4 && r.u32() === 16) additional.frame = frameInfoOf(readDescriptor(r));
@@ -515,6 +515,8 @@ function readLayerRecord(r, psb) {
         if (r.o + 1 <= dataEnd) additional.fillOpacity = r.u8();
       } else if (key === 'knko') {
         if (r.o + 1 <= dataEnd) additional.knockout = r.u8();
+      } else if (key === 'clbl' || key === 'infx' || key === 'tsly' || key === 'lmgm' || key === 'vmgm') {
+        if (r.o + 1 <= dataEnd) additional[{ clbl: 'blendClipped', infx: 'blendInterior', tsly: 'transparencyShapes', lmgm: 'layerMaskHidesEffects', vmgm: 'vectorMaskHidesEffects' }[key]] = r.u8() !== 0;
       } else if (key === 'TySh') {
         
         
@@ -576,6 +578,7 @@ function readLayerRecord(r, psb) {
     blendKey, opacity, clipping, flags,
     offBlendKey, offOpacity, offFlags,        
     groupType: additional.groupType ?? null,  
+    offGroupType: additional.offGroupType,
     frame: additional.frame || null, isFrame: !!additional.frame,
     additionalKeys: additional._keys || [],   
     text: additional.text || null,             
@@ -596,6 +599,9 @@ function readLayerRecord(r, psb) {
     colorLabel: additional.colorLabel ?? 0,    
     fillOpacity: additional.fillOpacity ?? null,      
     knockout: additional.knockout ?? null,     
+    blendClipped: additional.blendClipped ?? true,
+    blendInterior: additional.blendInterior ?? false,
+    transparencyShapes: additional.transparencyShapes ?? true,
     placedBlock: additional.placedBlocks?.length ? additional.placedBlocks[additional.placedBlocks.length - 1] : null,
     placedBlocks: additional.placedBlocks || [],
     extraLenOffset,                       
@@ -629,11 +635,36 @@ export function readPlacedIdentity(bytes, key) {
 
 
 
+const STRUCT_CACHE = new WeakMap();
+function parsePsdCached(buffer, opts = {}) {
+  if (opts.logFloats || opts.mutable) return parsePsd(buffer, opts);
+  let ab = null, off = 0, len = 0, exact = null;
+  if (buffer instanceof ArrayBuffer) { ab = buffer; len = buffer.byteLength; exact = buffer; }
+  else if (ArrayBuffer.isView(buffer)) { ab = buffer.buffer; off = buffer.byteOffset; len = buffer.byteLength; }
+  else return parsePsd(buffer, opts);
+  const key = `${off}:${len}`;
+  let byKey = STRUCT_CACHE.get(ab);
+  if (!byKey) { byKey = new Map(); STRUCT_CACHE.set(ab, byKey); }
+  let hit = byKey.get(key);
+  if (!hit) {
+    hit = parsePsd(exact || ab.slice(off, off + len), opts);
+    byKey.set(key, hit);
+  }
+
+  return { ...hit, layers: hit.layers.slice() };
+}
+
+
+
+
+
+
+
 
 export function parseSmartObjects(buffer) {
   const ab = toAB(buffer);
   const u8 = new Uint8Array(ab);
-  const psd = parsePsd(ab);
+  const psd = parsePsdCached(ab);
   const linkedById = {};
   for (const f of (psd.linkedFiles || [])) if (f.id) linkedById[f.id] = f;
   const out = [];
@@ -674,10 +705,12 @@ export function parseSmartObjects(buffer) {
 
 
 export function smartObjectFragment(buffer, so) {
-  const ab = toAB(buffer);
-  const u8 = new Uint8Array(ab);
   
-  const psd = parsePsd(ab);
+
+  const u8 = buffer instanceof ArrayBuffer ? new Uint8Array(buffer)
+    : new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+
+  const psd = parsePsdCached(buffer);
   const layer = locatePlacedLayer(psd, so);
   return {
     layerName: so.layerName, bounds: { ...so.bounds }, kind: so.kind,
@@ -688,6 +721,10 @@ export function smartObjectFragment(buffer, so) {
 
 
 export function locatePlacedLayer(psd, so) {
+
+
+  const direct = psd.layers[so.layerIndex];
+  if (direct && direct.placedBlocks?.length && (direct.unicodeName || direct.name) === so.layerName) return direct;
   let layer = null, best = Infinity;
   for (const l of psd.layers) {
     if (!l.placedBlocks?.length) continue;
@@ -747,7 +784,7 @@ export function spliceLayerBlocks(src, psd, layer, rewrites) {
 
 export function replacePlacedBlocks(buffer, so, blocks) {
   const ab = toAB(buffer);
-  const psd = parsePsd(ab);
+  const psd = parsePsdCached(ab);
   const layer = locatePlacedLayer(psd, so);
   const seen = {};
   const rewrites = [];
@@ -762,7 +799,7 @@ export function replacePlacedBlocks(buffer, so, blocks) {
 }
 
 
-export function parseLinkedFiles(buffer) { return parsePsd(buffer).linkedFiles || []; }
+export function parseLinkedFiles(buffer) { return parsePsdCached(buffer).linkedFiles || []; }
 
 
 function guessMime(bytes, fileType) {
@@ -789,7 +826,7 @@ export function getSmartObjectImageURL(so) {
 }
 
 
-export function parsePsdFull(buffer) { return parsePsd(buffer); }
+export function parsePsdFull(buffer) { return parsePsdCached(buffer); }
 
 
 
@@ -825,13 +862,13 @@ function extractEffects(layer) {
     if (Array.isArray(multi)) {
       for (let at = 0; at < multi.length; at++) {
         const v = multi[at];
-        if (!v || typeof v !== 'object') continue;
+        if (!v || typeof v !== 'object' || v.present === false) continue;
         out.push({ key, label: spec.label, enabled: v.enab != null ? !!v.enab : true, at, count: multi.length, multi: true });
       }
       continue;
     }
     const v = d[key];
-    if (v == null || typeof v !== 'object') continue;
+    if (v == null || typeof v !== 'object' || v.present === false) continue;
     out.push({ key, label: spec.label, enabled: v.enab != null ? !!v.enab : true, at: 0, count: 1, multi: false });
   }
   return out;
@@ -854,20 +891,24 @@ function adjustmentOf(l) {
 }
 
 
-
-
 export function hasRealMask(m) {
-  if (!m || typeof m !== 'object') return false;
-  return (m.width || 0) > 0 || (m.height || 0) > 0;
+  return !!m && typeof m === 'object';
 }
-function realMask(m) { return hasRealMask(m) ? m : null; }
+function realMask(m, layer) {
+  if (!hasRealMask(m)) return null;
+
+  const relativeBounds = v => !v?.relative ? v : { ...v,
+    top: v.top - layer.bounds.top, bottom: v.bottom - layer.bounds.top,
+    left: v.left - layer.bounds.left, right: v.right - layer.bounds.left };
+  return { ...relativeBounds(m), real: relativeBounds(m.real) };
+}
 
 
 
 
 
 export function parseLayerTree(buffer) {
-  const psd = parsePsd(buffer);
+  const psd = parsePsdCached(buffer);
   const doc = { width: psd.header.width, height: psd.header.height,
                 depth: psd.header.depth, mode: psd.header.mode, psb: psd.header.psb };
   const flat = psd.layers.map((l, i) => ({
@@ -887,19 +928,19 @@ export function parseLayerTree(buffer) {
     isSmartObject: !!(l.placedBlocks && l.placedBlocks.length),  
     additionalKeys: l.additionalKeys || [],                       
     
-    
-    
-    
-    mask: realMask(l.mask),                     
+    mask: realMask(l.mask, l),
     groupBlendKey: l.groupBlendKey || null,     
     passThrough: l.groupBlendKey === 'pass',
     locks: l.locks || null,                     
     colorLabel: l.colorLabel || 0,              
     fillOpacity: l.fillOpacity,                 
     knockout: l.knockout,
+    blendClipped: l.blendClipped,
+    blendInterior: l.blendInterior,
+    transparencyShapes: l.transparencyShapes,
     adjustment: adjustmentOf(l),                
     smartFilters: !!(l.additionalKeys || []).some(k => k === 'SoLE' || k === 'FXid' || k === 'FEid'),
-    off: { blendKey: l.offBlendKey, opacity: l.offOpacity, flags: l.offFlags }
+    off: { blendKey: l.offBlendKey, opacity: l.offOpacity, flags: l.offFlags, groupType: l.offGroupType }
   }));
 
   
@@ -959,6 +1000,11 @@ export function writeLayerProperties(buffer, edits) {
     const node = byIndex[e.index];
     if (!node || !node.off) continue;
     const o = node.off;
+    if (e.groupCollapsed != null) {
+      if (typeof e.groupCollapsed !== 'boolean' || ![1, 2].includes(node.groupType) || o.groupType == null)
+        throw new Error('groupCollapsed 只能是组头的布尔属性');
+      dv.setUint32(o.groupType, e.groupCollapsed ? 2 : 1);
+    }
     if (e.visible != null) {
       const cur = dv.getUint8(o.flags);
       dv.setUint8(o.flags, e.visible ? (cur & ~0x02) : (cur | 0x02));   
@@ -1006,7 +1052,7 @@ export function buildBlock(key, data, psb = false) {
 
 export function renameLayer(buffer, index, newName) {
   const ab = toAB(buffer);
-  const psd = parsePsd(ab);
+  const psd = parsePsdCached(ab);
   const layer = psd.layers[index];
   if (!layer) throw new Error('图层不存在: index=' + index);
   if (newName == null || newName === '') throw new Error('图层名不能为空');
@@ -1018,7 +1064,7 @@ export function renameLayer(buffer, index, newName) {
 
 export function replaceLayerBlock(buffer, index, key, newData) {
   const ab = toAB(buffer);
-  const psd = parsePsd(ab);
+  const psd = parsePsdCached(ab);
   const layer = psd.layers[index];
   if (!layer) throw new Error('图层不存在: index=' + index);
   const blk = (layer.blocks || []).find(b => b.key === key);
@@ -1061,7 +1107,7 @@ const GLOBAL_BIG_KEYS = new Set(['LMsk', 'Lr16', 'Lr32', 'Layr', 'Mt16', 'Mt32',
 
 export function readGlobalBlock(buffer, key) {
   const ab = toAB(buffer);
-  const s = parsePsd(ab).sections;
+  const s = parsePsdCached(ab).sections;
   if (!s.globalAddlStart || s.globalAddlEnd <= s.globalAddlStart) return null;
   const u8 = new Uint8Array(ab), dv = new DataView(ab);
   const key4 = o => String.fromCharCode(u8[o], u8[o + 1], u8[o + 2], u8[o + 3]);
@@ -1082,7 +1128,7 @@ export function readGlobalBlock(buffer, key) {
 
 export function removeGlobalBlocks(buffer, keys) {
   const ab = toAB(buffer);
-  const psd = parsePsd(ab);
+  const psd = parsePsdCached(ab);
   const s = psd.sections;
   if (!s.globalAddlStart || s.globalAddlEnd <= s.globalAddlStart) return ab;
   const u8 = new Uint8Array(ab), dv = new DataView(ab);
@@ -1216,7 +1262,7 @@ export function buildTyShFromText(layer, newText, opts = {}) {
 
 export function setTextLayerMeta(buffer, index, meta = {}) {
   const ab = toAB(buffer);
-  const psd = parsePsd(ab);
+  const psd = parsePsdCached(ab);
   const layer = psd.layers[index];
   if (!layer) throw new Error('图层不存在: index=' + index);
   if (!layer.text) throw new Error(`图层 ${index} 不是文字图层（无 TySh）`);
@@ -1234,7 +1280,7 @@ export function setTextLayerMeta(buffer, index, meta = {}) {
 
 export function editLayerText(buffer, index, newText, opts = {}) {
   const ab = toAB(buffer);
-  const psd = parsePsd(ab);
+  const psd = parsePsdCached(ab);
   const layer = psd.layers[index];
   if (!layer) throw new Error('图层不存在: index=' + index);
   const out = replaceLayerBlock(ab, index, 'TySh', buildTyShFromText(layer, newText, opts));
@@ -1314,7 +1360,7 @@ function lenField(v, psb) {
 
 function rebuildWithLayers(buffer, newLayers) {
   const ab = toAB(buffer);
-  const psd = parsePsd(ab);
+  const psd = parsePsdCached(ab);
   const orig = new Uint8Array(ab);
   const s = psd.sections;
   const psb = !!s.psb;
@@ -1349,7 +1395,7 @@ function rebuildWithLayers(buffer, newLayers) {
 
 export function deleteLayer(buffer, index) {
   const ab = toAB(buffer);
-  const psd = parsePsd(ab);
+  const psd = parsePsdCached(ab);
   if (index < 0 || index >= psd.layers.length) throw new Error('图层不存在: index=' + index);
   const newLayers = psd.layers.filter((_, j) => j !== index);
   return rebuildWithLayers(ab, newLayers);
@@ -1360,7 +1406,7 @@ export function deleteLayer(buffer, index) {
 
 export function reorderLayers(buffer, newOrder) {
   const ab = toAB(buffer);
-  const psd = parsePsd(ab);
+  const psd = parsePsdCached(ab);
   const newLayers = newOrder.map(e => {
     const i = typeof e === 'object' && e ? e.dup : e;
     if (!Number.isInteger(i) || i < 0 || i >= psd.layers.length) throw new Error('图层不存在: index=' + i);
@@ -1460,7 +1506,7 @@ export function fragmentChecksum(bytes) { return 'sha256:' + sha256Hex(bytes); }
 
 export function layerFragmentRanges(buffer, index) {
   const ab = toAB(buffer);
-  const psd = parsePsd(ab);
+  const psd = parsePsdCached(ab);
   const layer = psd.layers[index];
   if (!layer) throw new Error('图层不存在: index=' + index);
   const u8 = new Uint8Array(ab), dv = new DataView(ab);
@@ -1556,7 +1602,7 @@ export function extractLayerFragment(buffer, spec) {
 
 
 function spliceExtraRange(ab, layerIndex, from, to, newBytes) {
-  const psd = parsePsd(ab);
+  const psd = parsePsdCached(ab);
   const layer = psd.layers[layerIndex];
   if (!layer) throw new Error('图层不存在: index=' + layerIndex);
   const s = psd.sections;
@@ -1599,7 +1645,7 @@ export function applyFragmentPatch(buffer, patch) {
   const idx = patch.layerIndex;
 
   if (patch.kind === 'placedBlocks') {
-    const psd = parsePsd(ab);
+    const psd = parsePsdCached(ab);
     const layer = psd.layers[idx];
     if (!layer) throw new Error('图层不存在: index=' + idx);
     const seen = {};
@@ -1711,7 +1757,7 @@ const fragmentId = s => `${s.kind}:${s.layerIndex}` + (s.key ? `:${s.key}:${s.oc
 
 export function buildIncrementalRequest(buffer, ops) {
   const ab = toAB(buffer);
-  const psd = parsePsd(ab);
+  const psd = parsePsdCached(ab);
   if (!Array.isArray(ops) || !ops.length) throw new Error('ops 为空');
   const byId = new Map();
   const outOps = ops.map((op, i) => {

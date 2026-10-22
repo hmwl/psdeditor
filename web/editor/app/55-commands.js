@@ -111,8 +111,8 @@ import {
   applyFilterLazy, filterGuard, fltSpec, lastFilter, openFilterLazy, pickDisplaceMap, repeatLastFilter,
 } from './16-filters-menu.js';
 import {
-  activeDocSubs, activePath, docPathLabel, ensureDocPaths, rasterizeSubpaths, roundRectSubpath, savedPaths,
-  workPath,
+  activeDocSubs, activePath, docPathLabel, ensureDocPaths, rasterizeSubpaths, rasterizeSubpathsSelection,
+  roundRectSubpath, savedPaths, workPath,
 } from './17-shape-pen.js';
 import {
   beginContentAwareScale, beginFreeTransform, casWhy, moveLockWhy, pathTfEligible, tfCurValues, tfEligible,
@@ -161,7 +161,8 @@ import {
 import {
   PAINT_TOOLS, TEXT_TOOLS, auxDrag, bgRGB, brush, captureHistorySource, countGroups, docTool, fgRGB,
   historySourceInfo, maskEditRelayout, measureLine, notesApi, rulerMetrics, selectHistorySource, setDocTool,
-  set_NOTESP, set_bgRGB, set_fgRGB, set_historySource, set_historySourceInfo, syncAuxBar, toolDataAPI,
+  set_NOTESP, set_bgRGB, set_fgRGB, set_historySource, set_historySourceInfo, set_panelHover, syncAuxBar,
+  toolDataAPI,
 } from './31-selection-brush.js';
 import {
   askFeather, askPixels, clearSelectionPixels, combineInto, contractSel, deselect, expandSel, featherSel,
@@ -237,6 +238,16 @@ import { fireScriptEvent } from './58-scripting.js';
 
 
 {
+
+
+  const antiAliasModes = () => ANTI_ALIAS_MODES || [
+    ['none', 'antiAliasNone', '无'], ['sharp', 'antiAliasSharp', '锐利'], ['crisp', 'antiAliasCrisp', '犀利'],
+    ['strong', 'antiAliasStrong', '浑厚'], ['smooth', 'antiAliasSmooth', '平滑'],
+    ['macLcd', 'antiAliasPlatformLCD', 'Mac LCD'], ['mac', 'antiAliasPlatformGray', 'Mac'],
+  ];
+  const fontPreviewSizes = () => FONT_PREVIEW_SIZES || [['none', '无', 0], ['small', '小', 12], ['medium', '中', 14], ['large', '大', 18]];
+  const textAligns = () => TEXT_ALIGNS || [['left', '左对齐'], ['center', '居中对齐'], ['right', '右对齐']];
+  const rulerUnits = () => RULER_UNITS || { px: { per: () => 1 } };
   const hasDoc = () => !!doc;
   const inPreview = () => !!doc && !li;
   const hasLayer = () => inPreview() && selLayer >= 0;
@@ -378,11 +389,7 @@ import { fireScriptEvent } from './58-scripting.js';
   
   const isTx = () => inPreview() && isTextLayer(selLayer);
   
-  for (const [id, value, label] of [
-    ['none', 'antiAliasNone', '无'], ['sharp', 'antiAliasSharp', '锐利'], ['crisp', 'antiAliasCrisp', '犀利'],
-    ['strong', 'antiAliasStrong', '浑厚'], ['smooth', 'antiAliasSmooth', '平滑'],
-    ['macLcd', 'antiAliasPlatformLCD', 'Mac LCD'], ['mac', 'antiAliasPlatformGray', 'Mac'],
-  ])
+  for (const [id, value, label] of antiAliasModes())
     R('type.aa.' + id, () => {
       applyTextDesc(selLayer, { antiAlias: value }, '消除锯齿');
       shell.status(`消除锯齿：${aaLabel(value, label)}（写进 PSD；画布按对应的边缘曲线预览）`);
@@ -407,7 +414,7 @@ import { fireScriptEvent } from './58-scripting.js';
   R('type.resolveMissing', () => { resolveMissingFontsUI(false); }, () => inPreview() && ((layerTree && layerTree.flat) || []).some(L => L && L.text));
   R('type.replaceMissing', () => { resolveMissingFontsUI(true); }, () => inPreview() && ((layerTree && layerTree.flat) || []).some(L => L && L.text));
   
-  for (const [id] of FONT_PREVIEW_SIZES)
+  for (const [id] of fontPreviewSizes())
     R('type.preview.' + id, () => { setFontPreviewSize(id); }, () => true, { checked: () => fontPreviewSize === id });
   
   
@@ -417,7 +424,7 @@ import { fireScriptEvent } from './58-scripting.js';
     { why: () => '不做：「匹配字体」是 Adobe 的图像识别服务（要把图上传到 Adobe），与本项目「本地优先、不上传」的定位冲突' });
   R('type.adobeFonts', () => {}, () => false,
     { why: () => '不做：Adobe Fonts 是 Adobe 账号生态里的字体库，浏览器里没有对应形态' });
-  for (const [v] of TEXT_ALIGNS) R('type.align.' + v, () => applyTextStyle(selLayer, { align: v }), () => isTextLayer(selLayer));
+  for (const [v] of textAligns()) R('type.align.' + v, () => applyTextStyle(selLayer, { align: v }), () => isTextLayer(selLayer));
 R('image.crop', () => {
   if (!selection) { shell.status('「图像 › 裁剪」需要先建立一个选区'); return false; }
   const b = selectionBounds(selection);
@@ -482,7 +489,7 @@ R('image.crop', () => {
   R('view.flipH', () => { set_viewFlip(!viewFlip); applyPan(); drawGizmo(); shell.status(viewFlip ? '视图已水平翻转（只翻显示，不改像素）' : '视图翻转已还原'); }, hasDoc, { checked: () => viewFlip });
   R('layer.rasterize.style', () => { bakeLayerStyleUI(selLayer, false); }, () => hasLayer() && !li && liveFxEntries(selLayer).length > 0, { why: () => '这一层没有启用着的图层样式' });
   
-  for (const [id, run, en, extra] of CM.commands) R(id, run, en, extra || {});
+  for (const [id, run, en, extra] of (CM?.commands || [])) R(id, run, en, extra || {});
   
   
 
@@ -518,7 +525,7 @@ R('image.crop', () => {
     fontStyles: ps => { const rec = sysFontByPs(ps); const fam = rec ? fontFamilies().find(f => f.family === rec.family) : null; return fam ? fam.styles.map(x => ({ ps: x.postscriptName, style: x.style })) : []; },
     fontChoice: async ps => { const rec = sysFontByPs(ps); return rec ? fontChoiceOf(rec) : null; },
     loadFonts: () => loadSystemFonts({ gesture: true }),
-    opticalKernReady: ps => opticalKernReady(ps), antiAliasModes: () => ANTI_ALIAS_MODES.map(([, v, l]) => [v, aaLabel(v, l)]),
+    opticalKernReady: ps => opticalKernReady(ps), antiAliasModes: () => antiAliasModes().map(([, v, l]) => [v, aaLabel(v, l)]),
     orientation: i => effTextDesc(i, 'orientation') || 'horizontal',
     sheets: () => textSheets(), setSheets: (v, label) => setTextSheets(v, label),
     runAction: (id, ...a) => actions.run(id, ...a), isMac: () => isMacUI,
@@ -663,6 +670,11 @@ R('image.crop', () => {
     },
     graySelection: (gray, mode, label) => graySelectionUI(gray, mode, label),
     loadVectorSel: (i, mode) => { const subs = effPathSubpaths(i); if (!subs || !subs.length) { $('#notice').textContent = '这一层的矢量蒙版里没有路径。'; return false; }
+      if (docW * docH > 128e6) {
+        const sel = rasterizeSubpathsSelection(subs, { anti: true });
+        if (!sel) { $('#notice').textContent = '矢量蒙版没有覆盖到画布像素。'; return false; }
+        return runLazy(SELECT, '载入矢量蒙版选区', () => combineInto(sel, selection ? (mode || 'replace') : 'replace'));
+      }
       const img = rasterizeSubpaths(subs, { anti: true }), g = new Uint8Array(docW * docH); for (let k = 0; k < g.length; k++) g[k] = img[k * 4 + 3];
       return runLazy(SELECT, '载入矢量蒙版选区', () => combineInto(createSelection(docW, docH, 0, 0, docW, docH, g), selection ? (mode || 'replace') : 'replace')); },
     maskSelectAndMask: i => maskSelectAndMask(i),
@@ -745,7 +757,7 @@ R('image.crop', () => {
     structural: lxStructural,
     openPsdBuffer: async (buf, name) => {
       const dtk = await DOCS.beginOpen(); if (!dtk) return false;
-      try { docStack.length = 0; await initDocument(buf, name + '.psd', { nested: false }); refreshAll(true); } catch (e) { DOCS.abortOpen(dtk); throw e; }
+      try { docStack.length = 0; await initDocument(buf, name + '.psd', { nested: false, freshDoc: true }); refreshAll(true); } catch (e) { DOCS.abortOpen(dtk); throw e; }
       DOCS.endOpen(dtk); return true;
     },
     selectLayer: i => { set_selLayer(i); selLayers.clear(); renderLayerPanel(); renderProps(); drawGizmo(); },
@@ -766,7 +778,11 @@ R('image.crop', () => {
     storageQuota: async () => { try { const e = await navigator.storage.estimate(); return `已用 ${(e.usage / 1048576).toFixed(0)} MB / 配额 ${(e.quota / 1073741824).toFixed(1)} GB`; } catch { return '浏览器不公开'; } },
   };
   for (const [id, page] of Object.entries(PREF.PAGE_OF_ACTION)) R(id, () => { PREF.openPreferences(page, prefCtx); });
-  const unitPx = (v, u) => u === 'pct' ? docW * v / 100 : (RULER_UNITS[u] ? v * RULER_UNITS[u].per() : v);
+  const unitPx = (v, u) => {
+    if (u === 'pct') return docW * v / 100;
+    const unit = rulerUnits()[u];
+    return unit && typeof unit.per === 'function' ? v * unit.per() : v;
+  };
   const hexA = (hex, a) => { const m = /^#?([0-9a-f]{6})$/i.exec(hex || ''); if (!m) return `rgba(120,120,120,${a})`; const n = parseInt(m[1], 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`; };
   set_hexAlpha(hexA);
   let tipsOff = false;
@@ -781,7 +797,8 @@ R('image.crop', () => {
       gridOpts.color = hexA(P.guides.gridColor, .75);
       pathLook.color = P.guides.pathColor || pathLook.color; pathLook.width = +P.guides.pathWidth || pathLook.width;
     }
-    if (has('units.rulers') && RULER_UNITS[P.units.rulers] && rulerUnit !== P.units.rulers) { set_rulerUnit(P.units.rulers); syncRulers(); }
+    const prefUnit = rulerUnits()[P.units.rulers];
+    if (has('units.rulers') && prefUnit && typeof prefUnit.per === 'function' && rulerUnit !== P.units.rulers) { set_rulerUnit(P.units.rulers); syncRulers(); }
     if (has('transparency')) {
       const m = /^#?([0-9a-f]{6})$/i.exec(P.transparency.gamutColor || '');
       if (m) { const n = parseInt(m[1], 16); try { CM.setGamutWarning([n >> 16, (n >> 8) & 255, n & 255], P.transparency.gamutOpacity); } catch {} }
@@ -803,9 +820,9 @@ R('image.crop', () => {
     for (let el = e.target; el && el.nodeType === 1; el = el.parentElement) if (el.title) { el.dataset.fpTip = el.title; el.removeAttribute('title'); }
   }, true);
   PREF.onChange((p, changed) => applyPrefs(changed));
-  applyPrefs(null);
+  setTimeout(() => { try { applyPrefs(null); } catch {} }, 0);
   
-  for (const [id] of FONT_PREVIEW_SIZES) R('type.preview.' + id, () => { setFontPreviewSize(id); PREF.set({ type: { fontPreview: id } }, { quiet: true }); }, () => true, { checked: () => fontPreviewSize === id });
+  for (const [id] of fontPreviewSizes()) R('type.preview.' + id, () => { setFontPreviewSize(id); PREF.set({ type: { fontPreview: id } }, { quiet: true }); }, () => true, { checked: () => fontPreviewSize === id });
 
   
   RECENT.load().then(() => {});
@@ -833,7 +850,7 @@ R('image.crop', () => {
   R('view.show.all', () => { gridOpts.on = true; set_layerEdgesOn(true); set_selEdgesOn(true); set_pixelGridOn(true); set_smartGuidesOn(true); set_guidesVisible(true); sliceOpts.show = true; set_artboardGuidesOn(set_countVisible(set_notesVisible(set_editPinsOn(set_brushPreviewOn(true))))); drawGizmo(); }, hasDoc);
   R('view.show.none', () => { gridOpts.on = false; set_layerEdgesOn(false); set_selEdgesOn(false); set_pixelGridOn(false); set_smartGuidesOn(false); set_guidesVisible(false); sliceOpts.show = false; set_artboardGuidesOn(set_countVisible(set_notesVisible(set_editPinsOn(set_brushPreviewOn(false))))); drawGizmo(); }, hasDoc);
   
-  snapTo.slices = true;
+  if (snapTo) snapTo.slices = true;
   R('view.snapTo.slices', () => { snapTo.slices = !snapTo.slices; shell.status('对齐到切片：' + (snapTo.slices ? '开' : '关')); }, () => hasDoc() && sliceOpts.show, { checked: () => snapTo.slices && sliceOpts.show, why: () => '先显示切片（视图 › 显示 › 切片）' });
 
   
@@ -922,7 +939,8 @@ R('image.crop', () => {
   const ADJ_MENU_MAP = { brightnessContrast: 'brightnessContrast', levels: 'levels', curves: 'curves', exposure: 'exposure', vibrance: 'vibrance', hueSaturation: 'hueSaturation', colorBalance: 'colorBalance', blackWhite: 'blackWhite', photoFilter: 'photoFilter', channelMixer: 'channelMixer', colorLookup: 'colorLookup', invert: 'invert', posterize: 'posterize', threshold: 'threshold', gradientMap: 'gradientMap', selectiveColor: 'selectiveColor', desaturate: 'desaturate', equalize: 'equalize' };
   for (const [k, t] of Object.entries(ADJ_MENU_MAP)) {
     if (k === 'equalize' || k === 'colorLookup') continue;
-    R('image.adjust.' + k, () => openAdjustLazy(t), () => hasLayer() && !adjustGuard() && (!ADJM || !!(ADJ_ALL && ADJ_ALL[t])));
+    R('image.adjust.' + k, () => openAdjustLazy(t), () => hasLayer() && !adjustGuard(selLayer, { sparse: true }) && (!ADJM || !!(ADJ_ALL && ADJ_ALL[t])),
+      { why: () => (hasLayer() ? adjustGuard(selLayer, { sparse: true }) : '先打开一个文档') || '' });
   }
   
 
@@ -1049,7 +1067,7 @@ R('image.crop', () => {
 
   R('layer.style.createLayers', () => { bakeLayerStyleUI(selLayer, true); }, () => hasLayer() && !li && liveFxEntries(selLayer).length > 0, { why: () => '这一层没有启用着的图层样式' });
   R('layer.group', groupSelectedUI, hasLayer);
-  R('layer.newGroup', newGroupUI, hasLayer);          
+  R('layer.newGroup', newGroupUI, inPreview);
   R('layer.groupFromLayers', groupSelectedUI, hasLayer);
   R('layer.ungroup', ungroupSelectedUI, () => hasLayer() && layerTree && layerTree.flat[selLayer] && layerTree.flat[selLayer].isGroup);
   R('layer.mergeShapes', () => mergePathComponents(), inPreview, { why: () => '需要在路径面板中选择可合并的形状组件' });
@@ -1101,11 +1119,11 @@ R('image.crop', () => {
   }, maskReady,
     { checked: () => maskReady() && effMaskFlag(selLayer, layerTree.flat[selLayer], 'disabled') });
   R('layer.mask.unlink', () => {
-    const l = layerTree.flat[selLayer], rel = !!(l.mask && l.mask.relative);
-    setOpField(selLayer, { op: 'setMaskProps' }, 'relative', !rel, rel);
+    const l = layerTree.flat[selLayer], rel = effMaskFlag(selLayer, l, 'relative');
+    setOpField(selLayer, { op: 'setMaskProps' }, 'relative', !rel, !!l.mask?.relative);
     renderProps();
   }, maskReady,
-    { checked: () => maskReady() && !!(layerTree.flat[selLayer].mask && layerTree.flat[selLayer].mask.relative) });
+    { checked: () => maskReady() && effMaskFlag(selLayer, layerTree.flat[selLayer], 'relative') });
   
 
   const hasVMask = () => hasLayer() && !!(layerTree?.flat[selLayer] && layerTree.flat[selLayer].vectorMask);
@@ -1212,7 +1230,7 @@ R('image.crop', () => {
   for (const k of Object.keys(ADJ_KINDS_MENU || {})) if (k !== 'colorLookup') R('layer.adjust.' + k, () => addAdjustmentLayer(k), inPreview);   
   actions.onRegister(() => {});
   const bindAdjKinds = () => { for (const k of Object.keys(ADJ_KINDS_MENU || {})) if (!actions.has('layer.adjust.' + k)) R('layer.adjust.' + k, () => addAdjustmentLayer(k), inPreview); psPanels.refreshAdjustments(); };
-  EDIT.onReady(bindAdjKinds);            
+  EDIT?.onReady?.(bindAdjKinds);
   
   R('select.all', selectAllLazy, inPreview);
   R('select.none', deselect, () => !!doc && !!selection);
@@ -1242,12 +1260,15 @@ R('image.crop', () => {
   R('select.save', () => { saveSelectionDialog(); },
     () => inPreview() && !!selection && !alphaWriteWhy(),
     { why: () => alphaWriteWhy() || (selection ? '' : '先做一个选区，再存储它') });
-  R('select.deselectLayers', () => { set_selLayer(-1); selLayers.clear(); renderLayerPanel(); }, hasLayer);
+  R('select.deselectLayers', () => {
+    set_selLayer(-1); selLayers.clear(); set_propTab('layer');
+    set_panelHover(-1); renderLayerPanel(); syncLockRow(); drawGizmo();
+  }, hasLayer);
   
 
 
   {
-    const canFilter = () => hasLayer() && !filterGuard();
+    const canFilter = kind => hasLayer() && !filterGuard(selLayer, { sparse: kind === 'solarize' });
     const KNOWN_FILTER_ACTIONS = [
       ['filter.blur.gaussian', 'gaussianBlur'], ['filter.blur.box', 'boxBlur'], ['filter.blur.blur', 'blur'],
       ['filter.blur.more', 'blurMore'], ['filter.blur.motion', 'motionBlur'], ['filter.blur.radial', 'radialBlur'],
@@ -1302,8 +1323,9 @@ R('image.crop', () => {
         
         if (SFX && hasLayer() && SFX.canAdd(selLayer, kind)) return SFX.addFilter(selLayer, kind);
         const sp = fltSpec(kind);
-        return (sp && !sp.params.length) ? applyFilterLazy(kind) : openFilterLazy(kind);
-      }, () => canFilter() || !!(SFX && hasLayer() && !li && SFX.canAdd(selLayer, kind)));
+        return (kind === 'solarize' || sp && !sp.params.length) ? applyFilterLazy(kind) : openFilterLazy(kind);
+      }, () => canFilter(kind) || !!(SFX && hasLayer() && !li && SFX.canAdd(selLayer, kind)),
+      { why: () => (hasLayer() ? filterGuard(selLayer) : '先打开一个文档') || '' });
     }
     
 
@@ -1311,7 +1333,7 @@ R('image.crop', () => {
       'filter.neural': '不做（永久）：Neural Filters 依赖 AI 模型，本编辑器不接 AI',
     };
     for (const [id, why] of Object.entries(NOT_YET)) if (!actions.has(id)) R(id, () => false, () => false, { why: () => why });
-    R('filter.last', () => repeatLastFilter(false), () => canFilter() && !!lastFilter);
+    R('filter.last', () => repeatLastFilter(false), () => canFilter(lastFilter?.kind) && !!lastFilter);
     
     const pixOK = () => hasLayer() && !filterGuard();
     R('edit.fill', () => { editFillDialog(); }, pixOK);
@@ -1433,7 +1455,7 @@ R('image.crop', () => {
   
 
   R('view.rulers', () => { setRulersVisible(!rulersVisible); }, hasDoc, { checked: () => rulersVisible });
-  for (const u of Object.keys(RULER_UNITS))
+  for (const u of Object.keys(rulerUnits()))
     R('view.rulerUnit.' + u, () => { setRulerUnit(u); }, hasDoc, { checked: () => rulerUnit === u });
   
   
@@ -1475,7 +1497,7 @@ R('image.crop', () => {
   
   tools.onColorClick(which => pickColor(which));
   psPanels.init({
-    getColors: () => ({ fg: fgRGB.slice(), bg: bgRGB.slice() }),
+    getColors: () => ({ fg: (fgRGB || [0, 0, 0]).slice(), bg: (bgRGB || [255, 255, 255]).slice() }),
     setColors: (fg, bg) => { set_fgRGB(fg.slice()); set_bgRGB(bg.slice()); syncBrushSwatches(); },
     hasDoc: inPreview,
     adjustKinds: () => Object.keys(ADJ_KINDS_MENU || {}).map(k => ({ kind: k, label: ADJ_KINDS_MENU[k].label })),
@@ -1709,7 +1731,7 @@ R('image.crop', () => {
     activePathName: () => (activePath ? docPathLabel(activePath) : null),
   }));
   
-  installColorPanel({ panels, getColors: () => ({ fg: fgRGB.slice(), bg: bgRGB.slice() }),
+  installColorPanel({ panels, getColors: () => ({ fg: (fgRGB || [0, 0, 0]).slice(), bg: (bgRGB || [255, 255, 255]).slice() }),
     setColors: (fg, bg) => { set_fgRGB(fg.slice(0, 3)); set_bgRGB(bg.slice(0, 3)); syncBrushSwatches(); try { syncGradBar(); syncBucketBar(); } catch {} },
     openPicker: which => pickColor(which), profiles: () => CM.colorPanelProfiles(), status: t => shell.status(t) });
   syncBrushSwatches();

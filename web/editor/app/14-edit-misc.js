@@ -10,7 +10,7 @@ import { actions } from '../actions.js';
 import { confirmDialog, formDialog, alertDialog } from '../dialog.js';
 import { isShapeLayer } from '../property-panel.js';
 import { shell } from '../shell.js';
-import { $, BLEND_KEYS, BLEND_LABELS, CAFILL, ensureLazy } from './01-boot.js';
+import { $, BLEND_KEYS, BLEND_LABELS, CAFILL, ensureLazy, selectionBounds } from './01-boot.js';
 import {
   brushHistory, doc, docH, docName, docW, layerTextEdits, layerTree, li, origBuffer, pixelPaint, selection,
 } from './02-doc-state.js';
@@ -19,7 +19,8 @@ import {
 } from './03-history.js';
 import { isBackgroundLayer } from './05-layer-lock-guides.js';
 import { readResolution } from './08-doc-size.js';
-import { PAINT_WARP_WHY, paintMap } from './11-paint-common.js';
+import { PAINT_WARP_WHY, paintMap, srcBoxOfDocRect } from './11-paint-common.js';
+import { readLazyImageTile } from './21-load-document.js';
 import {
   layerCanvasCache, layerOrderView, renderLayerPanel, selLayer, set_selLayer, thumbCache,
 } from './23-layers-panel.js';
@@ -30,6 +31,7 @@ import { composeDocForOrder, previewCompositeDoc, renderPreviewOnly, renderStati
 import { bgRGB, fgRGB, hexOf } from './31-selection-brush.js';
 import {
   commitPixelPaint, cutRect, diffBox, ensurePixelPaint, paintGuard, pasteRect, sameBytes, selCovFn,
+  sparsePixelHistory,
 } from './38-brush-engine.js';
 import { dispTextOf } from './48-info-export.js';
 import { renderTextLayer } from './49-fonts-text-model.js';
@@ -43,6 +45,19 @@ const blendFormOpts = () => BLEND_KEYS.map(k => [k, BLEND_LABELS[k] || k]);
 export const hexToRGB = h => [1, 3, 5].map(i => parseInt(String(h).slice(i, i + 2), 16) || 0);
 
 
+function sparseTileRects(pp, lim){
+  const ts = pp.sparse.tileSize || 256;
+  const x0 = Math.floor(Math.max(0, lim.x) / ts) * ts;
+  const y0 = Math.floor(Math.max(0, lim.y) / ts) * ts;
+  const x1 = Math.min(pp.w, Math.ceil((lim.x + lim.w) / ts) * ts);
+  const y1 = Math.min(pp.h, Math.ceil((lim.y + lim.h) / ts) * ts);
+  const out = [];
+  for (let y = y0; y < y1; y += ts) for (let x = x0; x < x1; x += ts)
+    out.push({ x, y, w: Math.min(ts, pp.w - x), h: Math.min(ts, pp.h - y) });
+  return out;
+}
+
+
 export function layerPixelJob(label, compute, options = {}){
   if (!doc || li) return false;
   const brt = $('#brTarget'); const prevT = brt ? brt.value : null;
@@ -50,32 +65,69 @@ export function layerPixelJob(label, compute, options = {}){
   const guard = paintGuard();
   if (brt) brt.value = prevT;
   if (guard) { $('#err').textContent = label + '用不了：' + guard; return false; }
-  const idx = selLayer, pp = ensurePixelPaint(idx, { sparse: !!options.tile });
+  const idx = options.index ?? selLayer, pp = ensurePixelPaint(idx, { sparse: !!options.tile });
   if (!pp) { $('#err').textContent = label + '用不了：这一层没有可改的像素'; return false; }
   const map = paintMap(idx, pp.w, pp.h, pp.left, pp.top);
   if (!map) { $('#err').textContent = label + '用不了：' + PAINT_WARP_WHY; return false; }
   const M = map.M, sc = selCovFn();
+
+
+  const selUniform = !!(selection && selection.data?.__virtual && !selection.data.__base
+    && !selection.data.__neg && !selection.data.__tiles?.size && selection.data.__fill === 255);
   if (pp.sparse) {
     return (async () => {
-    // shortcut: tile-safe operations only; upgrade to halo tiles for neighborhood filters.
-    const tx = pp.sparse.tileSize || 256;
+
     const tr = pp.sparse.begin(); let patches = [];
+
+
+
+    const docLim = options.rect || (selection ? selectionBounds(selection) : null);
+    const sourceBox = docLim ? srcBoxOfDocRect(map.inv, docLim) : null;
+    const lim = sourceBox ? {
+      x: sourceBox.x0, y: sourceBox.y0,
+      w: sourceBox.x1 - sourceBox.x0, h: sourceBox.y1 - sourceBox.y0,
+    } : null;
+    if (docLim && !lim) { tr.rollback(); $('#notice').textContent = `「${label}」和这一层没有重叠。`; return false; }
+
+
+    const tileRects = lim ? sparseTileRects(pp, lim)
+      : options.paintedOnly ? [...pp.sparse.tiles.values()].map(t => ({ x: t.x, y: t.y, w: t.width, h: t.height }))
+      : sparseTileRects(pp, { x: 0, y: 0, w: pp.w, h: pp.h });
+    if (!tileRects.length) {
+      tr.rollback();
+      $('#notice').textContent = `「${label}」没有已编辑的像素；超大图层请先建立选区。`;
+      return false;
+    }
+    const revertApplied = () => { if (patches.length) pp.sparse.apply(patches, 'before'); };
     try {
-      for (let y = 0; y < pp.h; y += tx) for (let x = 0; x < pp.w; x += tx) {
-        const rect = { x, y, w: Math.min(tx, pp.w - x), h: Math.min(tx, pp.h - y) };
-        await tr.prepare(rect);
-        for (const ctx of tr.contexts(rect)) {
+      for (const r of tileRects) {
+        await tr.prepare(r);
+        for (const ctx of tr.contexts(r)) {
           const base = new Uint8ClampedArray(ctx.base), docXY = (sx, sy) => [
             Math.floor(M[0] * (sx + ctx.x + .5) + M[2] * (sy + ctx.y + .5) + M[4]),
             Math.floor(M[1] * (sx + ctx.x + .5) + M[3] * (sy + ctx.y + .5) + M[5]),
-          ], cov = sc ? (sx, sy) => { const [dx, dy] = docXY(sx, sy); return sc(dx, dy) / 255; } : null;
-          const out = compute({ base, w: ctx.width, h: ctx.height, docXY, cov, idx, pp });
-          if (!out || out.length !== base.length) { tr.rollback(); return false; }
-          if (!sameBytes(base, out)) { ctx.rgba.set(out); tr.dirty(ctx.key, { x0: 0, y0: 0, x1: ctx.width - 1, y1: ctx.height - 1 }); }
+          ], fullySelected = selUniform && ctx.x >= selection.x && ctx.y >= selection.y
+            && ctx.x + ctx.width <= selection.x + selection.width
+            && ctx.y + ctx.height <= selection.y + selection.height,
+          cov = sc && !fullySelected ? (sx, sy) => { const [dx, dy] = docXY(sx, sy); return sc(dx, dy) / 255; } : null;
+          const layerBounds = { left: pp.left + ctx.x, top: pp.top + ctx.y };
+          const out = compute({ base, w: ctx.width, h: ctx.height, docXY, cov, idx, pp, layerBounds });
+          if (!out || out.length !== base.length) { tr.rollback(); revertApplied(); return false; }
+          if (!sameBytes(base, out)) {
+            let x0 = ctx.width, y0 = ctx.height, x1 = -1, y1 = -1;
+            for (let y = 0; y < ctx.height; y++) for (let x = 0; x < ctx.width; x++) {
+              const q = (y * ctx.width + x) * 4, a = cov ? cov(x, y) : 1;
+              if (!(a > 0) || (ctx.clip && (x < ctx.clip.x0 || x >= ctx.clip.x1 || y < ctx.clip.y0 || y >= ctx.clip.y1))) continue;
+              ctx.rgba[q] = out[q]; ctx.rgba[q + 1] = out[q + 1];
+              ctx.rgba[q + 2] = out[q + 2]; ctx.rgba[q + 3] = out[q + 3];
+              x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+            }
+            if (x1 >= x0) tr.dirty(ctx.key, { x0, y0, x1, y1 });
+          }
         }
+        patches.push(...tr.finish());
       }
-      patches = tr.finish();
-    } catch (e) { tr.rollback(); $('#err').textContent = label + '失败：' + humanEditError(e && e.message || e); return false; }
+    } catch (e) { tr.rollback(); revertApplied(); $('#err').textContent = label + '失败：' + humanEditError(e && e.message || e); return false; }
     if (!patches.length) { $('#notice').textContent = `「${label}」没有改变任何像素。`; return false; }
     brushHistory.undo.push({ kind: 'sparsePixels', idx, patches });
     if (brushHistory.undo.length > histCap('brush')) brushHistory.undo.shift();
@@ -84,7 +136,8 @@ export function layerPixelJob(label, compute, options = {}){
     })();
   }
   const docXY = (sx, sy) => [Math.floor(M[0] * (sx + 0.5) + M[2] * (sy + 0.5) + M[4]), Math.floor(M[1] * (sx + 0.5) + M[3] * (sy + 0.5) + M[5])];
-  const cov = sc ? (sx, sy) => { const [dx, dy] = docXY(sx, sy); return sc(dx, dy) / 255; } : null;
+  const selAllDoc = selUniform && selection.x === 0 && selection.y === 0 && selection.width === docW && selection.height === docH;
+  const cov = sc && !selAllDoc ? (sx, sy) => { const [dx, dy] = docXY(sx, sy); return sc(dx, dy) / 255; } : null;
   const base = Uint8ClampedArray.from(pp.rgba);
   let out;
   try { out = compute({ base, w: pp.w, h: pp.h, docXY, cov, idx, pp }); }
@@ -94,7 +147,7 @@ export function layerPixelJob(label, compute, options = {}){
   if (!rect) { $('#notice').textContent = `「${label}」没有改变任何像素。`; return false; }
   const before = cutRect(base, pp.w, rect, 4), after = cutRect(out, pp.w, rect, 4);
   pp.rgba.set(out);
-  brushHistory.undo.push({ kind: 'pixels', idx, rect, before, after, px: 4 });
+  brushHistory.undo.push(sparsePixelHistory(idx, base, out, pp.w, pp.h));
   if (brushHistory.undo.length > histCap('brush')) brushHistory.undo.shift();
   brushHistory.redo.length = 0;
   histPush(label, 'brush');
@@ -106,6 +159,167 @@ export function layerPixelJob(label, compute, options = {}){
   return true;
 }
 let lastPixelJob = null;
+
+
+export function selectionCoversAll(sel, left, top, w, h) {
+  if (!sel || sel.width <= 0 || sel.height <= 0) return false;
+  if (sel.x > left || sel.y > top || sel.x + sel.width < left + w || sel.y + sel.height < top + h) return false;
+  const d = sel.data;
+  return !!(d && d.__virtual && !d.__tiles.size && !d.__base && !d.__neg && (d.__fill | 0) === 255);
+}
+
+
+
+
+export async function bakeLayerTiles(label, compute, opts = {}) {
+  const idx = opts.index ?? selLayer, layer = doc?.layers?.[idx];
+  if (!doc || !layer || !(layer.width > 0 && layer.height > 0)) return false;
+  let pp = pixelPaint[idx];
+  if (!pp && (layer.lazyChannels || layer.lazyCompressedChannels || layer.lazyRasterSource || layer.lazyImage || layer.lazyRasterFile)) {
+    try { pp = ensurePixelPaint(idx, { sparse: true }); } catch {}
+  }
+  const totalW = layer.width | 0, totalH = layer.height | 0;
+  const left = pp?.left ?? (layer.bounds?.left | 0) ?? 0, top = pp?.top ?? (layer.bounds?.top | 0) ?? 0;
+  const halo = Math.max(0, opts.halo | 0);
+
+
+  if (!halo && opts.apply && !pp?.sparse?.tiles?.size && layer.lazyPreview?.data
+      && (layer.lazyTileStore || layer.lazyImage || layer.lazyRasterFile)) {
+    const beforeOps = layer.lazyPixelOps ? [...layer.lazyPixelOps] : [];
+    const beforePreview = layer.lazyPreview;
+    let preview = null;
+    try {
+      const d = opts.apply(new Uint8ClampedArray(beforePreview.data), beforePreview.width, beforePreview.height, 0, 0);
+      if (d && d.length === beforePreview.data.length) preview = { data: d, width: beforePreview.width, height: beforePreview.height };
+    } catch {}
+    if (preview) {
+      const afterOps = [...beforeOps, { label, apply: opts.apply }];
+      layer.lazyPixelOps = afterOps; layer.lazyPreview = preview;
+      layer.lazyPreviewCanvas = null; layer.lazyHighTiles = new Map(); layer.lazyImageTiles = new Map();
+      layer.lazyImageChunks = new Map(); layer.lazyImageCanvas = null; layer.lazyGpuDetail = null; layer.lazyTileCache = null;
+      layer.lazyTileVersion = (layer.lazyTileVersion || 0) + 1;
+      brushHistory.undo.push({ kind: 'pixelOps', idx, before: { ops: beforeOps, preview: beforePreview }, after: { ops: afterOps, preview } });
+      if (brushHistory.undo.length > histCap('brush')) brushHistory.undo.shift();
+      brushHistory.redo.length = 0; histPush(label, 'brush');
+      delete layerCanvasCache[idx]; delete thumbCache[idx];
+      renderPreviewOnly(); updateUndoButtons(); lastPixelJob = { label, idx }; $('#err').textContent = ''; shell.status(label);
+      return true;
+    }
+  }
+  const store = await import('../../../core/tile-store.js');
+  await store.requestPersistence?.();
+  const writer = await store.createTileWriter(totalW, totalH);
+  const target = 16e6, scale = Math.min(1, Math.sqrt(target / Math.max(1, totalW * totalH)));
+  const pw = Math.max(1, Math.round(totalW * scale)), ph = Math.max(1, Math.round(totalH * scale));
+  const preview = new Uint8ClampedArray(pw * ph * 4);
+  const tileRects = [];
+  for (let y = 0; y < totalH; y += 256) for (let x = 0; x < totalW; x += 256)
+    tileRects.push({ x, y, w: Math.min(256, totalW - x), h: Math.min(256, totalH - y) });
+  const readRegion = async (x, y, w, h) => {
+    const out = new Uint8ClampedArray(w * h * 4);
+    if (layer.rgba) {
+      for (let yy = 0; yy < h; yy++) out.set(layer.rgba.subarray(((y + yy) * totalW + x) * 4, ((y + yy) * totalW + x + w) * 4), yy * w * 4);
+      return out;
+    }
+    for (let ty = Math.floor(y / 256) * 256; ty < y + h; ty += 256) for (let tx = Math.floor(x / 256) * 256; tx < x + w; tx += 256) {
+      const tw = Math.min(256, totalW - tx), th = Math.min(256, totalH - ty);
+      let t = pp?.sparse?.tiles.get(`${tx}:${ty}`);
+      if (!t) {
+        if (layer.lazyTileStore || layer.lazyImage || layer.lazyRasterFile) t = await readLazyImageTile(layer, tx, ty, 256);
+        else if (pp?.sparse) t = { x: tx, y: ty, width: tw, height: th, data: await pp.sparse.readRect({ x: tx, y: ty, w: tw, h: th }) };
+      }
+      if (!t) continue;
+      const x0 = Math.max(x, tx), x1 = Math.min(x + w, tx + tw), y0 = Math.max(y, ty), y1 = Math.min(y + h, ty + th);
+      if (!(x1 > x0 && y1 > y0)) continue;
+      for (let yy = y0; yy < y1; yy++) out.set(
+        t.data.subarray(((yy - t.y) * t.width + (x0 - t.x)) * 4, ((yy - t.y) * t.width + (x1 - t.x)) * 4),
+        ((yy - y) * w + (x0 - x)) * 4);
+    }
+    return out;
+  };
+  let done = 0;
+  try {
+    for (const r of tileRects) {
+      if (opts.signal?.aborted) throw opts.signal.reason || new DOMException('操作已取消', 'AbortError');
+      let bw = r.w, bh = r.h, bx = r.x, by = r.y, base;
+      if (halo) {
+        bx = Math.max(0, r.x - halo); by = Math.max(0, r.y - halo);
+        bw = Math.min(totalW, r.x + r.w + halo) - bx; bh = Math.min(totalH, r.y + r.h + halo) - by;
+        base = await readRegion(bx, by, bw, bh);
+      } else {
+        const edit = pp?.sparse?.tiles?.get(`${r.x}:${r.y}`);
+        if (edit) base = edit.data;
+        else if (layer.rgba) {
+          base = new Uint8ClampedArray(r.w * r.h * 4);
+          for (let y = 0; y < r.h; y++) base.set(layer.rgba.subarray(((r.y + y) * totalW + r.x) * 4, ((r.y + y) * totalW + r.x + r.w) * 4), y * r.w * 4);
+        } else if (layer.lazyTileStore || layer.lazyImage || layer.lazyRasterFile) {
+          const t = await readLazyImageTile(layer, r.x, r.y, 256);
+          if (t) base = t.data.length === r.w * r.h * 4 ? t.data : (() => {
+            const d = new Uint8ClampedArray(r.w * r.h * 4);
+            for (let y = 0; y < r.h; y++) d.set(t.data.subarray(y * t.width * 4, (y * t.width + r.w) * 4), y * r.w * 4);
+            return d;
+          })();
+        } else if (pp?.sparse) {
+          base = await pp.sparse.readRect({ x: r.x, y: r.y, w: r.w, h: r.h });
+        }
+      }
+      if (!base) throw new Error('图层像素读取失败');
+      const wide = await compute({ base, w: bw, h: bh, x: bx, y: by, left, top, layer });
+      if (!wide || wide.length !== bw * bh * 4) throw new Error('分块计算返回尺寸不一致');
+      let out = wide;
+      if (halo) {
+        out = new Uint8ClampedArray(r.w * r.h * 4);
+        const ox = r.x - bx, oy = r.y - by;
+        for (let y = 0; y < r.h; y++) out.set(wide.subarray(((oy + y) * bw + ox) * 4, ((oy + y) * bw + ox + r.w) * 4), y * r.w * 4);
+      }
+      await writer.write({ x: r.x, y: r.y, width: r.w, height: r.h, data: out });
+      const px0 = Math.max(0, Math.floor(r.x * scale)), px1 = Math.min(pw, Math.ceil((r.x + r.w) * scale));
+      const py0 = Math.max(0, Math.floor(r.y * scale)), py1 = Math.min(ph, Math.ceil((r.y + r.h) * scale));
+      for (let py = py0; py < py1; py++) {
+        const sy = Math.min(totalH - 1, Math.floor((py + .5) / scale));
+        if (sy < r.y || sy >= r.y + r.h) continue;
+        for (let px = px0; px < px1; px++) {
+          const sx = Math.min(totalW - 1, Math.floor((px + .5) / scale));
+          if (sx < r.x || sx >= r.x + r.w) continue;
+          const si = ((sy - r.y) * r.w + (sx - r.x)) * 4, di = (py * pw + px) * 4;
+          preview[di] = out[si]; preview[di + 1] = out[si + 1]; preview[di + 2] = out[si + 2]; preview[di + 3] = out[si + 3];
+        }
+      }
+      done++;
+      if ((done & 15) === 0) await new Promise(r => setTimeout(r, 0));
+      if ((done & 63) === 0) shell.status(`${label}：${done}/${tileRects.length} 块`);
+    }
+  } catch (e) {
+    try { await writer.abort(); } catch {}
+    throw e;
+  }
+  const before = {
+    store: layer.lazyTileStore || null, preview: layer.lazyPreview || null, previewCanvas: layer.lazyPreviewCanvas || null,
+    highTiles: layer.lazyHighTiles || null, imageTiles: layer.lazyImageTiles || null,
+    imageChunks: layer.lazyImageChunks || null, imageCanvas: layer.lazyImageCanvas || null,
+    tileCache: layer.lazyTileCache || null, sparseTiles: pp?.sparse ? new Map(pp.sparse.tiles) : null,
+    ops: layer.lazyPixelOps || [],
+  };
+  const nextStore = await writer.close(); nextStore.complete = true;
+  layer.lazyTileStore = nextStore;
+  layer.lazyPreview = { data: preview, width: pw, height: ph };
+  layer.lazyPreviewCanvas = null; layer.lazyHighTiles = new Map(); layer.lazyImageTiles = new Map();
+  layer.lazyImageChunks = new Map(); layer.lazyImageCanvas = null; layer.lazyGpuDetail = null; layer.lazyTileCache = null;
+  layer.lazyTileVersion = (layer.lazyTileVersion || 0) + 1;
+  layer.lazyPixelOps = [];
+  if (pp?.sparse) { pp.sparse.tiles.clear(); pp.sparse.descriptor.version++; pp.clean = true; }
+  commitPixelPaint(idx);
+  brushHistory.undo.push({ kind: 'tileStore', idx, before,
+    after: { store: nextStore, preview: layer.lazyPreview, previewCanvas: null, highTiles: null, imageTiles: null,
+      imageChunks: null, imageCanvas: null, tileCache: null, sparseTiles: new Map(), ops: [] } });
+  if (brushHistory.undo.length > histCap('brush')) brushHistory.undo.shift();
+  brushHistory.redo.length = 0;
+  histPush(label, 'brush');
+  delete layerCanvasCache[idx]; delete thumbCache[idx];
+  renderPreviewOnly(); updateUndoButtons();
+  lastPixelJob = { label, idx }; $('#err').textContent = ''; shell.status(label);
+  return true;
+}
 
 
 function blendFill(base, w, h, colorAt, alphaAt, mode, opacity, preserve){
@@ -140,6 +354,21 @@ export async function fillWith(v){
   if (!doc || li || selLayer < 0) return false;
   if (v.contents === 'contentAware') { const ok = await contentAwareFillNow(); if (ok !== false) actRecord('fill', { using: 'contentAware' }); return ok; }
   const col = { fg: fgRGB, bg: bgRGB, black: [0, 0, 0], gray: [128, 128, 128], white: [255, 255, 255], color: hexToRGB(v.color || '#000000') }[v.contents] || fgRGB;
+  const layer = doc.layers[selLayer], pp0 = pixelPaint[selLayer];
+  const left = pp0?.left ?? (layer?.bounds?.left | 0), top = pp0?.top ?? (layer?.bounds?.top | 0);
+  const fullCover = !selection || selectionCoversAll(selection, left, top, pp0?.w || layer?.width || docW, pp0?.h || layer?.height || docH);
+  if (docW * docH > 64e6 && fullCover && (pixelPaint[selLayer]?.sparse || layer?.lazyTileStore || layer?.lazyImage || layer?.lazyRasterFile || layer?.lazyChannels)) {
+    try {
+      const applyFill = (base, w, h) =>
+        blendFill(base, w, h, () => col, () => 1, v.mode || 'norm', (v.opacity ?? 100) / 100, !!v.preserve);
+      const ok = await bakeLayerTiles('填充', ({ base, w, h }) => applyFill(base, w, h), { index: selLayer, apply: applyFill });
+      if (ok) actRecord('fill', { using: v.contents, color: v.contents === 'color' ? hexToRGB(v.color) : undefined, mode: v.mode || 'norm', opacity: v.opacity ?? 100, preserve: !!v.preserve });
+      return ok;
+    } catch (e) {
+      $('#err').textContent = '填充失败：' + humanEditError(e && e.message || e);
+      return false;
+    }
+  }
   const r = await layerPixelJob('填充', ({ base, w, h, cov }) =>
     blendFill(base, w, h, () => col, cov ? (x, y) => cov(x, y) : () => 1, v.mode || 'norm', (v.opacity ?? 100) / 100, !!v.preserve), { tile: true });
   if (r !== false) actRecord('fill', { using: v.contents, color: v.contents === 'color' ? hexToRGB(v.color) : undefined, mode: v.mode || 'norm', opacity: v.opacity ?? 100, preserve: !!v.preserve });

@@ -87,7 +87,7 @@ function renameDocument(uid, name) {
 }
 function markClean(uid = activeUid(), signature = ctx.editSignature?.()) {
   const d = docs.get(uid); if (!d) return;
-  d.cleanSignature = signature; d.dirty = uid === activeUid() ? isDirty() : false;
+  d.cleanSignature = signature; d.dirty = false;
   if (uid === activeUid()) { d.name = ctx.docName(); ctx.syncTab(); }
   renderTabs(); renderFrames();
 }

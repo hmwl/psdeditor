@@ -37,7 +37,7 @@ import {
 import { renderPreviewOnly, renderStaticLayers } from './30-render.js';
 import { bgRGB, docTool } from './31-selection-brush.js';
 import { setGizmoCursorString, setSelection, syncAnts, syncToolOptions } from './32-cursors-select-options.js';
-import { commitPixelPaint, cutRect, diffBox, ensurePixelPaint } from './38-brush-engine.js';
+import { commitPixelPaint, diffBox, ensurePixelPaint, sparsePixelHistory } from './38-brush-engine.js';
 import {
   clonePathSubpaths, effPathSubpaths, pathGuard, pathModel, pathSubpathsEq, pathWorking, readVectorPath,
   set_pathModel,
@@ -261,8 +261,7 @@ function tfCommitSelection(){
   }
   const box = diffBox(S.backup, pp.rgba, pp.w, pp.h, 4);
   if (box) {
-    brushHistory.undo.push({ kind: 'pixels', idx, rect: box, before: cutRect(S.backup, pp.w, box, 4), after: cutRect(pp.rgba, pp.w, box, 4), px: 4,
-                             selBefore: S.selBefore, selAfter: selection });
+    brushHistory.undo.push(sparsePixelHistory(idx, S.backup, pp.rgba, pp.w, pp.h, { selBefore: S.selBefore, selAfter: selection }));
     if (brushHistory.undo.length > histCap('brush')) brushHistory.undo.shift();
     brushHistory.redo.length = 0;
     histPush(s.cas ? '内容识别缩放' : '自由变换', 'brush');

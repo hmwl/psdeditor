@@ -291,6 +291,10 @@ export function toFoxpsdLayerInfo(so, opts = {}) {
   };
 
   const b = so.bounds;
+  const q = [so.nonAffineTransform, so.transformQuad].find(q => q?.length === 8 && q.every(Number.isFinite));
+
+
+  const placementRotation = q ? Math.atan2(q[5] - q[7], q[4] - q[6]) * 180 / Math.PI : 0;
   return {
     layerName: so.layerName,
     layType: 'normalImg',
@@ -304,6 +308,7 @@ export function toFoxpsdLayerInfo(so, opts = {}) {
     Matrix3: H,                                   
     
     
+    placementRotation,
     placementQuad: so.transformQuad ? [0, 2, 4, 6].map(i => ({ x: so.transformQuad[i], y: so.transformQuad[i + 1] })) : null,
     rect: [b.left * scale + ox, b.top * scale + oy, (b.right - b.left) * scale, (b.bottom - b.top) * scale],
     BoundingRect: [b.left * scale + ox, b.top * scale + oy, b.right * scale + ox, b.bottom * scale + oy],

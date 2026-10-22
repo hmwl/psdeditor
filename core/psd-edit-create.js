@@ -2241,6 +2241,11 @@ export function createCreateOps(h) {
         Mdpn: mid(st.midpoint, `gradient.opacityStops[${k}].midpoint`),
       };
     });
+
+    for (const list of [clrs, trns]) {
+      const mids = list.map(s => s.Mdpn);
+      list.forEach((s, k) => { s.Mdpn = mids[(k + list.length - 1) % list.length]; });
+    }
     if (o.name !== undefined && (typeof o.name !== 'string' || !o.name.length))
       throw fail('gradient.name 必须是非空字符串');
     

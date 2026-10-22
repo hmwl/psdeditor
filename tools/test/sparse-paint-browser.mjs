@@ -60,26 +60,25 @@ try{
  await page.keyboard.press(process.platform==='darwin'?'Meta+z':'Control+z');await page.evaluate(async()=>{await window.__psd_editor.lastAction;});
  assert.deepEqual(await logicalPoint(),mouseBefore);
  assert.deepEqual(await screenPoint(),screenBefore);
+
+ await page.evaluate(async()=>{const A=window.__psd_editor;A.selectLayers([0]);await A.actions.run('layer.new');await A.lastAction;});
+ assert.deepEqual(await logicalPoint(),mouseBefore);
  const saved=await page.evaluate(async()=>{
   const A=window.__psd_editor;
   window.showSaveFilePicker=async()=>({name:'saved-sparse.psd',createWritable:async()=>({write:async value=>{window.__sparseSaved=value;},close:async()=>{},abort:async()=>{}})});
   const undoBefore=A.paint.history.undo.length,redoBefore=A.paint.history.redo.length,start=performance.now();A.actions.run('file.saveAs');const ok=await A.lastAction,ms=performance.now()-start;
   const b=window.__sparseSaved;if(!b)return {ok,err:document.querySelector('#err').textContent};
-  window.__sparseMergedPixel=(b)=>{
-  const v=new DataView(b),psb=v.getUint16(4)===2,cb=psb?4:2;
-  let o=26;const n32=at=>v.getUint32(at);o+=4+n32(o);o+=4+n32(o);const length=psb?v.getUint32(o)*4294967296+v.getUint32(o+4):n32(o);o+=(psb?8:4)+length;
-  const height=v.getUint32(14),channels=v.getUint16(12),counts=o+2,body=counts+channels*height*cb;
-  const count=(c,y)=>psb?v.getUint32(counts+(c*height+y)*4):v.getUint16(counts+(c*height+y)*2),pixel=[];
-  for(let c=0;c<4;c++){
-   let at=body;for(let k=0;k<c;k++)for(let y=0;y<height;y++)at+=count(k,y);for(let y=0;y<14848;y++)at+=count(c,y);
-   let x=0,i=at,answer=-1;
-   while(x<=4608){let n=v.getUint8(i++);if(n===128)continue;if(n<128){if(4608<x+n+1){answer=v.getUint8(i+4608-x);break;}i+=n+1;x+=n+1;}else{const value=v.getUint8(i++),len=257-n;if(4608<x+len){answer=value;break;}x+=len;}}
-   pixel.push(answer);
-  }
-  return {pixel,channels,compression:v.getUint16(o)};
+  window.__sparseMergedPixel=async b=>{
+   const {decodeCompositeImage}=await import('/core/psd-image.js'),v=new DataView(b),comp=decodeCompositeImage(b,{width:v.getUint32(18),height:v.getUint32(14),channels:v.getUint16(12),depth:v.getUint16(22),mode:v.getUint16(24),psb:v.getUint16(4)===2});
+   const x=4608,y=14848,p=comp.toRGBA(),i=(y*comp.width+x)*4,pixel=[...p.subarray(i,i+4)];
+   const {parsePsdDocument,decodeLayerPixels}=await import('/core/psd-document.js'),doc=parsePsdDocument(b),baseIdx=doc.layers.findIndex(l=>l.name==='Large ZIP'),base=doc.layers[baseIdx],lp=decodeLayerPixels(doc,b,baseIdx,{strict:true}).toRGBA(),bb=base.bounds;
+   const li=((y-bb.top)*bb.width+x-bb.left)*4,layerPixel=li>=0&&li+4<=lp.length?[...lp.subarray(li,li+4)]:[];
+   return {pixel,layerPixel,names:doc.layers.map(l=>l.name),bounds:doc.layers.map(l=>l.bounds),baseline:[...comp.toRGBA().subarray((y*comp.width+x)*4,(y*comp.width+x)*4+4)],channels:comp.channelCount,compression:comp.compression};
   };
-  const {pixel,channels,compression}=window.__sparseMergedPixel(b);
-  return {ok,ms,bytes:b.byteLength,pixel,channels,compression,dirty:A.docs.isDirty(),undo:A.paint.history.undo.length,redo:A.paint.history.redo.length,undoBefore,redoBefore};
+  const decoded=await window.__sparseMergedPixel(b),{pixel,layerPixel,names,bounds,baseline,channels,compression}=decoded;
+  const {parsePsdDocument,decodeLayerPixels}=await import('/core/psd-document.js');
+  const pp=A.paint.pixelPaint[0]; const sparseKeys=pp?.sparse?[...pp.sparse.tiles.keys()]:[]; const readEdited=pp?.sparse?[...await pp.sparse.readRect({x:4608,y:14848,w:1,h:1})]:[];
+  return {ok,ms,bytes:b.byteLength,pixel,layerPixel,names,bounds,baseline,channels,compression,dirty:A.docs.isDirty(),undo:A.paint.history.undo.length,redo:A.paint.history.redo.length,undoBefore,redoBefore,sparseKeys,readEdited,baseLayer:A.state.doc.layers[0]&&{name:A.state.doc.layers[0].name,bounds:A.state.doc.layers[0].bounds,width:A.state.doc.layers[0].width,height:A.state.doc.layers[0].height,lazy:!!A.state.doc.layers[0].lazyRasterFile}};
  });
  console.log(JSON.stringify({saved}));assert.equal(saved.ok,true);assert.deepEqual(saved.pixel,[255,0,0,255]);assert.equal(saved.channels,4);assert.equal(saved.compression,1);assert.equal(saved.dirty,false);assert.equal(saved.undo,saved.undoBefore);assert.equal(saved.redo,saved.redoBefore);
  let concurrent=null;
@@ -90,7 +89,7 @@ try{
    const building=A.buildPsdBuffer({onSnapshot:()=>{painting=A.paint.stroke([{x:4608,y:14848}],{size:20,hardness:1,plain:true,noSel:true});}});
    const snapshot=await building;await painting;A.gpu.frame();await A.gpu.flush();
    const duringBuild=[...await A.gpu.G.gc.renderToRGBA(A.gpu.G.drawList,{W:1,H:1,s:1,tx:-4608,ty:-14848})];
-   const built=window.__sparseMergedPixel(snapshot.buf).pixel;
+   const built=(await window.__sparseMergedPixel(snapshot.buf)).pixel;
    await A.paint.undo();
    let entered,release;const wrote=new Promise(r=>{entered=r;}),finish=new Promise(r=>{release=r;});
    window.showSaveFilePicker=async()=>({name:'saved-sparse.psd',createWritable:async()=>({write:async value=>{window.__sparseSaved=value;entered();await finish;},close:async()=>{},abort:async()=>{}})});
@@ -98,16 +97,64 @@ try{
    await A.paint.stroke([{x:4608,y:14848}],{size:20,hardness:1,plain:true,noSel:true});
    release();const ok=await saving;A.gpu.frame();await A.gpu.flush();
    const current=[...await A.gpu.G.gc.renderToRGBA(A.gpu.G.drawList,{W:1,H:1,s:1,tx:-4608,ty:-14848})];
-   return {ok,current,built,duringBuild,saved:window.__sparseMergedPixel(window.__sparseSaved).pixel,dirty:A.docs.isDirty(),err:document.querySelector('#err').textContent};
+   return {ok,current,built,duringBuild,saved:(await window.__sparseMergedPixel(window.__sparseSaved)).pixel,dirty:A.docs.isDirty(),err:document.querySelector('#err').textContent};
   });
   console.log(JSON.stringify({concurrent}));assert.equal(concurrent.ok,true);assert.deepEqual(concurrent.current,[0,255,0,255]);assert.deepEqual(concurrent.duringBuild,[0,255,0,255]);assert.deepEqual(concurrent.built,[255,0,0,255]);assert.deepEqual(concurrent.saved,[255,0,0,255]);assert.equal(concurrent.dirty,true);assert.equal(concurrent.err,'');
  }
- const reopened=await page.evaluate(async()=>{
-  const A=window.__psd_editor;await A.loadPsd(new File([window.__sparseSaved],'roundtrip.psd'));A.selectLayers([0]);A.view.setZoom(1);
-  await A.decode.tile(0,4608,14848);A.gpu.frame();await A.gpu.flush();
-  const p=await A.gpu.G.gc.renderToRGBA(A.gpu.G.drawList,{W:1,H:1,s:1,tx:-4608,ty:-14848});return {pixel:[...p],lazy:!A.state.doc.layers[0].rgba};
+
+
+ const merged=await page.evaluate(async()=>{
+  const A=window.__psd_editor;A.selectLayers([0,1]);await A.actions.run('layer.merge');await A.lastAction;
+  A.view.setZoom(1);A.gpu.frame();await A.gpu.flush();
+  const p=await A.gpu.G.gc.renderToRGBA(A.gpu.G.drawList,{W:1,H:1,s:1,tx:-4608,ty:-14848});
+  window.showSaveFilePicker=async()=>({name:'merged-sparse.psd',createWritable:async()=>({write:async value=>{window.__mergedSaved=value;},close:async()=>{},abort:async()=>{}})});
+  A.actions.run('file.saveAs');const ok=await A.lastAction;
+  let pixel=null;if(window.__mergedSaved){const {decodeCompositeImage}=await import('/core/psd-image.js'),v=new DataView(window.__mergedSaved),c=decodeCompositeImage(window.__mergedSaved,{width:v.getUint32(18),height:v.getUint32(14),channels:v.getUint16(12),depth:v.getUint16(22),mode:v.getUint16(24),psb:v.getUint16(4)===2}).toRGBA();pixel=[...c.subarray((14848*9390+4608)*4,(14848*9390+4608)*4+4)];}
+  return {canvas:[...p],pixel,ok,names:A.state.doc.layers.map(l=>l.name),err:document.querySelector('#err').textContent};
  });
- assert.deepEqual(reopened.pixel,[255,0,0,255]);assert.equal(reopened.lazy,true);assert.deepEqual(errors,[]);
+ console.log(JSON.stringify({merged}));
+ assert.deepEqual(merged.canvas,[255,0,0,255]);assert.deepEqual(merged.pixel,[255,0,0,255]);assert.equal(merged.ok,true);assert.equal(merged.names.length,1);assert.equal(merged.err,'');
+ const grouped=await page.evaluate(async()=>{
+  const A=window.__psd_editor;A.selectLayers([0]);await A.actions.run('layer.group');await A.lastAction;
+  A.actions.run('layer.bringToFront');await A.lastAction;
+  const root=A.state.doc.layers.find(l=>l.name==='Large ZIP'),names=A.state.doc.layers.map(l=>l.name);
+  const idx=A.state.doc.layers.indexOf(root),p=A.paint.pixelPaint[idx],pixel=p?.sparse?[...await p.sparse.readRect({x:4608,y:14848,w:1,h:1})]:null;
+  window.showSaveFilePicker=async()=>({name:'grouped-sparse.psd',createWritable:async()=>({write:async value=>{window.__groupedSaved=value;},close:async()=>{},abort:async()=>{}})});
+  A.actions.run('file.saveAs');const ok=await A.lastAction;
+  let saved=null,groups=0,savedNames=[];if(window.__groupedSaved){const {decodeCompositeImage}=await import('/core/psd-image.js'),v=new DataView(window.__groupedSaved),c=decodeCompositeImage(window.__groupedSaved,{width:v.getUint32(18),height:v.getUint32(14),channels:v.getUint16(12),depth:v.getUint16(22),mode:v.getUint16(24),psb:v.getUint16(4)===2}).toRGBA();saved=[...c.subarray((14848*9390+4608)*4,(14848*9390+4608)*4+4)];const {parsePsdFull}=await import('/core/psd-parse.js'),{groupPairs}=await import('/core/psd-edit.js'),sd=parsePsdFull(window.__groupedSaved);groups=groupPairs(sd.layers).pairs.length;savedNames=sd.layers.map(l=>l.unicodeName||l.name);}
+  return {names,groups,savedNames,pixel,saved,ok,err:document.querySelector('#err').textContent};
+ });
+ console.log(JSON.stringify({grouped}));
+ assert.ok(grouped.groups>0);assert.ok(grouped.savedNames.includes('Large ZIP'));assert.deepEqual(grouped.pixel,[255,0,0,255]);assert.deepEqual(grouped.saved,[255,0,0,255]);assert.equal(grouped.ok,true);assert.equal(grouped.err,'');
+
+ const reordered=await page.evaluate(async()=>{
+  const A=window.__psd_editor;const root=A.state.doc.layers.find(l=>l.name==='Large ZIP');A.selectLayers([A.state.doc.layers.indexOf(root)]);
+  await A.actions.run('layer.bringToFront');await A.lastAction;A.refreshAll(true);A.gpu.frame();await A.gpu.flush();
+  const idx=A.state.doc.layers.indexOf(root),p=A.paint.pixelPaint[idx],canvas=[...await A.gpu.G.gc.renderToRGBA(A.gpu.G.drawList,{W:1,H:1,s:1,tx:-4608,ty:-14848})],pixel=p?.sparse?[...await p.sparse.readRect({x:4608,y:14848,w:1,h:1})]:null;
+  window.showSaveFilePicker=async()=>({name:'reordered-sparse.psd',createWritable:async()=>({write:async value=>{window.__reorderedSaved=value;},close:async()=>{},abort:async()=>{}})});A.actions.run('file.saveAs');const ok=await A.lastAction;
+  let saved=null;if(window.__reorderedSaved){const {decodeCompositeImage}=await import('/core/psd-image.js'),v=new DataView(window.__reorderedSaved),c=decodeCompositeImage(window.__reorderedSaved,{width:v.getUint32(18),height:v.getUint32(14),channels:v.getUint16(12),depth:v.getUint16(22),mode:v.getUint16(24),psb:v.getUint16(4)===2}).toRGBA();saved=[...c.subarray((14848*9390+4608)*4,(14848*9390+4608)*4+4)];}
+  return {canvas,pixel,saved,ok,err:document.querySelector('#err').textContent};
+ });
+ console.log(JSON.stringify({reordered}));
+ assert.deepEqual(reordered.canvas,[255,0,0,255]);assert.deepEqual(reordered.pixel,[255,0,0,255]);assert.deepEqual(reordered.saved,[255,0,0,255]);assert.equal(reordered.ok,true);assert.equal(reordered.err,'');
+ const reopened=await page.evaluate(async()=>{
+  const A=window.__psd_editor;await A.loadPsd(new File([window.__sparseSaved],'roundtrip.psd'));
+  const base=A.state.doc.layers.findIndex(l=>l.name==='Large ZIP'),paintLayer=A.state.doc.layers.findIndex(l=>l.name!=='Large ZIP');
+  A.selectLayers([base]);A.view.setZoom(1);await A.decode.tile(base,4608,14848);A.gpu.frame();await A.gpu.flush();
+  const p=await A.gpu.G.gc.renderToRGBA(A.gpu.G.drawList,{W:1,H:1,s:1,tx:-4608,ty:-14848});
+  const exported={pixel:[...p],lazy:!A.state.doc.layers[base].rgba,names:A.state.doc.layers.map(l=>l.name),base,paintLayer};
+  const {parsePsdDocument,decodeLayerPixels}=await import('/core/psd-document.js');
+  const raw=new Uint8Array(window.__sparseSaved),doc=parsePsdDocument(raw),bi=doc.layers.findIndex(l=>l.name==='Large ZIP'),lp=decodeLayerPixels(doc,raw,bi).toRGBA(),bb=doc.layers[bi].bounds;
+  const x=4608,y=14848,li=((y-bb.top)*bb.width+x-bb.left)*4;
+  return {...exported,layerPixel:li>=0&&li+4<=lp.length?[...lp.subarray(li,li+4)]:[],rawComps:raw.slice(raw.length-14)};
+ });
+ assert.deepEqual(reopened.pixel,[255,0,0,255]);assert.equal(reopened.lazy,true);assert.ok(reopened.paintLayer>=0,'new layer must survive save/reopen');assert.deepEqual(errors,[]);
  if(process.env.PSD_EDITOR_PERF_REPORT)await writeFile(process.env.PSD_EDITOR_PERF_REPORT,JSON.stringify({width:9390,height:30000,compression:process.env.PSD_EDITOR_PERF_COMPRESSION||'rle',build:process.env.PSD_EDITOR_TEST_DIST==='1'?'dist':'source',browser:await browser.version(),paint:out,mouse:{before:mouseBefore,after:mouseAfter,screenBefore},saved,concurrent,reopened},null,2)+'\n');
+ if(process.env.PSD_EDITOR_SAVE_PATHS){const paths=process.env.PSD_EDITOR_SAVE_PATHS.split(',');
+  for(let i=0;i<paths.length;i++){const key=['__sparseSaved','__mergedSaved','__groupedSaved','__reorderedSaved'][i];
+   const bytes=await page.evaluate(k=>{const b=window[k];if(!b)return null;const u=b instanceof Uint8Array?b:new Uint8Array(b);let s='';for(let i=0;i<u.length;i+=65536)s+=String.fromCharCode(...u.subarray(i,i+65536));return btoa(s);},key);
+   if(bytes)await writeFile(paths[i],Buffer.from(bytes,'base64'));
+  }
+ }
  console.log('✓ 超大图层画笔、跨瓦片像素、撤销/重做、异步落笔后立即撤销，无整层 RGBA');
 }finally{await browser.close();}

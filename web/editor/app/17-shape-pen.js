@@ -12,7 +12,9 @@ import { isShapeLayer } from '../property-panel.js';
 import { psPanels } from '../ps-panels.js';
 import { CUSTOM_SHAPES, CUSTOM_SHAPE_BY_ID, DEFAULT_CUSTOM_SHAPE, customShapeSubpaths } from '../shapes.js';
 import { shell } from '../shell.js';
-import { $, EDIT, applyEdits, createSelection, ensureLazy, getVectorMaskPath, icon } from './01-boot.js';
+import {
+  $, EDIT, SELM, applyEdits, createSelection, ensureLazy, featherSelection, getVectorMaskPath, icon,
+} from './01-boot.js';
 import {
   doc, docH, docName, docStack, docW, layerDeletes, layerRenames, layerTree, li, origBuffer,
 } from './02-doc-state.js';
@@ -227,11 +229,54 @@ export function afterWorkPathChange(){
   drawGizmo(); updateUndoButtons();
 }
 
+
+export function rasterizeSubpathsSelection(subs, o = {}) {
+  const bb = subpathsBBox(subs); if (!bb) return null;
+  const pad = Math.ceil((o.feather || 0) * 2) + 2;
+  const bx = Math.max(0, Math.floor(bb.x) - pad), by = Math.max(0, Math.floor(bb.y) - pad);
+  const bx1 = Math.min(docW, Math.ceil(bb.x + bb.width) + pad), by1 = Math.min(docH, Math.ceil(bb.y + bb.height) + pad);
+  const W = bx1 - bx, H = by1 - by, TS = 256, cols = Math.ceil(W / TS), tiles = new Map();
+  if (!(W > 0 && H > 0)) return null;
+  for (let ty = 0; ty * TS < H; ty++) for (let tx = 0; tx * TS < W; tx++) {
+    const gx = bx + tx * TS, gy = by + ty * TS;
+    const tw = Math.min(TS, bx1 - gx), th = Math.min(TS, by1 - gy);
+    const cv = document.createElement('canvas'); cv.width = tw; cv.height = th;
+    const c = cv.getContext('2d', { willReadFrequently: true });
+    c.translate(-gx, -gy);
+    subs.forEach((sub, si) => {
+      if (!sub.knots || !sub.knots.length) return;
+      c.save();
+      tracePathSub(c, sub);
+      if (si > 0) c.globalCompositeOperation = opCompositeOf(sub.operation);
+      c.fillStyle = '#fff'; c.fill();
+      c.restore();
+    });
+    const d = c.getImageData(0, 0, tw, th).data, t = new Uint8Array(TS * TS);
+    let any = false;
+    for (let y = 0; y < th; y++) for (let x = 0; x < tw; x++) {
+      let a = d[(y * tw + x) * 4 + 3];
+      if (o.anti === false) a = a >= 128 ? 255 : 0;
+      if (a) { t[y * TS + x] = a; any = true; }
+    }
+    if (any) tiles.set(ty * cols + tx, t);
+  }
+  if (!tiles.size) return null;
+  let sel = SELM.selectionFromTiles(bx, by, W, H, tiles, 0, docW, docH);
+  if (o.feather > 0) sel = featherSelection(sel, +o.feather);
+  return sel;
+}
 export function workPathToSelection(mode, key, o = {}){
   ensureDocPaths();
   const p = getDocPath(key || (activePath && getDocPath(activePath) ? activePath : 'work'));
   if (!p || !p.subpaths.length) { $('#notice').textContent = '还没有工作路径。'; return false; }
   if (!doc || !docW) return false;
+  if (docW * docH > 128e6) {
+    const sel = rasterizeSubpathsSelection(p.subpaths, o);
+    if (!sel) { $('#notice').textContent = '这条路径在画布上没有覆盖到像素。'; return false; }
+    combineInto(sel, mode || 'replace');
+    $('#notice').textContent = `已把${docPathLabel(key || 'work')}（${p.subpaths.length} 条子路径）按分块栅格载入为选区。`;
+    return true;
+  }
   const img = rasterizeSubpaths(p.subpaths, { anti: o.anti !== false });
   let data = new Uint8Array(docW * docH);
   for (let i = 0; i < data.length; i++) data[i] = img[i * 4 + 3];

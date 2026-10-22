@@ -78,17 +78,21 @@ export function docAlphaThumb(at, w = 26, h = 20){
     const g = docAlphaGray(at);
     let cv = null;
     if (g && docW > 0 && docH > 0) {
-      const full = document.createElement('canvas'); full.width = docW; full.height = docH;
-      const fg = full.getContext('2d');
-      const im = fg.createImageData(docW, docH);
-      for (let i = 0, o = 0; i < g.length; i++, o += 4) { im.data[o] = im.data[o + 1] = im.data[o + 2] = g[i]; im.data[o + 3] = 255; }
-      fg.putImageData(im, 0, 0);
+
       cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+      const ctx = cv.getContext('2d'), im = ctx.createImageData(w, h), D = im.data;
+      for (let i = 3; i < D.length; i += 4) D[i] = 255;
       const k = Math.min(w / docW, h / docH);
       const dw = Math.max(1, Math.round(docW * k)), dh = Math.max(1, Math.round(docH * k));
-      const ctx = cv.getContext('2d');
-      ctx.fillStyle = '#000'; ctx.fillRect(0, 0, w, h);
-      ctx.drawImage(full, Math.round((w - dw) / 2), Math.round((h - dh) / 2), dw, dh);
+      const ox = Math.round((w - dw) / 2), oy = Math.round((h - dh) / 2);
+      for (let y = 0; y < dh; y++) {
+        const gy = Math.min(docH - 1, Math.floor(y / dh * docH));
+        for (let x = 0; x < dw; x++) {
+          const gx = Math.min(docW - 1, Math.floor(x / dw * docW)), v = g[gy * docW + gx], o = ((oy + y) * w + ox + x) * 4;
+          D[o] = D[o + 1] = D[o + 2] = v; D[o + 3] = 255;
+        }
+      }
+      ctx.putImageData(im, 0, 0);
     }
     c.thumbs[at] = cv;
   }
@@ -558,18 +562,19 @@ export async function updateAllTextLayers(){
 
 export const FONT_PREVIEW_SIZES = [['none', '无', 0], ['small', '小', 12], ['medium', '中', 14],
                             ['large', '大', 18], ['xl', '特大', 24], ['xxl', '超大', 32]];
+const fontPreviewModes = () => FONT_PREVIEW_SIZES || [['none', '无', 0], ['small', '小', 12], ['medium', '中', 14], ['large', '大', 18], ['xl', '特大', 24], ['xxl', '超大', 32]];
 export let fontPreviewSize = 'medium';
-try { const v = localStorage.getItem('psd_editor.fontPreviewSize'); if (v && FONT_PREVIEW_SIZES.some(s => s[0] === v)) fontPreviewSize = v; } catch {}
+try { const v = localStorage.getItem('psd_editor.fontPreviewSize'); if (v && fontPreviewModes().some(s => s[0] === v)) fontPreviewSize = v; } catch {}
 export function fontPreviewPx(){
-  const spec = FONT_PREVIEW_SIZES.find(s => s[0] === fontPreviewSize);
+  const spec = fontPreviewModes().find(s => s[0] === fontPreviewSize);
   return spec ? spec[2] : 14;
 }
 export function setFontPreviewSize(k){
-  if (!FONT_PREVIEW_SIZES.some(s => s[0] === k)) return false;
+  if (!fontPreviewModes().some(s => s[0] === k)) return false;
   fontPreviewSize = k;
   try { localStorage.setItem('psd_editor.fontPreviewSize', k); } catch {  }
   if (fontPop && fontPop.ui) fontPop.ui.render();          
-  shell.status('字体预览大小：' + ((FONT_PREVIEW_SIZES.find(s => s[0] === k) || [])[1] || k));
+  shell.status('字体预览大小：' + ((fontPreviewModes().find(s => s[0] === k) || [])[1] || k));
   return true;
 }
 

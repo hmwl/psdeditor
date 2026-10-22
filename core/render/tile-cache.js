@@ -48,11 +48,21 @@ export function interleaveTileStreams(cells) {
 }
 
 export function createTileCache({ budget = 64 * 1048576, maxPerState = 96, onEvict = () => {} } = {}) {
-  const entries = new Map(), owners = new WeakMap(); let wanted = new Map(), bytes = 0, evictions = 0, rejected = 0;
+  const entries = new Map(), owners = new WeakMap(); let wanted = new Map(), bytes = 0, pinnedBytes = 0, pinnedCount = 0, pinnedByState = new Map(), evictions = 0, rejected = 0;
   const owner = state => { let m = owners.get(state); if (!m) owners.set(state, m = new Map()); return m; };
   const isWanted = (state, key) => wanted.get(state)?.has(key) || false;
+  const pin = (e, delta) => {
+    if (!isWanted(e.state, e.key)) return;
+    pinnedBytes += e.bytes * delta; pinnedCount += delta;
+    const count = (pinnedByState.get(e.state) || 0) + delta;
+    if (count) pinnedByState.set(e.state, count); else pinnedByState.delete(e.state);
+  };
+  const rebuildPinned = () => {
+    pinnedBytes = 0; pinnedCount = 0; pinnedByState = new Map();
+    for (const e of entries.keys()) pin(e, 1);
+  };
   function remove(e, changed) {
-    entries.delete(e); owner(e.state).delete(e.key); bytes -= e.bytes;
+    pin(e, -1); entries.delete(e); owner(e.state).delete(e.key); bytes -= e.bytes;
     if (e.state.tiles.get(e.key) === e.tile) { e.state.tiles.delete(e.key); e.state.version++; changed.add(e.state); }
     evictions++;
   }
@@ -71,11 +81,12 @@ export function createTileCache({ budget = 64 * 1048576, maxPerState = 96, onEvi
   return {
     get budget() { return budget; },
     get stats() { return { budget, bytes, tiles: entries.size, wanted: [...wanted.values()].reduce((n, s) => n + s.size, 0),
-      residentWanted: [...entries.keys()].filter(e => isWanted(e.state, e.key)).length, evictions, rejected }; },
+      residentWanted: pinnedCount, evictions, rejected }; },
     isWanted,
     setWanted(cells) {
       wanted = new Map();
       for (const c of cells) { let keys = wanted.get(c.state); if (!keys) wanted.set(c.state, keys = new Set()); keys.add(c.key); }
+      rebuildPinned();
       trim();
     },
     get(state, key) {
@@ -87,25 +98,25 @@ export function createTileCache({ budget = 64 * 1048576, maxPerState = 96, onEvi
       const size = tile?.data?.byteLength;
       if (!(size > 0) || size > budget || wantedOnly && !isWanted(state, key)) { rejected++; return false; }
       const previous = owner(state).get(key);
-      let pinnedBytes = 0, pinnedInState = 0;
-      for (const e of entries.keys()) if (e !== previous && isWanted(e.state, e.key)) {
-        pinnedBytes += e.bytes; if (e.state === state) pinnedInState++;
-      }
-      if (pinnedBytes + size > budget || pinnedInState >= maxPerState) { rejected++; return false; }
-      if (previous) { entries.delete(previous); owner(state).delete(key); bytes -= previous.bytes; }
+      const previousPinned = previous && isWanted(state, key);
+      if (pinnedBytes - (previousPinned ? previous.bytes : 0) + size > budget ||
+          (pinnedByState.get(state) || 0) - (previousPinned ? 1 : 0) >= maxPerState) { rejected++; return false; }
+      if (previous) { pin(previous, -1); entries.delete(previous); owner(state).delete(key); bytes -= previous.bytes; }
       const e = { state, key, tile, bytes: size };
-      owner(state).set(key, e); entries.set(e, e); bytes += size;
+      owner(state).set(key, e); entries.set(e, e); bytes += size; pin(e, 1);
       state.tiles.set(key, tile); state.version++;
       trim(state);
       return state.tiles.get(key) === tile;
     },
     clear() {
       wanted = new Map(); const changed = new Set();
+      rebuildPinned();
       for (const e of entries.keys()) remove(e, changed);
       for (const s of changed) onEvict(s);
     },
     releaseOwner(ownerID) {
       for (const state of wanted.keys()) if (state.ownerID === ownerID) wanted.delete(state);
+      rebuildPinned();
       const changed = new Set();
       for (const e of entries.keys()) if (e.state.ownerID === ownerID) remove(e, changed);
       for (const s of changed) onEvict(s);

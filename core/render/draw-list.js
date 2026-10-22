@@ -22,9 +22,9 @@
 
 import {
   adjustmentRenderParams, applyVectorMaskToSource, baseAlphaMask, clipToBase, computeLayerFx, createSurface,
-  dirtyRect, drawContent, drawLayer, eraseWith, groupHasMask, groupMaskAlpha, hasRenderableFill, hasRenderableVectorMask,
+  dirtyRect, drawContent, drawLayer, groupHasMask, groupMaskAlpha, hasRenderableFill, hasRenderableVectorMask,
   multiplyLayerMask, shapeSource, frameStrokeSource, vectorMaskSig, vectorStrokeRenderParams,
-  setGlobalLightAngle, globalLightAngleOf,
+  setGlobalLightAngle, globalLightAngleOf, clippingAdjustmentEnd, drawWithLockedAlpha, opaqueSource, mixSurfaceByMask,
 } from '../compose.js';
 import { applyAdjustment } from '../adjust.js';
 import { applyLutRGBA } from '../lut.js';
@@ -154,8 +154,13 @@ export function buildDrawList(doc, docW, docH, state = null, warped = null) {
     if (type === 1 || type === 2) stack.push(i);
     else if (type === 3 && stack.length) pairs.set(i, stack.pop());
   }
-  const renderRange = (out, from, to) => {
-    let clipBase = null;
+
+
+  const koPrefix = new Uint32Array(layers.length + 1);
+  for (let i = 0; i < layers.length; i++) koPrefix[i + 1] = koPrefix[i] + (layers[i].knockout ? 1 : 0);
+  const anyKnockout = (a, b) => b > a && koPrefix[b] - koPrefix[a] > 0;
+  const renderRange = (out, from, to, initialClip = null, lockAlpha = false) => {
+    let clipBase = initialClip;
     for (let i = from; i < to; i++) {
       const l = layers[i], type = l.group && l.group.type;
       if (type === 3 && pairs.has(i)) {
@@ -179,7 +184,11 @@ export function buildDrawList(doc, docW, docH, state = null, warped = null) {
           } else out.push(g);
         } else {
           const abd = group.artboard && group.artboard.rect ? group.artboard : null;
-          if (!(isolated || masked || abd || stroke)) renderRange(out, i + 1, header);   
+          if (!(isolated || masked || abd || stroke)) {
+            if (anyKnockout(i + 1, header)) {
+              const g = { k: 'group', mode: 'pass', ops: [] }; renderRange(g.ops, i + 1, header); out.push(g);
+            } else renderRange(out, i + 1, header);
+          }
           else {
             let artboard = null;
             if (abd) {
@@ -198,14 +207,15 @@ export function buildDrawList(doc, docW, docH, state = null, warped = null) {
         clipBase = null; i = header; continue;
       }
       if (type === 1 || type === 2 || type === 3 || l.hidden) { if (!l.clipping) clipBase = null; continue; }
+      if (l.clipping && !clipBase) continue;
       const adjustment = adjustmentRenderParams(l.adjustment);
       if (adjustment) {
         const clip = l.clipping && clipBase ? clipBase : null;
-        if (clip) clip.used = true;
+        if (clip && !lockAlpha) clip.used = true;
         const hasMask = !!(l.mask && l.mask.gray && !l.mask.disabled);
         out.push({ k: 'adj', adjustment, mask: hasMask ? l.mask : null, maskOrig: [(l.bounds && l.bounds.top) || 0, (l.bounds && l.bounds.left) || 0],
           plane: hasMask ? layerMaskPlane(state, l.mask, docW, docH, (l.bounds && l.bounds.top) || 0, (l.bounds && l.bounds.left) || 0) : null,
-          opacity: (l.opacity ?? 255) / 255, blend: l.blendMode, clip, key: l.adjustment });
+          opacity: (l.opacity ?? 255) / 255, blend: l.blendMode, clip: lockAlpha ? null : clip, keepAlpha: lockAlpha, key: l.adjustment });
         if (!l.clipping) clipBase = null;
         continue;
       }
@@ -213,19 +223,26 @@ export function buildDrawList(doc, docW, docH, state = null, warped = null) {
       if (!item) { if (!l.clipping) clipBase = null; continue; }
       const FX = fxOf(state, item, l, patterns);
       const op = (l.opacity ?? 255) / 255;
-      const part = (p, x, y, blend, clip = null) => out.push({ k: 'src', src: p, left: x, top: y, opacity: op, blend, clip });
+      const part = (p, x, y, blend, clip = null) => out.push({ k: 'src', src: p, left: x, top: y, opacity: op, blend, clip: lockAlpha ? null : clip, keepAlpha: lockAlpha });
       for (const s of FX.shadows) part(s.src, item.left + s.left, item.top + s.top, s.blendMode);
       if (FX.glow) part(FX.glow.src, item.left + FX.glow.left, item.top + FX.glow.top, FX.glow.blendMode);
       const src = FX.src, X = item.left, Y = item.top;
       const contentOpacity = op * (item.fillApplied ? 1 : ((l.fillOpacity ?? 255) / 255));
       const xf = item.xf || null;
-      const content = (clip) => ({ k: 'src', src, left: X, top: Y, xf, opacity: contentOpacity, blend: l.blendMode, clip, content: true,
-        blendIf: l.blendIf || null, channelsOff: l.channelsOff && l.channelsOff.length ? l.channelsOff.filter(c => c >= 0 && c < 3) : null });
+      const content = (clip) => ({ k: 'src', src, left: X, top: Y, xf, opacity: contentOpacity, blend: l.blendMode, clip: lockAlpha ? null : clip, keepAlpha: lockAlpha, content: true,
+        isBackground: !!l.isBackground, blendIf: l.blendIf || null, channelsOff: l.channelsOff && l.channelsOff.length ? l.channelsOff.filter(c => c >= 0 && c < 3) : null });
+      const stackEnd = lockAlpha ? i + 1 : clippingAdjustmentEnd(layers, i, to);
       if (!l.clipping) {
         clipBase = { k: 'base', src, left: X, top: Y, xf, used: false };
         out.push(clipBase);
-        if (l.knockout) out.push({ k: 'src', src, left: X, top: Y, xf, opacity: 1, blend: 'norm', clip: null, knockout: (l.fillOpacity ?? 255) / 255 });
-        else out.push(content(null));
+        if (l.knockout) out.push({ k: 'src', src, left: X, top: Y, xf, opacity: op, blend: 'norm', clip: null, knockout: l.knockout });
+        if (stackEnd > i + 1) {
+          const c = content(null), pass = l.blendClipped === false;
+          const ops = [pass ? { ...c, opaque: true, opacity: item.fillApplied ? 1 : (l.fillOpacity ?? 255) / 255 }
+            : { ...c, opacity: 1, blend: 'norm', blendIf: null, channelsOff: null }];
+          renderRange(ops, i + 1, stackEnd, clipBase, true);
+          out.push({ ...c, k: 'clipStack', pass, opacity: pass ? op : c.opacity, ops });
+        } else out.push(content(null));
         if (FX.overlay) part(FX.overlay, X, Y, l.blendMode);
         for (const mo of FX.modeOverlays || []) part(mo.src, X, Y, mo.blendMode);
         if (FX.satin) part(FX.satin.src, X, Y, FX.satin.blendMode);
@@ -235,7 +252,7 @@ export function buildDrawList(doc, docW, docH, state = null, warped = null) {
         for (const s of FX.innerStrokes) part(s.src, X, Y, s.blendMode);
         if (FX.bevel) for (const b of [FX.bevel.shadow, FX.bevel.highlight]) part(b.src, X + (b.left || 0), Y + (b.top || 0), b.blendMode);
       } else if (clipBase) {
-        const cb = clipBase; cb.used = true;
+        const cb = clipBase; if (!lockAlpha) cb.used = true;
         out.push(content(cb));
         if (FX.overlay) part(FX.overlay, X, Y, l.blendMode, cb);
         for (const mo of FX.modeOverlays || []) part(mo.src, X, Y, mo.blendMode, cb);
@@ -246,6 +263,7 @@ export function buildDrawList(doc, docW, docH, state = null, warped = null) {
         for (const s of FX.innerStrokes) part(s.src, X, Y, s.blendMode, cb);
         for (const s of FX.outerStrokes) part(s.src, X + s.left, Y + s.top, s.blendMode, cb);
       }
+      i = stackEnd - 1;
     }
   };
   const ops = [];
@@ -260,7 +278,7 @@ export function countOps(ops) { let n = 0; for (const o of ops) n += 1 + (o.ops 
 export function needsDocPlanes(ops) {
   for (const o of ops) {
     if (o.k === 'adj' && o.plane) return true;
-    if (o.k === 'group' && (o.mask || needsDocPlanes(o.ops))) return true;
+    if (o.mask || (o.ops && needsDocPlanes(o.ops))) return true;
   }
   return false;
 }
@@ -268,31 +286,46 @@ export function needsDocPlanes(ops) {
 
 export function executeDrawListCPU(list) {
   const { docW, docH } = list;
-  const run = (dst, ops) => {
+  const hasKnockout = ops => ops.some(o => o.knockout || (o.ops && hasKnockout(o.ops)));
+  const run = (dst, ops, deepBackdrop = null) => {
+    const shallow = hasKnockout(ops) ? { ...dst, data: dst.data.slice() } : null;
+    let deep = deepBackdrop || shallow;
     const bases = new Map();
     const baseOf = b => { let m = bases.get(b); if (!m) { m = baseAlphaMask(b.src, b.left, b.top, docW, docH); bases.set(b, m); } return m; };
     for (const op of ops) {
       if (op.k === 'base') continue;
+      if (op.k === 'clipStack') {
+        const colors = createSurface(docW, docH);
+        if (op.pass) colors.data.set(dst.data);
+        run(colors, op.ops);
+        if (op.pass) mixSurfaceByMask(dst, colors, baseOf(op), op.opacity);
+        else drawContent(dst, colors, 0, 0, { opacity: op.opacity, blendMode: op.blend }, op);
+        continue;
+      }
       if (op.k === 'src') {
-        if (op.knockout != null) { eraseWith(dst, op.src, op.left, op.top, op.knockout); continue; }
-        const s = op.clip ? clipToBase(op.src, op.left, op.top, baseOf(op.clip), docW, docH) : op.src;
-        if (op.content) drawContent(dst, s, op.left, op.top, { opacity: op.opacity, blendMode: op.blend }, { blendIf: op.blendIf, channelsOff: op.channelsOff });
+        if (op.knockout != null) { mixSurfaceByMask(dst, op.knockout === 2 ? deep : shallow, baseOf(op), op.opacity); continue; }
+        const s = op.opaque ? opaqueSource(op.src) : op.clip ? clipToBase(op.src, op.left, op.top, baseOf(op.clip), docW, docH) : op.src;
+        if (op.keepAlpha) drawWithLockedAlpha(dst, s, op.left, op.top, { opacity: op.opacity, blendMode: op.blend }, op.content ? op : null);
+        else if (op.content) drawContent(dst, s, op.left, op.top, { opacity: op.opacity, blendMode: op.blend }, { blendIf: op.blendIf, channelsOff: op.channelsOff });
         else drawLayer(dst, s, op.left, op.top, { opacity: op.opacity, blendMode: op.blend });
+        if (op.isBackground && shallow) { deep = { ...dst, data: dst.data.slice() }; shallow.data.set(dst.data); }
         continue;
       }
       if (op.k === 'adj') {
         const a = op.adjustment, adjusted = createSurface(docW, docH);
         adjusted.data.set(a.type === 'colorLookup' ? applyLutRGBA(dst.data, a.lut, a.opts) : applyAdjustment(dst.data, docW, docH, a));
+        if (op.keepAlpha) for (let p = 3; p < adjusted.data.length; p += 4) adjusted.data[p] = 255;
         if (op.mask) multiplyLayerMask(adjusted.data, docW, docH, 0, 0, op.mask, op.maskOrig[0], op.maskOrig[1]);
         const c = op.clip ? clipToBase(adjusted, 0, 0, baseOf(op.clip), docW, docH) : adjusted;
-        drawLayer(dst, c, 0, 0, { opacity: op.opacity, blendMode: op.blend });
+        (op.keepAlpha ? drawWithLockedAlpha : drawLayer)(dst, c, 0, 0, { opacity: op.opacity, blendMode: op.blend });
         continue;
       }
       if (op.k === 'group') {
+        if (op.mode === 'pass') { run(dst, op.ops, deep); continue; }
         if (op.mode === 'passMask') {
           const target = createSurface(docW, docH);
           target.data.set(dst.data);
-          run(target, op.ops);
+          run(target, op.ops, deep);
           const m = op.mask, k = op.opacity, D = dst.data, T = target.data, rc = dirtyRect(target);
           for (let yy = rc.top; yy < rc.bottom; yy++) for (let xx = rc.left, q = yy * docW + rc.left, p4 = q * 4; xx < rc.right; xx++, q++, p4 += 4) {
             const al = (m[q] / 255) * k;

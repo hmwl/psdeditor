@@ -7,8 +7,9 @@ import './20-snap-smart-object.js';
 import { onDocumentCacheRelease } from '../document-cache.js';
 import { parseSmartObjects, parsePsdRaster, parseLayerTree, writeImageResource } from '../../../core/app.js';
 import { findExifTiff } from '../../../core/exif.js';
-import { decodeLayerJob, readLazyLayerRectChannels, readLazyLayerTile } from '../../../core/psd-raster.js';
+import { applyLazyMaskToRGBA, decodeLayerJob, readLazyLayerRectChannels, readLazyLayerTile } from '../../../core/psd-raster.js';
 import { createTileCache, lazyTileLevel } from '../../../core/render/tile-cache.js';
+import { getTile as getStoredTile } from '../../../core/tile-store.js';
 import { lodScale } from '../../../core/psd-lod.js';
 import { DOCS } from '../documents.js';
 import { recentFiles } from '../recent-files.js';
@@ -23,12 +24,12 @@ import {
 } from './01-boot.js';
 import {
   CM, DOC_MODE_NAMES, applyState, cur, curStroke, doc, docH, docName, docStack, docW, emptyState, fontCache,
-  globalLight, img, layerDupes, layerTree, li, meshFlipState, meshRotState, origBuffer, replImgURL, set_cur,
-  set_doc, set_docH, set_docLabel, set_docName, set_docW, set_globalLight, set_globalLightBase,
-  set_globalLightDirty, set_guides, set_guidesDirty, set_guidesGrid, set_hoverPt, set_img, set_lastSelection,
-  set_layerTree, set_li, set_origBuffer, set_proofOn, set_replFile, set_replImg, set_replImgURL, set_selPt,
-  set_soImgURL, set_soLayerIndex, set_sos, set_vpDirty, set_vpPlanesDoc, set_vpRaw, soEdits, soImgURL,
-  soLayerIndex, soRepl, sos, textOverlay, textRenders,
+  globalLight, img, layerDupes, layerTransforms, layerTree, li, meshFlipState, meshRotState, origBuffer,
+  pixelPaint, replImgURL, set_cur, set_doc, set_docH, set_docLabel, set_docName, set_docW, set_globalLight,
+  set_globalLightBase, set_globalLightDirty, set_guides, set_guidesDirty, set_guidesGrid, set_hoverPt, set_img,
+  set_lastSelection, set_layerTree, set_li, set_origBuffer, set_proofOn, set_replFile, set_replImg,
+  set_replImgURL, set_selPt, set_soImgURL, set_soLayerIndex, set_sos, set_vpDirty, set_vpPlanesDoc, set_vpRaw,
+  soEdits, soImgURL, soLayerIndex, soRepl, sos, textOverlay, textRenders,
 } from './02-doc-state.js';
 import {
   HXP, backend, docSnapshot, histReset, hxFresh, hxOpenLabel, set_hxFresh, set_hxOpenLabel, set_soEnterSnap,
@@ -47,7 +48,9 @@ import {
   bakeCurrentSO, bakeSeq, builtIndexOf, filterInputForSO, hasAnyEdits, loadSourceImage, refreshAll, set_bakeSeq,
 } from './20-snap-smart-object.js';
 import { applyDeformClass, matchLayer, setFitControls, settleSoEnter } from './22-deform-tools.js';
-import { layerCanvasCache, renderLayerPanel, selLayers, set_selLayer, thumbCache } from './23-layers-panel.js';
+import {
+  collapsedGroups, layerCanvasCache, renderLayerPanel, selLayers, set_selLayer, thumbCache,
+} from './23-layers-panel.js';
 import { humanEditError } from './24-layer-ops-queue.js';
 import {
   chanView, ensureGpu, gpuFlush, gpuPruneDetailTiles, renderPreviewOnly, renderStaticLayers, renderWarpNow,
@@ -63,7 +66,7 @@ import {
   set_docSlices, set_lastAutoHit, set_sliceDrag, set_sliceSel, set_slicesDirty,
 } from './34-perspective-crop-slice.js';
 import { docArtboards, set_abSel, set_abState, set_artboardCache } from './35-artboard.js';
-import { endStroke } from './38-brush-engine.js';
+import { endStroke, restoreSparsePaint } from './38-brush-engine.js';
 import { closeInlineText, textOwnRaster } from './47-canvas-context-menu.js';
 import { buildPsdBuffer, ensureStructuralBase, setWaitCursor } from './48-info-export.js';
 import { ensureTextRaster, resolveFont } from './49-fonts-text-model.js';
@@ -109,6 +112,7 @@ export async function lxStructural(label, fn){
 export function soRenderImage(k, image, options = {}){
   const so = sos[k];
   const li2 = options.layerInfo || freshLayerInfo(so);
+  if (li2.proWarp?.length || li2.proWarpKinds?.length) throw new Error('此智能对象含 Pro 版变形，请先栅格化或使用 Pro 版编辑');
   if (!options.layerInfo) applySoEdit(li2, soEdits[k]);
   const res = renderWarp({ backend, image, imageKey: 'lx' + k + '#' + (set_bakeSeq(bakeSeq + 1)), layerInfo: li2,
     filterInput: !options.layerInfo && image === img ? filterInputForSO(k) : null,
@@ -217,14 +221,19 @@ export async function openImageAsDocument(file){
       catch (e) { $('#err').textContent = `打不开「${file.name}」：` + humanOpenError(e); return false; }
       if (!items || !items.length) return false;                      
     } else {
-      let img = null, source = null, sourceSize = null;
+      let img = null, source = null, sourceSize = null, overBitmapLimit = false;
       try {
         const hint = await rasterHeaderSize(file), resize = rasterResizeFor(hint);
         if (resize) {
           
 
 
+
+
+
+
           try { source = await decodeImageFile(file); } catch { source = null; }
+          overBitmapLimit = !source;
           const cv = document.createElement('canvas'); cv.width = resize.width; cv.height = resize.height;
           const preview = source || await decodeImageFile(file, { resize });
           cv.getContext('2d').drawImage(preview, 0, 0, resize.width, resize.height); if (!source) preview.close?.();
@@ -232,7 +241,7 @@ export async function openImageAsDocument(file){
         } else img = await decodeImageFile(file);
       }
       catch { return loadPsd(file); }                      
-      items = [{ canvas: img, source, sourceFile: file, sourceSize, width: img.width, height: img.height, name: file.name }];
+      items = [{ canvas: img, source, sourceFile: file, sourceSize, overBitmapLimit, width: img.width, height: img.height, name: file.name }];
     }
     let ok = true;
     for (const it of items) ok = (await openRasterAsDocument(it, file)) && ok;
@@ -258,6 +267,10 @@ async function openRasterAsDocument(it, file){
 
   if (!await ensureLazy(EDIT, '打开图片')) return false;
   const m = await NEWDOC.load();
+
+
+
+
   if (it.sourceSize && it.sourceFile) {
     const ow = it.sourceSize.width, oh = it.sourceSize.height;
     let openBuf = m.createPsd({ width: 1, height: 1, background: 'transparent', name: '图层 0' });
@@ -265,7 +278,7 @@ async function openRasterAsDocument(it, file){
     const dtk = await DOCS.beginOpen(); if (!dtk) return false;
     try {
       docStack.length = 0; document.querySelector('.app').classList.remove('inside');
-      await initDocument(openBuf, it.name || file.name, { nested: false });
+      await initDocument(openBuf, it.name || file.name, { nested: false, freshDoc: true });
       const l = doc.layers[0];
       if (!l) throw new Error('无法建立大图层');
       l.rgba = null; l.lazyImage = it.source || null; l.lazyRasterSource = true; l.lazyRasterFile = it.sourceFile;
@@ -273,9 +286,17 @@ async function openRasterAsDocument(it, file){
       l.lazyPreview = { data: new Uint8ClampedArray(raw), width: w, height: h };
       l.width = ow; l.height = oh; l.bounds = { top: 0, left: 0, right: ow, bottom: oh };
       if (layerTree?.flat?.[0]) layerTree.flat[0].bounds = { ...l.bounds };
+
+
+
+      delete layerTransforms[0];
       refreshAll(true); await gpuFlush();
     } catch (e) { DOCS.abortOpen(dtk); $('#err').textContent = '大图打开失败：' + (e?.message || e); return false; }
-    DOCS.endOpen(dtk); shell.status(`已打开图片 ${ow} × ${oh} 像素`); return true;
+    DOCS.endOpen(dtk);
+    shell.status(it.overBitmapLimit
+      ? `已打开图片 ${ow} × ${oh} 像素（原图超出浏览器位图显示上限，画布底图按 ${w} × ${h} 预览显示；笔迹与导出仍是原始尺寸）`
+      : `已打开图片 ${ow} × ${oh} 像素`);
+    return true;
   }
   const name = it.name || file.name;
   const blank = m.createPsd({ width: w, height: h, ...rasterOpenLayerOptions(file, name), ...(it.ppi ? { resolution: it.ppi } : {}) });
@@ -293,12 +314,14 @@ async function openRasterAsDocument(it, file){
   try {
     docStack.length = 0;
     document.querySelector('.app').classList.remove('inside');
-    await initDocument(openBuf, name, { nested: false });
+    await initDocument(openBuf, name, { nested: false, freshDoc: true });
     refreshAll(true);
     await gpuFlush();
   } catch (e) { DOCS.abortOpen(dtk); $('#err').textContent = '图片打开失败：' + (e && e.message || e); return false; }
   DOCS.endOpen(dtk);
-  shell.status(`已打开图片 ${docW} × ${docH} 像素（${name}）`);
+  shell.status(it.overBitmapLimit
+    ? `已打开图片 ${w} × ${h} 像素·可编辑（原始 ${it.sourceSize.width} × ${it.sourceSize.height} 超出浏览器位图上限，已按预览分辨率打开）`
+    : `已打开图片 ${docW} × ${docH} 像素（${name}）`);
   return true;
 }
 export async function loadPsd(file){
@@ -311,7 +334,7 @@ export async function loadPsd(file){
     docStack.length = 0;
     document.querySelector('.app').classList.remove('inside');
     set_textDynamicCarry(null);               
-    await initDocument(await file.arrayBuffer(), file.name, { nested: false, proWarpPrompt: true });
+    await initDocument(await file.arrayBuffer(), file.name, { nested: false, freshDoc: true, proWarpPrompt: true });
     if (doc) doc.sourceFile = file;
     refreshAll(true);
     await gpuFlush();
@@ -390,8 +413,8 @@ function shareUnchangedPixels(oldLayers, newLayers){
 export let docLoading = 0;
 
 
-const DOC_GATES = [];
-export function addDocGate(load){ DOC_GATES.push(load); }
+export function addDocGate(load){ (addDocGate._gates || (addDocGate._gates = [])).push(load); }
+const DOC_GATES = addDocGate._gates || (addDocGate._gates = []);
 
 let decodePoolP = null;
 let activeDecodePool = null;
@@ -400,7 +423,10 @@ const lazyTileJobs = new WeakMap();
 const lazySourceJobs = new WeakMap();
 export const decodedTileCache = createTileCache({ onEvict: state => gpuPruneDetailTiles(state) });
 onDocumentCacheRelease((uid, last) => {
-  if(last){decodedTileCache.clear();activeDecodePool?.clearSources().catch(()=>{});}
+  if(last){
+    decodedTileCache.clear();activeDecodePool?.clearSources().catch(()=>{});
+    import('../../../core/tile-store.js').then(m => m.clearAllStores()).catch(() => {});
+  }
   else decodedTileCache.releaseOwner(uid);
 });
 onDocumentCacheRelease((uid, last) => {
@@ -451,14 +477,175 @@ export async function decodeLazyLayer(index){
 }
 export function lazyPixelSource(layer, depth, mode){
   const pool=activeDecodePool;
-  if (layer?.lazyImage || layer?.lazyRasterFile) return (x, y) => readLazyImageTile(layer, x, y);
+  if (layer?.lazyTileStore) return (x, y) => readLazyImageTile(layer, x, y);
+  if (layer?.lazyImage) return (x, y) => readLazyImageTile(layer, x, y);
+  if (layer?.lazyRasterFile) {
+
+
+
+
+    const huge = !!layer.lazyPreview && layer.width * layer.height > 64e6;
+    return (x, y) => huge ? readPreviewTile(layer, x, y) : readLazyImageTile(layer, x, y);
+  }
   return (x,y)=>readLazySourceTile(layer,depth,mode,pool,x,y);
 }
+
+function readPreviewTile(layer, x, y, tileSize = 256){
+  const p = layer.lazyPreview;
+  const w = Math.min(tileSize, layer.width - x), h = Math.min(tileSize, layer.height - y);
+  if (!p || !(w > 0 && h > 0) || !(p.width > 0)) return null;
+  const data = new Uint8ClampedArray(w * h * 4);
+  const kx = p.width / Math.max(1, layer.width), ky = p.height / Math.max(1, layer.height);
+  for (let yy = 0; yy < h; yy++) {
+    const qy = Math.min(p.height - 1, Math.max(0, Math.floor((y + yy) * ky)));
+    const row = qy * p.width;
+    for (let xx = 0; xx < w; xx++) {
+      const qx = Math.min(p.width - 1, Math.max(0, Math.floor((x + xx) * kx)));
+      const si = (row + qx) * 4, di = (yy * w + xx) * 4;
+      data[di] = p.data[si]; data[di + 1] = p.data[si + 1]; data[di + 2] = p.data[si + 2]; data[di + 3] = p.data[si + 3];
+    }
+  }
+  return { x, y, width: w, height: h, data };
+}
+
+
+function drawPreviewRegion(ctx, layer, sx, sy, cw, ch){
+  const p = layer.lazyPreview;
+  if (!p || !(p.width > 0 && p.height > 0) || !(layer.width > 0 && layer.height > 0)) return;
+  let pc = layer.lazyPreviewCanvas;
+  if (!pc) {
+    pc = layer.lazyPreviewCanvas = typeof OffscreenCanvas !== 'undefined'
+      ? new OffscreenCanvas(p.width, p.height)
+      : Object.assign(document.createElement('canvas'), { width: p.width, height: p.height });
+    const d = p.data instanceof Uint8ClampedArray ? p.data : new Uint8ClampedArray(p.data);
+    try { pc.getContext('2d').putImageData(new ImageData(d, p.width, p.height), 0, 0); } catch { return; }
+  }
+  const kx = p.width / layer.width, ky = p.height / layer.height;
+  ctx.drawImage(pc, sx * kx, sy * ky, Math.max(1, cw * kx), Math.max(1, ch * ky), 0, 0, cw, ch);
+}
+
+
+
+
+
+export function restoreLazySource(prev, prevIndex = -1){
+  if (!prev || !doc || !doc.layers || !doc.layers.length) return null;
+  let target = prev.name ? doc.layers.find(l => l && l.name === prev.name) : null;
+  if (!target && prevIndex >= 0) target = doc.layers[prevIndex] || null;
+  if (!target) return null;
+  target.rgba = null;
+  target.lazyImage = prev.lazyImage || null;
+  target.lazyRasterSource = true;
+  target.lazyRasterFile = prev.lazyRasterFile || doc.lazyRasterFile || null;
+  target.lazyImageTiles = prev.lazyImageTiles || new Map();
+  target.lazyImageChunks = prev.lazyImageChunks || new Map();
+  target.lazyImageCanvas = prev.lazyImageCanvas || null;
+  target.lazyPreview = prev.lazyPreview || target.lazyPreview || null;
+  target.lazyPreviewCanvas = prev.lazyPreviewCanvas || null;
+  if (prev.lazyChannels) target.lazyChannels = prev.lazyChannels;
+  if (prev.lazyCompressedChannels) target.lazyCompressedChannels = prev.lazyCompressedChannels;
+  if (prev.width > 0 && prev.height > 0) { target.width = prev.width; target.height = prev.height; }
+  if (prev.bounds) target.bounds = { ...prev.bounds };
+  if (!target.lazyPreview && !target.lazyImage && !target.lazyRasterFile) return null;
+  if (target.lazyRasterFile) doc.lazyRasterFile = target.lazyRasterFile;
+  const idx = doc.layers.indexOf(target);
+  const f = layerTree && layerTree.flat && layerTree.flat[idx];
+  if (f) { f.width = target.width; f.height = target.height; f.bounds = { ...target.bounds }; }
+
+  if (idx >= 0) delete layerTransforms[idx];
+  return target;
+}
+
+
+
+async function readStoredRect(layer, x, y, w, h) {
+  const st = layer?.lazyTileStore; if (!st?.id) return null;
+  const out = new Uint8ClampedArray(w * h * 4);
+  let missing = false;
+  for (let ty = Math.floor(y / 256) * 256; ty < y + h; ty += 256) for (let tx = Math.floor(x / 256) * 256; tx < x + w; tx += 256) {
+    const t = await getStoredTile(st.id, tx, ty);
+    if (!t) { missing = true; continue; }
+    const x0 = Math.max(x, t.x), x1 = Math.min(x + w, t.x + t.width);
+    const y0 = Math.max(y, t.y), y1 = Math.min(y + h, t.y + t.height);
+    if (!(x1 > x0 && y1 > y0)) continue;
+    for (let gy = y0; gy < y1; gy++) out.set(
+      t.data.subarray(((gy - t.y) * t.width + (x0 - t.x)) * 4, ((gy - t.y) * t.width + (x1 - t.x)) * 4),
+      ((gy - y) * w + (x0 - x)) * 4);
+  }
+  return missing ? null : { x, y, width: w, height: h, data: out };
+}
+
+
+export async function readLazyImageBand(layer, y0, bandH = 256){
+  const w = layer?.width | 0, h = Math.min(bandH | 0, (layer?.height | 0) - y0);
+  if (!layer || !(w > 0 && h > 0) || y0 < 0 || y0 >= layer.height) return null;
+  if (layer.lazyTileStore) {
+    const stored = await readStoredRect(layer, 0, y0, w, h);
+    if (stored) {
+      stored.data = applyLayerPixelOps(layer, stored.data, w, h, 0, y0);
+      applyLazyMaskToRGBA(layer, stored.data, 0, y0, w, h);
+      return stored;
+    }
+  }
+  const cv = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(w, h)
+    : Object.assign(document.createElement('canvas'), { width: w, height: h });
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+  let preview = false;
+
+
+
+  const overLimit = w > 32767 || layer.height > 32767 || w * layer.height > 268435456;
+  try {
+    if (overLimit && !layer.lazyImage && layer.lazyPreview) {
+      drawPreviewRegion(ctx, layer, 0, y0, w, h);
+      preview = true;
+    } else if (layer.lazyImage) ctx.drawImage(layer.lazyImage, 0, y0, w, h, 0, 0, w, h);
+    else if (layer.lazyRasterFile) {
+      const img = await createImageBitmap(layer.lazyRasterFile, 0, y0, w, h);
+      ctx.drawImage(img, 0, 0); img.close?.();
+    } else return null;
+  } catch {
+
+    drawPreviewRegion(ctx, layer, 0, y0, w, h);
+    preview = true;
+  }
+  let data = new Uint8ClampedArray(ctx.getImageData(0, 0, w, h).data);
+  if (!preview) data = applyLayerPixelOps(layer, data, w, h, 0, y0);
+  applyLazyMaskToRGBA(layer, data, 0, y0, w, h);
+  return { x: 0, y: y0, width: w, height: h, preview, data };
+}
+function applyLayerPixelOps(layer, data, w, h, x, y) {
+  const ops = layer?.lazyPixelOps;
+  if (!ops?.length) return data;
+  for (const op of ops) {
+    const out = op.apply(data, w, h, x, y);
+    if (out && out.length === data.length) data = out;
+  }
+  return data;
+}
 export async function readLazyImageTile(layer, x, y, tileSize = 256){
-  const tx = Math.max(0, x | 0), ty = Math.max(0, y | 0), key = `${tx}:${ty}`;
+  const tx = Math.max(0, x | 0), ty = Math.max(0, y | 0), key = `${tx}:${ty}:${tileSize}`;
   const cache = layer.lazyImageTiles || (layer.lazyImageTiles = new Map()), hit = cache.get(key); if (hit) return hit;
-  if (!layer.lazyImage && !layer.lazyRasterFile) throw new Error('原始图片源已释放，无法读取画笔瓦片');
   const w = Math.min(tileSize, layer.width - tx), h = Math.min(tileSize, layer.height - ty); if (w <= 0 || h <= 0) return null;
+  if (layer.lazyTileStore) {
+    const tile = await readStoredRect(layer, tx, ty, w, h);
+    if (tile) {
+      tile.data = applyLayerPixelOps(layer, tile.data, tile.width, tile.height, tile.x, tile.y);
+      applyLazyMaskToRGBA(layer, tile.data, tile.x, tile.y, tile.width, tile.height);
+      cache.set(key, tile); if (cache.size > 96) cache.delete(cache.keys().next().value); return tile;
+    }
+  }
+  if (!layer.lazyImage && !layer.lazyRasterFile) throw new Error('原始图片源已释放，无法读取画笔瓦片');
+
+
+  if (!layer.lazyImage && layer.lazyPreview
+      && (layer.width > 32767 || layer.height > 32767 || layer.width * layer.height > 268435456)) {
+    const tile = readPreviewTile(layer, tx, ty, tileSize);
+    if (tile) {
+      applyLazyMaskToRGBA(layer, tile.data, tile.x, tile.y, tile.width, tile.height);
+      cache.set(key, tile); if (cache.size > 96) cache.delete(cache.keys().next().value); return tile;
+    }
+  }
   const cv = layer.lazyImageCanvas || (layer.lazyImageCanvas = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(tileSize, tileSize) : Object.assign(document.createElement('canvas'), { width: tileSize, height: tileSize }));
   if (cv.width !== tileSize || cv.height !== tileSize) { cv.width = tileSize; cv.height = tileSize; }
   const ctx = cv.getContext('2d', { willReadFrequently: true }); ctx.clearRect(0, 0, tileSize, tileSize);
@@ -472,13 +659,25 @@ export async function readLazyImageTile(layer, x, y, tileSize = 256){
     let chunk = chunks.get(ckey);
     if (!chunk) {
       const cw = Math.min(sourceSize, layer.width - sx), ch = Math.min(sourceSize, layer.height - sy);
-      chunk = { image: await createImageBitmap(layer.lazyRasterFile, sx, sy, cw, ch), x: sx, y: sy, width: cw, height: ch };
+      let image = null;
+      try { image = await createImageBitmap(layer.lazyRasterFile, sx, sy, cw, ch); }
+      catch { image = null; }
+      if (!image) {
+
+        drawPreviewRegion(ctx, layer, sx, sy, cw, ch);
+        const tile0 = { x: tx, y: ty, width: w, height: h, data: new Uint8ClampedArray(ctx.getImageData(0, 0, w, h).data) };
+        applyLazyMaskToRGBA(layer, tile0.data, tile0.x, tile0.y, tile0.width, tile0.height);
+        cache.set(key, tile0); if (cache.size > 96) cache.delete(cache.keys().next().value); return tile0;
+      }
+      chunk = { image, x: sx, y: sy, width: cw, height: ch };
       chunks.set(ckey, chunk);
       while (chunks.size > 8) { const k = chunks.keys().next().value, old = chunks.get(k); old?.image?.close?.(); chunks.delete(k); }
     }
     ctx.drawImage(chunk.image, tx - chunk.x, ty - chunk.y, w, h, 0, 0, w, h);
   }
   const tile = { x: tx, y: ty, width: w, height: h, data: new Uint8ClampedArray(ctx.getImageData(0, 0, w, h).data) };
+  tile.data = applyLayerPixelOps(layer, tile.data, w, h, tx, ty);
+  applyLazyMaskToRGBA(layer, tile.data, tile.x, tile.y, tile.width, tile.height);
   cache.set(key, tile); if (cache.size > 96) cache.delete(cache.keys().next().value); return tile;
 }
 function readLazySourceTile(l,depth,mode,pool,x,y,tileSize=256,scale=1){
@@ -502,13 +701,15 @@ async function readLazySourceTilesNow(l, depth, mode, pool, requests, tileSize =
     if (cached) out[i] = cached; else missing.push({ ...t, i });
   }
   if (!missing.length) return out;
-  if (l.lazyImage || l.lazyRasterFile) { for (const t of missing) out[t.i] = await readLazyImageTile(l, t.x, t.y, tileSize); return out; }
+  if (l.lazyTileStore || l.lazyImage || l.lazyRasterFile) { for (const t of missing) out[t.i] = await readLazyImageTile(l, t.x, t.y, tileSize); return out; }
   if (!pool && l.lazyChannels && scale === 1) {
     for (const t of missing) out[t.i] = readLazyLayerTile(l, Math.floor(t.x / tileSize), Math.floor(t.y / tileSize), mode, tileSize);
     return out;
   }
   const chans = l.lazyCompressedChannels || (l.lazyChannels && [8, 16].includes(depth)
-    ? (l.lazyWorkerChannels || (l.lazyWorkerChannels = Object.entries(l.lazyChannels).map(([id, c]) => ({ id: +id, view: c.bytes, w: l.width, h: l.height })))) : null);
+    ? (l.lazyWorkerChannels || (l.lazyWorkerChannels = Object.entries(l.lazyChannels)
+        .filter(([id]) => +id !== -2 && +id !== -3)
+        .map(([id, c]) => ({ id: +id, view: c.bytes, w: l.width, h: l.height })))) : null);
   if (!chans) return out;
   const sourcePsb = l.lazyCompressedPsb ?? Object.values(l.lazyChannels || {})[0]?.psb ?? false;
   const extent=tileSize*scale;
@@ -530,7 +731,9 @@ async function readLazySourceTilesNow(l, depth, mode, pool, requests, tileSize =
           : scale > 1
             ? await pool.runLod({ ...work, width: t.width, height: t.height, x: t.x, y: t.y, scale }, (dy, rows) => readLazyLayerRectChannels(l, t.x, t.y + dy, t.width, rows), { transferChannels: true })
             : await pool.run({ ...work, width: t.width, height: t.height }, readLazyLayerRectChannels(l, t.x, t.y, t.width, t.height));
-        out[t.i] = res?.tile || (res?.rgba ? { x: t.x, y: t.y, width: t.width, height: t.height, data: res.rgba } : null);
+        const tile = res?.tile || (res?.rgba ? { x: t.x, y: t.y, width: t.width, height: t.height, data: res.rgba } : null);
+        if (tile) applyLazyMaskToRGBA(l, tile.data, tile.x, tile.y, tile.width, tile.height);
+        out[t.i] = tile;
       }
       return out;
     }
@@ -538,7 +741,11 @@ async function readLazySourceTilesNow(l, depth, mode, pool, requests, tileSize =
       ? await Promise.all(shapes.map(t => decodeLayerJob({ ...work, tile: { x: t.x, y: t.y, width: extent, height: extent, scale }, chans: chans.map(c => ({ ...c, bytes: c.view })) })))
       : await pool.runBatch(work, chans, shapes.map(t => ({ x: t.x, y: t.y, width: extent, height: extent, scale })));
     const tiles = pool ? (res?.tiles || []) : res.map(r => r?.tile);
-    for (let i = 0; i < shapes.length; i++) out[shapes[i].i] = tiles[i] || null;
+    for (let i = 0; i < shapes.length; i++) {
+      const tile = tiles[i] || null;
+      if (tile) applyLazyMaskToRGBA(l, tile.data, tile.x, tile.y, tile.width, tile.height);
+      out[shapes[i].i] = tile;
+    }
     return out;
 }
 export async function decodeLazyTiles(index, requests, tileSize = 256, { wantedOnly = false, scale = 1 } = {}){
@@ -613,15 +820,32 @@ async function initDocumentBody(buf, label, opts = {}){
   
   if (soImgURL) { URL.revokeObjectURL(soImgURL); set_soImgURL(null); }
   if (replImgURL) { URL.revokeObjectURL(replImgURL); set_replImgURL(null); }
-  const prevLayers = doc && doc.layers ? doc.layers : null;   
+
+
+
+  const prevLayers = !opts.freshDoc && doc && doc.layers ? doc.layers : null;
   
 
 
   const prevLazyRaster = prevLayers && prevLayers.find(l => l?.lazyRasterSource) || null;
   const prevLazyRasterIndex = prevLazyRaster ? prevLayers.indexOf(prevLazyRaster) : -1;
+
+
+  const prevLazyTf = prevLazyRaster && layerTransforms[prevLazyRasterIndex];
+  const prevLazyMoved = !!(prevLazyTf && (prevLazyTf.quad || prevLazyTf.rot || prevLazyTf.flipX || prevLazyTf.flipY ||
+    prevLazyTf.x !== prevLazyRaster.bounds.left || prevLazyTf.y !== prevLazyRaster.bounds.top ||
+    prevLazyTf.w !== prevLazyRaster.width || prevLazyTf.h !== prevLazyRaster.height));
   const prevLazyRasterFile = prevLazyRaster?.lazyRasterFile || doc?.lazyRasterFile || null;
   const prevLazyRasterImage = prevLazyRaster?.lazyImage || null;
   const prevLazyRasterPreview = prevLazyRaster?.lazyPreview || null;
+
+
+  const prevPaints = [];
+  if (prevLayers) for (const [k, pp] of Object.entries(pixelPaint)) {
+    if (!pp?.sparse?.tiles?.size) continue;
+    const layer = prevLayers[+k]; if (!layer) continue;
+    prevPaints.push({ index: +k, name: layer.name, tiles: new Map(pp.sparse.tiles), w: pp.w, h: pp.h, left: pp.left, top: pp.top, lazy: !!layer.lazyRasterSource, emptySource: !!pp.emptySource });
+  }
   const prevHistSrc = historySource;                            
   const prevCaches = prevLayers ? { canvas: layerCanvasCache, thumb: thumbCache, w: docW, h: docH } : null;   
   applyState(emptyState());
@@ -629,8 +853,10 @@ async function initDocumentBody(buf, label, opts = {}){
   try { buf = await CM.prepareDocument(buf); } catch (e) { console.warn('色彩管理：文档准备失败', e); }   
   set_origBuffer(buf);                    
   set_sos(parseSmartObjects(buf));
-  try { await resolveSmartObjects(buf, sos); }
-  catch (e) { $('#err').textContent = '智能对象解析失败（服务端）：' + e.message; }
+
+
+  const soResolve = resolveSmartObjects(buf, sos)
+    .catch(e => { $('#err').textContent = '智能对象解析失败（服务端）：' + e.message; });
   
 
 
@@ -652,10 +878,10 @@ async function initDocumentBody(buf, label, opts = {}){
   activeDecodePool = decodePool;
   set_doc(await parsePsdRaster(buf, { lazyTiles: psdW * psdH > 64e6, keepPlanes: 'mask', keepNativePlanes: bufView.getUint16(22) > 8 || bufView.getUint16(24) === 4, decodePool, reuse: reusePool.size ? sig => { const v = reusePool.get(sig); if (v) reusePool.delete(sig); return v || null; } : null }));
   doc.editorDocUID = DOCS.openingUid();
-  if (prevLazyRaster && (prevLazyRasterFile || prevLazyRasterImage) && doc.layers.length) {
+  if (prevLazyRaster && !prevLazyMoved && (prevLazyRasterFile || prevLazyRasterImage) && doc.layers.length) {
     
-    let target = doc.layers[prevLazyRasterIndex];
-    if (!target || target.name !== prevLazyRaster.name) target = doc.layers.find(l => l && l.name === prevLazyRaster.name) || null;
+    let target = doc.layers.find(l => l && l.name === prevLazyRaster.name) || null;
+    if (!target && doc.layers[prevLazyRasterIndex]?.name === prevLazyRaster.name) target = doc.layers[prevLazyRasterIndex];
     if (target) {
       target.rgba = null; target.lazyImage = prevLazyRasterImage; target.lazyRasterSource = true;
       target.lazyRasterFile = prevLazyRasterFile || null; target.lazyPreview = prevLazyRasterPreview;
@@ -667,6 +893,17 @@ async function initDocumentBody(buf, label, opts = {}){
     }
   }
   if (prevLayers) try { shareUnchangedPixels(prevLayers, doc.layers); } catch (e) { console.warn('[载入] 像素共用失败', e); }
+
+
+  if (prevPaints.length) {
+    try {
+      for (const e of prevPaints) {
+        let idx = doc.layers.findIndex(l => l && l.name === e.name);
+        if (idx < 0) idx = e.index < doc.layers.length ? e.index : -1;
+        if (idx >= 0) restoreSparsePaint(idx, e.tiles, e);
+      }
+    } catch (err) { console.warn('[载入] 稀疏笔迹恢复失败', err); }
+  }
   try { libMaterialize(doc); } catch {}   
   
 
@@ -685,6 +922,7 @@ async function initDocumentBody(buf, label, opts = {}){
 
   set_docSizeBase({ w: docW, h: docH }); set_docResolution(set_docResolutionBase(readResolution(origBuffer)));
   set_layerTree(parseLayerTree(origBuffer));
+  for (const l of layerTree.flat) if (l.groupType === 2) collapsedGroups.add(l.index);
   
 
   const lazyTreeIndex = doc.layers.findIndex(l => l?.lazyRasterSource);
@@ -774,8 +1012,10 @@ async function initDocumentBody(buf, label, opts = {}){
 
   EDIT.prefetch();
   ADJUST.prefetch();
+  await soResolve;
   if (opts.proWarpPrompt) await promptRasterizeProWarps();
   if (hxFresh) { set_hxFresh(false); set_hxOpenLabel(null); setTimeout(() => { if (HXP) HXP.opened(); }, 0); }   
+
 }
 
 async function promptRasterizeProWarps(){

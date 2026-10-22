@@ -38,9 +38,11 @@ import { refreshAll, soInside } from './20-snap-smart-object.js';
 import { initDocument, isImageFileName, loadPsd, openImageAsDocument, selectSO } from './21-load-document.js';
 import { matchLayer } from './22-deform-tools.js';
 import {
-  layerCanvasCache, maskThumbCache, renderLayerPanel, selLayer, set_selLayer, thumbCache,
+  collapsedGroups, layerCanvasCache, maskThumbCache, renderLayerPanel, selLayer, set_selLayer, thumbCache,
 } from './23-layers-panel.js';
-import { cloneOpValue, findLayerOp, layerOpsSnapshot, renderProps } from './24-layer-ops-queue.js';
+import {
+  cloneOpValue, findLayerOp, layerOpsSnapshot, renderProps, syncLazyMaskOverrides,
+} from './24-layer-ops-queue.js';
 import { set_soloSnapshot, soloSnapshot } from './29-scrubby-live.js';
 import { renderPreviewOnly, renderStaticLayers, renderWarpNow, replaceImg } from './30-render.js';
 import {
@@ -192,6 +194,7 @@ export function histMemUsage(){
       for (const h of [st.docHist, st.brushHist]) if (h) for (const x of (h.undo || []).concat(h.redo || [])) walkEntry(x, depth + 1);
       return;
     }
+    if(e.kind==='tileStore'||e.kind==='pixelOps'){addBuf(e.before?.preview?.data);addBuf(e.after?.preview?.data);return;}
     if(e.patches){for(const p of e.patches){addBuf(p.before);addBuf(p.after);addBuf(p.original);}return;}
     if (e.before || e.after) { addBuf(e.before); addBuf(e.after); return; }
     walkSnap(e);
@@ -403,7 +406,7 @@ export async function hxNewDocFromState(name){
   try { buf = (await buildPsdBuffer()).buf; } catch (e) { $('#err').textContent = '新建文档没能完成：' + (e && e.message || e); return false; }
   const nm = (String(name || '未标题').replace(/[\\/:*?"<>|]/g, '_').trim() || '未标题') + '.psd';
   const dtk = await DOCS.beginOpen(); if (!dtk) return false;
-  try { await initDocument(buf instanceof ArrayBuffer ? buf.slice(0) : buf, nm, { nested: false }); refreshAll(true); }
+  try { await initDocument(buf instanceof ArrayBuffer ? buf.slice(0) : buf, nm, { nested: false, freshDoc: true }); refreshAll(true); }
   catch (e) { DOCS.abortOpen(dtk); $('#err').textContent = '新建文档失败：' + (e && e.message || e); return false; }
   DOCS.endOpen(dtk);
   shell.status(`已从历史状态「${name}」创建新文档`);
@@ -447,6 +450,7 @@ export function docSnapshot(){
       textRenders: { ...textRenders }, textCrops: { ...textCrops },   
       soInside: { ...soInside },
     },
+    collapsed: new Set(collapsedGroups),
     deletes: new Set(layerDeletes),
     reorder: layerReorder ? layerReorder.slice() : null,
     solo: soloSnapshot ? { idx: soloSnapshot.idx, map: soloSnapshot.map.slice() } : null,
@@ -480,6 +484,7 @@ function restoreOpsFromSnapshot(snapOps){
   set_pathModel(null);
 }
 export function restoreDocSnapshot(s){
+  if (s.collapsed) { collapsedGroups.clear(); for (const i of s.collapsed) collapsedGroups.add(i); }
   if (s.toolData !== undefined) set_toolData(s.toolData ? cloneOpValue(s.toolData) : null);
   if ('measureLine' in s) set_measureLine(s.measureLine && cloneOpValue(s.measureLine));
   syncAuxBar();
@@ -487,6 +492,7 @@ export function restoreDocSnapshot(s){
   if ('textSheets' in s) textSheetsRestore(s.textSheets);
   if (s.ext) for (const x of DOC_EXT) if (x.restore && s.ext[x.key] !== undefined) x.restore(s.ext[x.key]);
   if (s.ops) restoreOpsFromSnapshot(s.ops);
+  try { syncLazyMaskOverrides(); } catch {}
   if (s.docPaths) {
     const P = s.docPaths;
     set_workPath(P.work); set_workPathDirty(P.workDirty); set_savedPaths(P.saved); set_savedPathsDirty(P.savedDirty);
@@ -513,6 +519,17 @@ export function restoreDocSnapshot(s){
     
     const N0r = doc.layers.length - layerDupes.length;
     if (layerTree && layerTree.flat && layerTree.flat.length > N0r) layerTree.flat.length = N0r;
+
+
+    if (layerTree && layerTree.flat) for (let i = 0; i < doc.layers.length; i++) {
+      if (layerTree.flat[i]) continue;
+      const dl = doc.layers[i]; if (!dl) continue;
+      layerTree.flat[i] = { index: i, name: layerRenames[i] || dl.name || ('图层 ' + i),
+        width: dl.width, height: dl.height, bounds: { ...(dl.bounds || { top: 0, left: 0, bottom: 0, right: 0 }) },
+        hidden: !!dl.hidden, opacity: dl.opacity ?? 255, blendMode: dl.blendMode || 'norm',
+        groupType: null, group: null, mask: null, vectorMask: null, adjustment: null, fill: null,
+        text: null, isText: false, isSmartObject: false };
+    }
   }
   for (const k in thumbCache) delete thumbCache[k];        
   for (const k in maskThumbCache) delete maskThumbCache[k];

@@ -19,6 +19,9 @@ import { translateWarpControls } from '../../../core/warp-control-selection.js';
 import { warpUpdateMarquee, warpEndMarquee, warpSelected, warpClear } from '../warp-selection.js';
 import { transformWarpToolbar } from '../transform-warp-toolbar.js';
 import { readLinkGroups, writeLinkGroups } from '../../../core/psd-links.js';
+import { applyLazyMaskToRGBA, decodeLayerJob, readLazyLayerRectChannels } from '../../../core/psd-raster.js';
+import { invert3 as invertQuad, quadBounds as quadBoundingBox, quadMatrix } from '../../../core/quad-warp.js';
+import { quantize as quantizeRGB } from '../../../core/doc-mode.js';
 import {
   setEngineStyle, layoutRichText, setEngineParagraphBox, setEnginePointText, buildDynamicTextDesc,
   buildPsdEditorTextDesc,
@@ -42,8 +45,8 @@ import {
   layerDeletes, layerDupes, layerEdits, layerOps, layerRenames, layerReorder, layerTextEdits, layerTransforms,
   layerTree, li, origBuffer, pixelPaint, pushHistory, restore, rulersVisible, selDrag, selPt, selection,
   set_dragState, set_guidesDirty, set_hover, set_hoverPt, set_proofOn, set_selDrag, set_selPathCache, set_selPt,
-  set_selection, soBaked, soEdits, soOrigRaster, soRepl, sos, textCrops, textDrag, textFontSubst, textOverlay,
-  textRenders, textStyleEdits, vpDirty, vpMod, vpPlanesDoc,
+  set_selection, soBaked, soEdits, soRepl, sos, textCrops, textDrag, textFontSubst, textOverlay, textRenders,
+  textStyleEdits, vpDirty, vpMod, vpPlanesDoc,
 } from './02-doc-state.js';
 import {
   HXP, actRecord, backend, endLayerEdit, histCap, histLog, panelPropsEl, propTab, pushDocHistory,
@@ -92,7 +95,9 @@ import {
   bakeCurrentSO, bakeSO, bakeSeq, builtIndexOf, exitInside, hasAnyEdits, nudgeDuplicate, nudgeLayer,
   set_bakeSeq, set_snapLines, snapGuidePx, soInside,
 } from './20-snap-smart-object.js';
-import { decodeImageFile, set_reuseHints } from './21-load-document.js';
+import {
+  decodeImageFile, decodeLazyTile, readLazyImageBand, readLazyImageTile, set_reuseHints,
+} from './21-load-document.js';
 import {
   deformFinish, deformOpts, deformTool, exitSO, pquadDrag, pquadMove, pquadSnapRect, selectedPins,
   setPerspectiveMode, set_deformSel, set_pquadDrag, set_pquadMove, syncDeformBar,
@@ -109,8 +114,7 @@ import {
 } from './28-layer-props-transform.js';
 import { displayOrder, rasterizeTransformed } from './29-scrubby-live.js';
 import {
-  composeDocForOrder, paintLayersExport, previewCompositeDoc, renderPreviewOnly, renderStaticLayers,
-  renderWarpNow, topo,
+  composeDocForOrder, previewCompositeDoc, renderPreviewOnly, renderStaticLayers, renderWarpNow, topo,
 } from './30-render.js';
 import {
   PAINT_TOOLS, SEL_TOOLS, auxDrag, auxMove, auxUp, bgRGB, brush, docTool, fgRGB, moveHover, moveHoverRaf,
@@ -1149,10 +1153,13 @@ $('#exportCancel').onclick = () => $('#exportDlg').close('cancel');
 async function serverRender(buf, out){
   return api.render(buf, { replacements: [], output: out });
 }
-export function canvasToBlob(cv, fmt, quality){
+export function canvasToBlob(cv, fmt, quality, signal = null){
   return new Promise((res, rej) => {
+    if (signal?.aborted) return rej(signal.reason || new DOMException('导出已取消', 'AbortError'));
+    const onAbort = () => rej(signal.reason || new DOMException('导出已取消', 'AbortError'));
+    signal?.addEventListener('abort', onAbort, { once: true });
     const mime = { png: 'image/png', jpg: 'image/jpeg', webp: 'image/webp' }[fmt];
-    cv.toBlob(b => b ? res(b) : rej(new Error(fmt.toUpperCase() + ' 编码失败')), mime, quality / 100);
+    cv.toBlob(b => { signal?.removeEventListener('abort', onAbort); if (signal?.aborted) return rej(signal.reason || new DOMException('导出已取消', 'AbortError')); b ? res(b) : rej(new Error(fmt.toUpperCase() + ' 编码失败')); }, mime, quality / 100);
   });
 }
 
@@ -1222,8 +1229,20 @@ export async function ensureStructuralBase(base = origBuffer){
   const dv = new DataView(out); dv.setUint32(14, docH); dv.setUint32(18, docW);
   return out;
 }
+
+
+
+export function structuralWriteRefusal(){
+  const px = Math.max(1, docW * docH);
+  if (px <= 180e6) return '此超大文档的这项结构修改尚未接入分块写回，请保留当前编辑状态';
+  const yi = (px / 1e8).toFixed(2), gb = (px * 4 / 1073741824).toFixed(1);
+  return `这张图有 ${yi} 亿像素：像素绘制、选区、滤镜、调色、图层新建/删除/复制、合并、粘贴与原始尺寸导出都走分块路径；`
+    + `当前这项修改（文字内容 / 智能对象内部 / 路径切片 / 未烘焙的变换等）仍需要整层重编码（约 ${gb}GB），尚未接入。`
+    + `请先把相关图层烘焙或拼合后再试。`;
+}
 async function buildSparsePsdBuffer(opts){
-  const original=origBuffer,width=docW,height=docH,metadata=previewCompositeDoc(doc).layers.map(l=>({mask:l.mask,vectorMask:l.vectorMask,effects:l.effects,fill:l.fill,adjustment:l.adjustment,group:l.group,blendIf:cloneOpValue(l.blendIf),channelsOff:l.channelsOff?.slice(),knockout:l.knockout}));
+  const original=origBuffer,width=docW,height=docH,metadata=previewCompositeDoc(doc).layers.map(l=>({mask:l.mask,vectorMask:l.vectorMask,effects:l.effects,fill:l.fill,adjustment:l.adjustment,group:l.group,blendIf:cloneOpValue(l.blendIf),channelsOff:l.channelsOff?.slice(),knockout:l.knockout,
+    hidden:l.hidden,opacity:l.opacity,fillOpacity:l.fillOpacity,blendMode:l.blendMode,vectorStroke:l.vectorStroke}));
   if(vpDirty||toolData&&Object.values(toolData.dirty).some(Boolean)||DOC_EXT.some(x=>x.needsWrite?.())||Object.keys(layerTextEdits).length||Object.keys(textStyleEdits).length||Object.keys(textDescEdits).length||Object.keys(soFilterEdits).length||Object.values(soInside).some(s=>s.changed))throw new Error('此超大文档的附加编辑项目尚未接入分块写回，请保留当前编辑状态');
   if(layerDeletes.size||layerDupes.length||layerReorder||Object.keys(layerTransforms).some(i=>transformChanged(+i))||Object.keys(soEdits).length||Object.keys(soRepl).length||Object.keys(soBaked).length||workPathDirty||savedPathsDirty||slicesDirty||docSizeBase&&(width!==docSizeBase.w||height!==docSizeBase.h))throw new Error('此超大文档的结构、文字或变换修改尚未接入分块写回，请保留当前编辑状态');
   const ops=allLayerOps().filter(o=>o.op!=='sparsePixels').map(o=>{const c=cloneOpValue(o);if(c.rgba?.data)c.rgba={...c.rgba,data:c.rgba.data.slice()};return c;}),properties=Object.values(layerEdits).map(e=>({...e})),names=Object.entries(layerRenames);
@@ -1231,6 +1250,22 @@ async function buildSparsePsdBuffer(opts){
 
   const inserts=ops.filter(o=>['addAdjustmentLayer','addShapeLayer','createLayer','addFillLayer'].includes(o.op)&&Number.isInteger(o.at)).map(o=>o.at).sort((a,b)=>a-b);
   const changes=Object.entries(pixelPaint).filter(([,p])=>p.sparse?.tiles.size).map(([index,p])=>({index:inserts.reduce((n,at)=>n+(at<=+index?1:0),+index),tiles:[...p.sparse.tiles.values()]}));
+
+  const maskChanges=doc.layers.map((l,index)=>{
+    const e=l?.lazyMaskEdits, m=l?.mask;
+    if(!e||!m||!(m.width>0&&m.height>0))return null;
+    const uniform=e.uniform!=null?e.uniform:null, tiles=[];
+    for(const [key,data]of e.tiles){
+      const [x,y]=key.split(':').map(Number);
+      const w=Math.min(256,m.width-x),h=Math.min(256,m.height-y);
+      if(!(w>0&&h>0))continue;
+      let d=data;
+      if(w!==256||h!==256){d=new Uint8Array(w*h);for(let row=0;row<h;row++)d.set(data.subarray(row*256,row*256+w),row*w);}
+      tiles.push({key,x,y,width:w,height:h,data:d});
+    }
+    if(uniform==null&&!tiles.length)return null;
+    return {index:inserts.reduce((n,at)=>n+(at<=index?1:0),index),uniform,tiles};
+  }).filter(Boolean);
   const resolution=docResolution!==docResolutionBase?resolutionInfoBytes(docResolution):null;
   const guideResource=guidesDirty?resourceHandler(1032)?.write({gridHorizontal:guidesGrid.h||0,gridVertical:guidesGrid.v||0,guides:guides.map(g=>({location:Math.round(g.px*32),vertical:!!g.vertical}))}):null;
   const lights=globalLightDirty?[globalLight.angle,globalLight.altitude]:null;
@@ -1243,17 +1278,16 @@ async function buildSparsePsdBuffer(opts){
   if(guideResource)buf=writeImageResource(buf,1032,guideResource);
   if(lights)for(const [id,v]of[[1037,lights[0]],[1049,lights[1]]]){const b=new Uint8Array(4);new DataView(b.buffer).setInt32(0,Math.round(v));buf=writeImageResource(buf,id,b);}
   const {patchPsdSparsePixels}=await import('../../../core/psd-sparse-write.js');
-  const result=await patchPsdSparsePixels(buf,changes,{merged:!opts.fast,metadata});
-  const notes={warp:0,quilted:0,deformed:0,deformNew:0,composite:result.composite,skipped:[],srcNotes:[],tiled:true,sparseTiles:changes.reduce((n,c)=>n+c.tiles.length,0)};
-  return {buf:result.buffer,composite:null,canvas:null,notes,fast:!!opts.fast};
+  const result=await patchPsdSparsePixels(buf,changes,{merged:!opts.fast,metadata,asBlob:!!opts.asBlob,maskChanges});
+  const notes={warp:0,quilted:0,deformed:0,deformNew:0,composite:result.composite,skipped:[],srcNotes:[],tiled:true,
+    sparseTiles:changes.reduce((n,c)=>n+c.tiles.length,0)+maskChanges.reduce((n,c)=>n+c.tiles.length,0)};
+  return {buf:result.blob||result.buffer,composite:null,canvas:null,notes,fast:!!opts.fast};
 }
 
 
 
 async function buildLazyStructuralPsdBuffer(opts, lazyRaster){
-  const [{ writeLazyRasterPsd }, { readLazyImageTile }] = await Promise.all([
-    import('../../../core/psd-lazy-write.js'), import('./21-load-document.js'),
-  ]);
+  const { writeLazyRasterPsd } = await import('../../../core/psd-lazy-write.js');
   const idx = doc.layers.indexOf(lazyRaster), pp = idx >= 0 ? pixelPaint[idx] : null;
   let buf;
   
@@ -1264,31 +1298,34 @@ async function buildLazyStructuralPsdBuffer(opts, lazyRaster){
   } catch {  }
   if (!buf) buf = await writeLazyRasterPsd({ width: docW, height: docH, name: lazyRaster.name || docName || '图层 0',
     readTile: async (x, y) => {
-      const base = await readLazyImageTile(lazyRaster, x, y), edit = pp?.sparse?.tiles?.get(`${x}:${y}`);
-      return edit ? { x, y, width: edit.width, height: edit.height, data: edit.data } : base;
-    }, psb: docW > 30000 || docH > 30000 });
+      const edit = pp?.sparse?.tiles?.get(`${x}:${y}`);
+
+
+
+      const base = await readLazyImageTile(lazyRaster, x, y);
+      return overlaySparseEdit(base, edit);
+    }, psb: docW > 30000 || docH > 30000, abortSignal: opts.abortSignal || null, onProgress: opts.onProgress || null });
   const ops = allLayerOps().filter(o => o.op !== 'sparsePixels').map(o => cloneOpValue(o));
   if (ops.length) buf = applyEdits(buf, ops, { verify: false }).buffer;
   
 
+  opts.onProgress?.(45, 100);
   const sparseOps = [];
   for (const [k, p] of Object.entries(pixelPaint)) {
     const i = +k; if (i === idx || !p?.sparse?.tiles?.size) continue;
-    const tiles = [...p.sparse.tiles.values()];
-    const x0 = Math.min(...tiles.map(t => t.x)), y0 = Math.min(...tiles.map(t => t.y));
-    const x1 = Math.max(...tiles.map(t => t.x + t.width)), y1 = Math.max(...tiles.map(t => t.y + t.height));
-    if (!(x1 > x0 && y1 > y0)) continue;
-    const rgba = new Uint8ClampedArray((x1 - x0) * (y1 - y0) * 4);
-    for (const t of tiles) for (let y = 0; y < t.height; y++)
-      rgba.set(t.data.subarray(y * t.width * 4, (y + 1) * t.width * 4), ((t.y + y - y0) * (x1 - x0) + t.x - x0) * 4);
-    sparseOps.push({ op: 'replaceLayerPixels', index: i, rgba: { data: rgba, width: x1 - x0, height: y1 - y0 },
-      bounds: { top: y0, left: x0, bottom: y1, right: x1 }, opts: { premultiplied: true } });
+    const u = sparseTilesRGBA([...p.sparse.tiles.values()], doc?.layers?.[i]?.name || `图层 ${i}`);
+    if (!u) continue;
+    sparseOps.push({ op: 'replaceLayerPixels', index: i,
+      rgba: { data: u.rgba, width: u.bounds.right - u.bounds.left, height: u.bounds.bottom - u.bounds.top },
+      bounds: u.bounds, opts: { premultiplied: true } });
   }
+  opts.onProgress?.(70, 100);
   if (sparseOps.length) buf = applyEdits(buf, sparseOps, { verify: false }).buffer;
   const attrs = Object.entries(layerEdits).map(([i, e]) => ({ index: +i, ...e }));
   if (attrs.length) buf = writeLayerProperties(buf, attrs);
   for (const [i, name] of Object.entries(layerRenames)) buf = renameLayer(buf, +i, name);
   opts.onSnapshot?.();
+  opts.onProgress?.(100, 100);
   return { buf, canvas: null, composite: null,
     notes: { warp: 0, quilted: 0, deformed: 0, deformNew: 0, composite: false, skipped: [], srcNotes: [], tiled: true,
       structuralTiled: true, sparseTiles: pp?.sparse?.tiles?.size || 0 }, fast: !!opts.fast };
@@ -1313,41 +1350,481 @@ async function materializeSmallSparsePaint(){
   }
 }
 export async function buildPsdBuffer(opts = {}){
-  const lazyRaster = doc?.layers?.find(l => l?.lazyRasterSource);
-  const onlySparsePaint = lazyRaster && doc.layers.length === 1
-    && allLayerOps().every(o => o.op === 'sparsePixels')
-    && !Object.keys(layerEdits).length && !Object.keys(layerRenames).length
-    && !Object.keys(layerTextEdits).length && !Object.keys(textStyleEdits).length
-    && !Object.keys(textDescEdits).length && !layerDeletes.size && !layerReorder
-    && !layerDupes.length && !Object.keys(layerTransforms).some(i => transformChanged(+i));
-  if (lazyRaster && doc.layers.length === 1 && (!hasAnyEdits() || onlySparsePaint)) {
-    const [{ writeLazyRasterPsd }, { readLazyImageTile }] = await Promise.all([import('../../../core/psd-lazy-write.js'), import('./21-load-document.js')]);
-    const idx = doc.layers.indexOf(lazyRaster), pp = idx >= 0 ? pixelPaint[idx] : null;
-    const buf = await writeLazyRasterPsd({ width: docW, height: docH, name: lazyRaster.name || docName || '图层 0', readTile: async (x, y) => {
-      const base = await readLazyImageTile(lazyRaster, x, y), edit = pp?.sparse?.tiles?.get(`${x}:${y}`);
-      return edit ? { x, y, width: edit.width, height: edit.height, data: edit.data } : base;
-    }, psb: docW > 30000 || docH > 30000 });
-    opts.onSnapshot?.(); return { buf, canvas: null, composite: null, notes: { warp: 0, quilted: 0, deformed: 0, deformNew: 0, composite: false, skipped: [], srcNotes: [], tiled: true }, fast: !!opts.fast };
+  const lazyRaster = doc?.layers?.find((l, i) => l?.lazyRasterSource && !layerDeletes.has(i));
+  const lazyIdx = lazyRaster ? doc.layers.indexOf(lazyRaster) : -1;
+
+  const canStreamExtra = l => !!(l && (l.lazyTileStore || l.lazyPixelOps?.length || l.lazyImage || l.lazyRasterFile));
+  const dupSourceIndex = i => {
+    const N = doc.layers.length - layerDupes.length;
+    if (i < N || i >= doc.layers.length) return -1;
+    const d = layerDupes[i - N];
+    return d && Number.isInteger(d.src) ? d.src : -1;
+  };
+  const extraStreamTile = (sourceLayer, i) => {
+    const b = sourceLayer.bounds || {}, left = b.left | 0, top = b.top | 0;
+    const sidx = dupSourceIndex(i);
+    const srcSparse = sourceLayer.dupSparseTiles || (sidx >= 0 ? pixelPaint[sidx]?.sparse?.tiles : null) || null;
+    const own = pixelPaint[i]?.sparse;
+    return async (x, y) => {
+      const lx = x - left, ly = y - top;
+      if (lx < 0 || ly < 0 || lx >= sourceLayer.width || ly >= sourceLayer.height) return null;
+      let t = await readLazyImageTile(sourceLayer, lx, ly);
+      t = overlaySparseEdit(t, srcSparse?.get(`${lx}:${ly}`));
+      t = overlaySparseEdit(t, own?.tiles?.get(`${lx}:${ly}`));
+      return t ? { ...t, x: t.x + left, y: t.y + top } : null;
+    };
+  };
+
+
+  const dupTile = async (src, srcIdx, idx, x, y) => {
+    const t = await readTranslatedTile(src, srcIdx, { ox: 0, oy: 0 }, x, y);
+    const edit = pixelPaint[idx]?.sparse?.tiles?.get(`${x}:${y}`);
+    return edit ? (t ? overlaySparseEdit(t, edit) : edit) : t;
+  };
+
+
+
+  const translationOf = i => {
+    const t = transformChanged(+i), l = doc.layers[i];
+    if (!t || !l || t.quad || t.rot || t.flipX || t.flipY) return null;
+    const sw = l.width, sh = l.height;
+    if (!(sw > 0 && sh > 0) || Math.abs((t.w ?? sw) - sw) > 1e-6 || Math.abs((t.h ?? sh) - sh) > 1e-6) return null;
+    const ox = t.x, oy = t.y;
+    if (!Number.isInteger(ox) || !Number.isInteger(oy)) return null;
+    return { ox, oy };
+  };
+  const affineOf = i => {
+    const t = transformChanged(+i), l = doc.layers[i];
+    if (!t || !l) return null;
+    const sw = l.width, sh = l.height;
+    if (t.quad) return { x: t.x, y: t.y, w: t.w || sw, h: t.h || sh, quad: t.quad,
+      flipX: !!t.flipX, flipY: !!t.flipY, sw, sh };
+    if (!(sw > 0 && sh > 0) || !(t.w > 0) || !(t.h > 0)) return null;
+    const tr = translationOf(i);
+    if (tr) return { ...tr, plain: true };
+    return { x: t.x, y: t.y, w: t.w, h: t.h, rot: t.rot || 0, flipX: !!t.flipX, flipY: !!t.flipY, sw, sh };
+  };
+  const allTransformsStreamable = () => Object.keys(layerTransforms).every(k => {
+    const i = +k, tr = affineOf(i);
+    return layerDeletes.has(i) || !transformChanged(i) || (!!tr && (!tr.quad || tr.quad.length === 4));
+  });
+  const translatedBounds = (l, tr) => {
+    const left = Math.max(0, tr.ox), top = Math.max(0, tr.oy);
+    const right = Math.min(docW, tr.ox + l.width), bottom = Math.min(docH, tr.oy + l.height);
+    return { left, top, right: Math.max(left, right), bottom: Math.max(top, bottom) };
+  };
+  const affineBounds = (l, tr) => {
+    if (tr.plain) return translatedBounds(l, tr);
+    if (tr.quad) {
+      const b = quadBoundingBox(tr.quad, { x: 0, y: 0, width: docW, height: docH });
+      return { left: b.x, top: b.y, right: b.x + b.width, bottom: b.y + b.height };
+    }
+    const rad = tr.rot * Math.PI / 180, c = Math.cos(rad), s = Math.sin(rad);
+    const cx = tr.x + tr.w / 2, cy = tr.y + tr.h / 2;
+    const pt = (u, v) => { const ux = tr.flipX ? -u : u, vy = tr.flipY ? -v : v;
+      return [cx + ux * c - vy * s, cy + ux * s + vy * c]; };
+    const pts = [pt(-tr.w / 2, -tr.h / 2), pt(tr.w / 2, -tr.h / 2), pt(tr.w / 2, tr.h / 2), pt(-tr.w / 2, tr.h / 2)];
+    const left = Math.max(0, Math.floor(Math.min(...pts.map(p => p[0]))));
+    const top = Math.max(0, Math.floor(Math.min(...pts.map(p => p[1]))));
+    const right = Math.min(docW, Math.ceil(Math.max(...pts.map(p => p[0]))));
+    const bottom = Math.min(docH, Math.ceil(Math.max(...pts.map(p => p[1]))));
+    return { left, top, right: Math.max(left, right), bottom: Math.max(top, bottom) };
+  };
+
+
+  const lazyChannelTile = async (layer, x, y, tileSize = 256) => {
+    const w = Math.min(tileSize, layer.width - x), h = Math.min(tileSize, layer.height - y);
+    if (!(w > 0 && h > 0)) return null;
+    const chans = readLazyLayerRectChannels(layer, x, y, w, h);
+    if (!chans) return null;
+    const m = layer.mask || {}, psb = !!(Object.values(layer.lazyChannels)?.[0]?.psb);
+    const work = { width: w, height: h, depth: doc.depth, mode: doc.mode, psb, previewMax: 0,
+      maskInfo: { maskW: m.width || layer.width, maskH: m.height || layer.height, top: m.top || 0, left: m.left || 0,
+        layerTop: layer.bounds.top, layerLeft: layer.bounds.left, defaultColor: m.defaultColor, maskFlags: m.flags || 0 },
+      geo: { bounds: layer.bounds, width: layer.width, height: layer.height, maskDensity: m.density, maskFeather: m.feather },
+      keepPlanes: false };
+    const res = await decodeLayerJob({ ...work, chans: chans.map(c => ({ ...c, bytes: c.view })) });
+    const tile = res?.tile || (res?.rgba ? { x, y, width: w, height: h, data: res.rgba } : null);
+    if (tile) applyLazyMaskToRGBA(layer, tile.data, tile.x, tile.y, tile.width, tile.height);
+    return tile;
+  };
+  const sourceLocalTile = async (layer, i, tx, ty) => {
+    const tw = Math.min(256, layer.width - tx), th = Math.min(256, layer.height - ty);
+    if (!(tw > 0 && th > 0)) return null;
+    let base = null;
+    if (layer.lazyTileStore || layer.lazyPixelOps?.length || layer.lazyImage || layer.lazyRasterFile) {
+      try { base = await readLazyImageTile(layer, tx, ty); } catch { base = null; }
+    } else if (layer.lazyChannels) {
+      try { base = await lazyChannelTile(layer, tx, ty); } catch { base = null; }
+    } else if (layer.rgba && layer.rgba.length >= layer.width * layer.height * 4) {
+      const data = new Uint8ClampedArray(tw * th * 4);
+      for (let y = 0; y < th; y++) data.set(layer.rgba.subarray(((ty + y) * layer.width + tx) * 4, ((ty + y) * layer.width + tx + tw) * 4), y * tw * 4);
+      base = { x: tx, y: ty, width: tw, height: th, data };
+    }
+    const key = `${tx}:${ty}`;
+    base = overlaySparseEdit(base, layer.dupSparseTiles?.get(key));
+    base = overlaySparseEdit(base, pixelPaint[i]?.sparse?.tiles?.get(key));
+    return base;
+  };
+  const readTranslatedTile = async (layer, i, tr, destX, destY) => {
+    const w = Math.min(256, docW - destX), h = Math.min(256, docH - destY);
+    const out = new Uint8ClampedArray(Math.max(0, w) * Math.max(0, h) * 4);
+    if (!(w > 0 && h > 0)) return { x: destX, y: destY, width: Math.max(0, w), height: Math.max(0, h), data: out };
+    const sx0 = destX - tr.ox, sy0 = destY - tr.oy;
+    const ix0 = Math.max(0, sx0), iy0 = Math.max(0, sy0);
+    const ix1 = Math.min(layer.width, sx0 + w), iy1 = Math.min(layer.height, sy0 + h);
+    if (ix1 > ix0 && iy1 > iy0) {
+      for (let ty = Math.floor(iy0 / 256) * 256; ty < iy1; ty += 256)
+        for (let tx = Math.floor(ix0 / 256) * 256; tx < ix1; tx += 256) {
+          const t = await sourceLocalTile(layer, i, tx, ty);
+          if (!t) continue;
+          const ax0 = Math.max(ix0, t.x), ax1 = Math.min(ix1, t.x + t.width);
+          const ay0 = Math.max(iy0, t.y), ay1 = Math.min(iy1, t.y + t.height);
+          if (!(ax1 > ax0 && ay1 > ay0)) continue;
+          for (let y = ay0; y < ay1; y++)
+            out.set(t.data.subarray(((y - t.y) * t.width + ax0 - t.x) * 4, ((y - t.y) * t.width + ax1 - t.x) * 4),
+              ((y - sy0) * w + ax0 - sx0) * 4);
+        }
+    }
+    return { x: destX, y: destY, width: w, height: h, data: out };
+  };
+
+
+
+  const makeAffineReader = (layer, i, tr) => {
+    const cache = new Map();
+    const tileAt = async (tx, ty) => {
+      const key = `${tx}:${ty}`;
+      let t = cache.get(key);
+      if (t) { cache.delete(key); cache.set(key, t); return t; }
+      t = await sourceLocalTile(layer, i, tx, ty);
+      if (t) { cache.set(key, t); if (cache.size > 64) cache.delete(cache.keys().next().value); }
+      return t;
+    };
+    const rad = (tr.rot || 0) * Math.PI / 180, cos = Math.cos(rad), sin = Math.sin(rad);
+    const cx = tr.x + tr.w / 2, cy = tr.y + tr.h / 2;
+    const kx = tr.sw / tr.w, ky = tr.sh / tr.h;
+    const qinv = tr.quad ? invertQuad(quadMatrix(tr.sw, tr.sh, tr.quad)) : null;
+    if (tr.quad && !qinv) throw new Error('透视变换矩阵退化，无法导出');
+    const srcOf = (dx, dy) => {
+      if (qinv) {
+        const w = qinv[6] * dx + qinv[7] * dy + qinv[8];
+        if (Math.abs(w) < 1e-12) return null;
+        let u = (qinv[0] * dx + qinv[1] * dy + qinv[2]) / w, v = (qinv[3] * dx + qinv[4] * dy + qinv[5]) / w;
+        if (tr.flipX) u = tr.sw - u;
+        if (tr.flipY) v = tr.sh - v;
+        return [u, v];
+      }
+      let u = dx * cos + dy * sin, v = -dx * sin + dy * cos;
+      if (tr.flipX) u = -u;
+      if (tr.flipY) v = -v;
+      return [u * kx + tr.sw / 2, v * ky + tr.sh / 2];
+    };
+    const srcBox = (dx, dy, w, h) => {
+      const q = [srcOf(dx - (qinv ? 0 : cx), dy - (qinv ? 0 : cy)), srcOf(dx + w - (qinv ? 0 : cx), dy - (qinv ? 0 : cy)),
+        srcOf(dx + w - (qinv ? 0 : cx), dy + h - (qinv ? 0 : cy)), srcOf(dx - (qinv ? 0 : cx), dy + h - (qinv ? 0 : cy))].filter(Boolean);
+      if (!q.length) return { x0: 0, x1: 0, y0: 0, y1: 0 };
+      const x0 = Math.max(0, Math.floor(Math.min(...q.map(p => p[0]))) - 1), x1 = Math.min(tr.sw, Math.ceil(Math.max(...q.map(p => p[0]))) + 1);
+      const y0 = Math.max(0, Math.floor(Math.min(...q.map(p => p[1]))) - 1), y1 = Math.min(tr.sh, Math.ceil(Math.max(...q.map(p => p[1]))) + 1);
+      return { x0, y0, x1, y1 };
+    };
+    const fillRect = async (out, destX, destY, w, rectX, rectY, rw, rh) => {
+      const b = srcBox(rectX, rectY, rw, rh);
+      if (!(b.x1 > b.x0 && b.y1 > b.y0)) return;
+      const pw = b.x1 - b.x0, ph = b.y1 - b.y0;
+      const patch = new Uint8ClampedArray(pw * ph * 4);
+      for (let ty = Math.floor(b.y0 / 256) * 256; ty < b.y1; ty += 256) {
+        for (let tx = Math.floor(b.x0 / 256) * 256; tx < b.x1; tx += 256) {
+          const t = await tileAt(tx, ty);
+          if (!t) continue;
+          const ax0 = Math.max(b.x0, t.x), ax1 = Math.min(b.x1, t.x + t.width);
+          const ay0 = Math.max(b.y0, t.y), ay1 = Math.min(b.y1, t.y + t.height);
+          for (let y = ay0; y < ay1; y++)
+            patch.set(t.data.subarray(((y - t.y) * t.width + ax0 - t.x) * 4, ((y - t.y) * t.width + ax1 - t.x) * 4),
+              ((y - b.y0) * pw + ax0 - b.x0) * 4);
+        }
+      }
+      for (let yy = 0; yy < rh; yy++) {
+        const gy = rectY + yy;
+        for (let xx = 0; xx < rw; xx++) {
+          const gx = rectX + xx;
+          const p = srcOf(gx + 0.5 - (qinv ? 0 : cx), gy + 0.5 - (qinv ? 0 : cy));
+          if (!p) continue;
+          const [sx, sy] = p;
+          const fx = sx - b.x0 - 0.5, fy = sy - b.y0 - 0.5;
+          if (fx <= -1 || fy <= -1 || fx >= pw || fy >= ph) continue;
+          const ix = Math.max(0, Math.min(pw - 1, Math.floor(fx))), iy = Math.max(0, Math.min(ph - 1, Math.floor(fy)));
+          const ix1 = Math.min(pw - 1, ix + 1), iy1 = Math.min(ph - 1, iy + 1);
+          const ax = fx - Math.floor(fx), ay = fy - Math.floor(fy);
+          const w00 = (1 - ax) * (1 - ay), w10 = ax * (1 - ay), w01 = (1 - ax) * ay, w11 = ax * ay;
+          const p00 = (iy * pw + ix) * 4, p10 = (iy * pw + ix1) * 4, p01 = (iy1 * pw + ix) * 4, p11 = (iy1 * pw + ix1) * 4;
+          const a00 = patch[p00 + 3], a10 = patch[p10 + 3], a01 = patch[p01 + 3], a11 = patch[p11 + 3];
+          const a = a00 * w00 + a10 * w10 + a01 * w01 + a11 * w11;
+          if (a <= 0.5) continue;
+          const o = ((gy - destY) * w + gx - destX) * 4;
+          out[o] = (patch[p00] * a00 * w00 + patch[p10] * a10 * w10 + patch[p01] * a01 * w01 + patch[p11] * a11 * w11) / a;
+          out[o + 1] = (patch[p00 + 1] * a00 * w00 + patch[p10 + 1] * a10 * w10 + patch[p01 + 1] * a01 * w01 + patch[p11 + 1] * a11 * w11) / a;
+          out[o + 2] = (patch[p00 + 2] * a00 * w00 + patch[p10 + 2] * a10 * w10 + patch[p01 + 2] * a01 * w01 + patch[p11 + 2] * a11 * w11) / a;
+          out[o + 3] = a;
+        }
+      }
+    };
+    return async (destX, destY) => {
+      if (opts.abortSignal?.aborted) throw opts.abortSignal.reason;
+      const w = Math.min(256, docW - destX), h = Math.min(256, docH - destY);
+      if (!(w > 0 && h > 0)) return { x: destX, y: destY, width: Math.max(0, w), height: Math.max(0, h), data: new Uint8ClampedArray(0) };
+      const out = new Uint8ClampedArray(w * h * 4);
+      let step = 256;
+      for (;;) {
+        const b = srcBox(destX, destY, Math.min(step, w), Math.min(step, h));
+        if ((b.x1 - b.x0) * (b.y1 - b.y0) <= 4e6 || step <= 1) break;
+        step = step >> 1;
+      }
+      for (let sy = 0; sy < h; sy += step) {
+        for (let sx = 0; sx < w; sx += step) {
+          await fillRect(out, destX, destY, w, destX + sx, destY + sy, Math.min(step, w - sx), Math.min(step, h - sy));
+        }
+        if (opts.abortSignal?.aborted) throw opts.abortSignal.reason;
+      }
+      return { x: destX, y: destY, width: w, height: h, data: out };
+    };
+  };
+  const exportOrder = (layerReorder ? layerReorder.slice() : doc.layers.map((_, i) => i))
+    .filter(i => i >= 0 && i < doc.layers.length && doc.layers[i] && !layerDeletes.has(i));
+  const simpleExtras = lazyRaster && exportOrder.every(i => {
+    const l = doc.layers[i];
+    return l === lazyRaster || (!l.group && l.groupType == null && !l.mask && !l.vectorMask && !l.adjustment && !l.fill &&
+      !l.isSmartObject && !l.isText && !l.text && !textRenders[i] &&
+      (canStreamExtra(l) || (!l.lazyChannels && !l.lazyCompressedChannels)));
+  });
+  const simpleDirect = !!simpleExtras && exportOrder[0] === lazyIdx && !layerDeletes.has(lazyIdx)
+    && allTransformsStreamable()
+
+
+    && !allLayerOps().some(o => o.op !== 'sparsePixels')
+    && layerDupes.every((_, k) => {
+      const i = doc.layers.length - layerDupes.length + k, l = doc.layers[i];
+      return l && (l.bounds?.left | 0) === 0 && (l.bounds?.top | 0) === 0 && !transformChanged(i) && dupSourceIndex(i) >= 0;
+    })
+    && !Object.keys(layerTextEdits).length && !Object.keys(textStyleEdits).length && !Object.keys(textDescEdits).length;
+  if (simpleDirect) {
+    const { writeLazyRasterPsd } = await import('../../../core/psd-lazy-write.js');
+    const pp = lazyIdx >= 0 ? pixelPaint[lazyIdx] : null;
+    const baseTf = affineOf(lazyIdx);
+    const previewLayers = previewCompositeDoc(doc).layers;
+    const basePreview = previewLayers[lazyIdx] || lazyRaster;
+    const extraLayers = [];
+    for (const i of exportOrder) {
+      const sourceLayer = doc.layers[i], previewLayer = previewLayers[i] || sourceLayer;
+      if (!sourceLayer || sourceLayer === lazyRaster) continue;
+      const name = layerRenames[i] || layerTree?.flat?.[i]?.name || sourceLayer.name || `图层 ${i}`;
+      const props = { name, blendMode: previewLayer.blendMode,
+        opacity: previewLayer.opacity, fillOpacity: previewLayer.fillOpacity, clipping: previewLayer.clipping,
+        hidden: previewLayer.hidden, effects: previewLayer.effects }, sparse = pixelPaint[i]?.sparse;
+      const tr = affineOf(i);
+      if (tr) {
+        const bounds = affineBounds(sourceLayer, tr);
+        extraLayers.push({ ...props, bounds,
+          readTile: tr.plain ? (x, y) => readTranslatedTile(sourceLayer, i, tr, x, y) : makeAffineReader(sourceLayer, i, tr) });
+        continue;
+      }
+      const dupIdx = dupSourceIndex(i);
+      if (dupIdx >= 0 && doc.layers[dupIdx]) {
+        extraLayers.push({ ...props, bounds: { ...sourceLayer.bounds },
+          readTile: (x, y) => dupTile(doc.layers[dupIdx], dupIdx, i, x, y) });
+        continue;
+      }
+      const streamTile = canStreamExtra(sourceLayer) ? extraStreamTile(sourceLayer, i) : null;
+      if (streamTile) {
+        extraLayers.push({ ...props, bounds: { ...sourceLayer.bounds }, readTile: streamTile });
+      } else if (sparse?.tiles?.size) {
+        const u = sparseTilesRGBA([...sparse.tiles.values()], name);
+        if (u) extraLayers.push({ ...props, rgba: u.rgba, bounds: u.bounds });
+        else extraLayers.push(props);
+      } else if (sourceLayer.rgba && sourceLayer.width > 0 && sourceLayer.height > 0) {
+        extraLayers.push({ ...props, rgba: sourceLayer.rgba, bounds: { ...sourceLayer.bounds } });
+      } else extraLayers.push(props);
+    }
+    const psb = docW > 30000 || docH > 30000;
+
+
+    let band = null, bandY = -1;
+    const sourceBand = async y => {
+      const sy = Math.floor(y / 1024) * 1024;
+      if (band && bandY === sy) return band;
+      bandY = sy;
+      const bh = Math.min(1024, docH - sy);
+      band = await readLazyImageBand(lazyRaster, sy, bh);
+      return band;
+    };
+    const baseReader = baseTf && !baseTf.plain ? makeAffineReader(lazyRaster, lazyIdx, baseTf) : null;
+    const readTile = async (x, y) => {
+      if (opts.abortSignal?.aborted) throw opts.abortSignal.reason;
+      if (baseReader) return baseReader(x, y);
+      if (baseTf) return readTranslatedTile(lazyRaster, lazyIdx, baseTf, x, y);
+      const edit = pp?.sparse?.tiles?.get(`${x}:${y}`);
+      const rb = await sourceBand(y);
+      let base;
+      if (!rb) base = await readLazyImageTile(lazyRaster, x, y);
+      else {
+      const w = Math.min(256, docW - x), h = Math.min(256, docH - y), data = new Uint8ClampedArray(w * h * 4);
+      for (let yy = 0; yy < h; yy++) {
+        const srcY = y + yy - rb.y;
+        data.set(rb.data.subarray((srcY * docW + x) * 4, (srcY * docW + x + w) * 4), yy * w * 4);
+      }
+        base = { x, y, width: w, height: h, data };
+      }
+
+
+      return overlaySparseEdit(base, edit);
+    };
+    const buf = await writeLazyRasterPsd({ width: docW, height: docH, name: layerRenames[lazyIdx] || lazyRaster.name || docName || '图层 0', readTile,
+      psb, extraLayers, abortSignal: opts.abortSignal || null, onProgress: opts.onProgress || null, asBlob: !!opts.asBlob,
+      blend: basePreview.blendMode, opacity: basePreview.opacity ?? 255, clipping: basePreview.clipping,
+      hidden: basePreview.hidden, fillOpacity: basePreview.fillOpacity ?? 255, effects: basePreview.effects });
+    opts.onSnapshot?.();
+    return { buf, canvas: null, composite: null, notes: { warp: 0, quilted: 0, deformed: 0, deformNew: 0, composite: false, skipped: [], srcNotes: [], tiled: true }, fast: !!opts.fast };
   }
+
+
+
+
+  const buildLazyPixelDocPsd = async (opts) => {
+    if (!(docW * docH > 64e6) || doc.depth !== 8 || doc.mode !== 3) return null;
+    if (layerDeletes.size || layerDupes.length || layerReorder) return null;
+    if (Object.keys(layerTextEdits).length || Object.keys(textStyleEdits).length || Object.keys(textDescEdits).length
+      || Object.keys(soEdits).length || Object.keys(soRepl).length || Object.keys(soBaked).length
+      || Object.keys(soFilterEdits).length || allLayerOps().some(o => o.op !== 'sparsePixels') || layerDupes.length || layerReorder
+      || workPathDirty || savedPathsDirty || slicesDirty
+      || guidesDirty || globalLightDirty || vpDirty || (toolData && Object.values(toolData.dirty).some(Boolean))
+      || Math.abs(docResolution - docResolutionBase) > 1e-6
+      || (docSizeBase && (docW !== docSizeBase.w || docH !== docSizeBase.h))) return null;
+    const keys = Object.keys(layerTransforms).filter(k => transformChanged(+k));
+    if (!keys.length) return null;
+    if (!keys.every(k => { const tr = affineOf(+k); return (tr && (!tr.quad || tr.quad.length === 4)) || layerDeletes.has(+k); })) return null;
+    const simple = i => {
+      const l = doc.layers[i];
+      if (!l || l.group || l.groupType != null || l.mask || l.vectorMask || l.adjustment || l.fill
+        || l.isSmartObject || l.isText || l.text || textRenders[i] || l.effects || l.lazyPixelOps?.length) return false;
+      const bx = l.bounds || {};
+      if ((bx.left | 0) < 0 || (bx.top | 0) < 0) return false;
+      return !!(l.lazyChannels || l.lazyTileStore || l.lazyImage || l.lazyRasterFile);
+    };
+    if (!doc.layers.every((_, i) => simple(i))) return null;
+    const { writeLazyRasterPsd } = await import('../../../core/psd-lazy-write.js');
+    const previewLayers = previewCompositeDoc(doc).layers;
+    const order = doc.layers.map((_, i) => i);
+    const baseIdx = order[0], baseL = doc.layers[baseIdx], basePreview = previewLayers[baseIdx] || baseL;
+    const baseTf = affineOf(baseIdx);
+    const baseRead = baseTf
+      ? (baseTf.plain ? (x, y) => readTranslatedTile(baseL, baseIdx, baseTf, x, y) : makeAffineReader(baseL, baseIdx, baseTf))
+      : ((baseL.bounds.left | 0) === 0 && (baseL.bounds.top | 0) === 0
+        ? (x, y) => sourceLocalTile(baseL, baseIdx, x, y)
+        : (x, y) => readTranslatedTile(baseL, baseIdx, { ox: baseL.bounds.left | 0, oy: baseL.bounds.top | 0 }, x, y));
+    const extraLayers = [];
+    for (const i of order.slice(1)) {
+      const l = doc.layers[i], pv = previewLayers[i] || l;
+      const props = { name: layerRenames[i] || layerTree?.flat?.[i]?.name || l.name || `图层 ${i}`, blendMode: pv.blendMode,
+        opacity: pv.opacity, fillOpacity: pv.fillOpacity, clipping: pv.clipping, hidden: pv.hidden, effects: pv.effects };
+      const tr = affineOf(i);
+      if (tr) {
+        extraLayers.push({ ...props, bounds: affineBounds(l, tr),
+          readTile: tr.plain ? (x, y) => readTranslatedTile(l, i, tr, x, y) : makeAffineReader(l, i, tr) });
+      } else {
+        extraLayers.push({ ...props, bounds: { ...l.bounds },
+          readTile: (x, y) => readTranslatedTile(l, i, { ox: l.bounds.left | 0, oy: l.bounds.top | 0 }, x, y) });
+      }
+    }
+    const buf = await writeLazyRasterPsd({ width: docW, height: docH,
+      name: layerRenames[baseIdx] || baseL.name || docName || '图层 0', readTile: baseRead, psb: docW > 30000 || docH > 30000,
+      extraLayers, blend: basePreview.blendMode, opacity: basePreview.opacity ?? 255, clipping: basePreview.clipping,
+      hidden: basePreview.hidden, fillOpacity: basePreview.fillOpacity ?? 255, effects: basePreview.effects,
+      abortSignal: opts.abortSignal || null, onProgress: opts.onProgress || null, asBlob: !!opts.asBlob });
+    opts.onSnapshot?.();
+    return { buf, canvas: null, composite: null,
+      notes: { warp: 0, quilted: 0, deformed: 0, deformNew: 0, composite: false, skipped: [], srcNotes: [],
+        tiled: true, sparseTiles: 0, affineLayers: keys.length }, fast: !!opts.fast };
+  };
   if (!origBuffer) throw new Error('先打开一个 PSD');
-  if (lazyRaster && doc.layers.length === 1 && hasAnyEdits()) {
+  const lazyPixelDoc = await buildLazyPixelDocPsd(opts);
+  if (lazyPixelDoc) return lazyPixelDoc;
+  if (lazyRaster && hasAnyEdits()) {
     const unsupported = Object.keys(layerTextEdits).length || Object.keys(textStyleEdits).length || Object.keys(textDescEdits).length
       || Object.keys(soEdits).length || Object.keys(soRepl).length || Object.keys(soBaked).length
       || layerDeletes.size || layerDupes.length || layerReorder || Object.keys(layerTransforms).some(i => transformChanged(+i))
       || workPathDirty || savedPathsDirty || slicesDirty
       || (docSizeBase && (docW !== docSizeBase.w || docH !== docSizeBase.h));
-    if (unsupported) throw new Error('此超大文档的结构、文字或变换修改尚未接入分块写回，请保留当前编辑状态');
-    return buildLazyStructuralPsdBuffer(opts, lazyRaster);
+    if (unsupported) throw new Error(structuralWriteRefusal());
+    return buildLazyStructuralPsdBuffer({ ...opts, abortSignal: opts.abortSignal || null }, lazyRaster);
+  }
+
+
+
+  const bakedLayer = !lazyRaster && exportOrder.length ? doc.layers[exportOrder[0]] : null;
+  const bakedFull = bakedLayer && (bakedLayer.bounds?.left | 0) === 0 && (bakedLayer.bounds?.top | 0) === 0
+    && (bakedLayer.bounds?.right | 0) === docW && (bakedLayer.bounds?.bottom | 0) === docH;
+  if (bakedLayer && bakedFull && (bakedLayer.lazyTileStore || bakedLayer.lazyPixelOps?.length)) {
+    const bakedIdx = exportOrder[0];
+    const blockedExtra = l => !!(l && (l.group || l.groupType != null || l.mask || l.vectorMask || l.adjustment ||
+      l.fill || l.isSmartObject || l.isText || l.text ||
+      ((l.lazyChannels || l.lazyCompressedChannels) && !canStreamExtra(l))));
+    if (blockedExtra(bakedLayer) || exportOrder.slice(1).some(i => blockedExtra(doc.layers[i]))
+        || Object.keys(layerTransforms).some(i => { const tr = affineOf(+i); return transformChanged(+i) && (!tr || (tr.quad && tr.quad.length !== 4)) && !layerDeletes.has(+i); })
+        || workPathDirty || savedPathsDirty || slicesDirty)
+      throw new Error('超大文档的已烘焙图层暂只支持「底层 + 可流式读取的像素图层」的 PSD 导出；请先拼合其它图层。');
+    const { writeLazyRasterPsd } = await import('../../../core/psd-lazy-write.js');
+    const psb = docW > 30000 || docH > 30000;
+    const previewLayers = previewCompositeDoc(doc).layers;
+    const basePreview = previewLayers[bakedIdx] || bakedLayer;
+    const baseSparse = pixelPaint[bakedIdx]?.sparse;
+    const baseTf = affineOf(bakedIdx);
+    const extraLayers = [];
+    for (const i of exportOrder.slice(1)) {
+      const sourceLayer = doc.layers[i], previewLayer = previewLayers[i] || sourceLayer;
+      if (!sourceLayer || sourceLayer === bakedLayer) continue;
+      const name = layerRenames[i] || layerTree?.flat?.[i]?.name || sourceLayer.name || `图层 ${i}`;
+      const props = { name, blendMode: previewLayer.blendMode, opacity: previewLayer.opacity,
+        fillOpacity: previewLayer.fillOpacity, clipping: previewLayer.clipping, hidden: previewLayer.hidden,
+        effects: previewLayer.effects }, sparse = pixelPaint[i]?.sparse;
+      const tr = affineOf(i);
+      if (tr) {
+        extraLayers.push({ ...props, bounds: affineBounds(sourceLayer, tr),
+          readTile: tr.plain ? (x, y) => readTranslatedTile(sourceLayer, i, tr, x, y) : makeAffineReader(sourceLayer, i, tr) });
+        continue;
+      }
+      const streamTile = canStreamExtra(sourceLayer) ? extraStreamTile(sourceLayer, i) : null;
+      if (streamTile) {
+        extraLayers.push({ ...props, bounds: { ...sourceLayer.bounds }, readTile: streamTile });
+      } else if (sparse?.tiles?.size) {
+        const u = sparseTilesRGBA([...sparse.tiles.values()], name);
+        if (u) extraLayers.push({ ...props, rgba: u.rgba, bounds: u.bounds });
+        else extraLayers.push(props);
+      } else if (sourceLayer.rgba && sourceLayer.width > 0 && sourceLayer.height > 0)
+        extraLayers.push({ ...props, rgba: sourceLayer.rgba, bounds: { ...sourceLayer.bounds } });
+      else extraLayers.push(props);
+    }
+    const buf = await writeLazyRasterPsd({ width: docW, height: docH, name: layerRenames[bakedIdx] || bakedLayer.name || docName || '图层 0',
+      readTile: baseTf
+        ? (baseTf.plain ? (x, y) => readTranslatedTile(bakedLayer, bakedIdx, baseTf, x, y) : makeAffineReader(bakedLayer, bakedIdx, baseTf))
+        : async (x, y) => overlaySparseEdit(await readLazyImageTile(bakedLayer, x, y), baseSparse?.tiles?.get(`${x}:${y}`)),
+      psb, extraLayers,
+      blend: basePreview.blendMode, opacity: basePreview.opacity ?? 255, clipping: basePreview.clipping,
+      hidden: basePreview.hidden, fillOpacity: basePreview.fillOpacity ?? 255, effects: basePreview.effects,
+      abortSignal: opts.abortSignal || null, onProgress: opts.onProgress || null, asBlob: !!opts.asBlob });
+    opts.onSnapshot?.();
+    return { buf, canvas: null, composite: null, notes: { warp: 0, quilted: 0, deformed: 0, deformNew: 0, composite: false, skipped: [], srcNotes: [], tiled: true, sparseTiles: 0 }, fast: !!opts.fast };
   }
   while(sparsePaintBusy())await flushSparsePaint();
   if(docW*docH>64e6&&!hasAnyEdits()&&!guidesDirty&&!slicesDirty){opts.onSnapshot?.();return {buf:origBuffer,canvas:null,composite:null,notes:{warp:0,quilted:0,deformed:0,deformNew:0,composite:false,skipped:[],srcNotes:[],tiled:true},fast:!!opts.fast};}
-  if(docW*docH>64e6&&Object.values(pixelPaint).some(p=>p.sparse)){
+  if(docW*docH>64e6&&(Object.values(pixelPaint).some(p=>p.sparse)
+    ||doc.layers.some(l=>l?.lazyMaskEdits?.tiles?.size||l?.lazyMaskEdits?.uniform!=null)
+    ||doc.layers.some(l=>l?.mask&&l.mask.lazyChannel==null&&l.mask.gray&&(l.lazyChannels||l.lazyImage||l.lazyRasterFile||l.lazyTileStore)))){
     try { return await buildSparsePsdBuffer(opts); }
     catch (e) {
       
 
       if (lazyRaster && /稀疏写回瓦片越界|稀疏图层不存在/.test(String(e && e.message || e)))
-        return buildLazyStructuralPsdBuffer(opts, lazyRaster);
+        return buildLazyStructuralPsdBuffer({ ...opts, abortSignal: opts.abortSignal || null }, lazyRaster);
       throw e;
     }
   }
@@ -1521,9 +1998,13 @@ export async function buildPsdBuffer(opts = {}){
   
   let mc = null, merged = null;
   if (!fast) {
+
+
+
+    const surf = compositeAll(composeDocForOrder(previewCompositeDoc(doc), displayOrder()), docW, docH, new Map());
+    merged = surf.data;
     mc = document.createElement('canvas'); mc.width = docW; mc.height = docH;
-    paintLayersExport(mc.getContext('2d'), displayOrder());   
-    merged = mc.getContext('2d').getImageData(0, 0, docW, docH).data;
+    try { mc.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(surf.data), docW, docH), 0, 0); } catch {}
   }
 
   
@@ -1560,16 +2041,10 @@ export async function buildPsdBuffer(opts = {}){
       }
       
       
-      
-      
       const fileRgba = b.raw || b.rgba;
       const rgba = fileRgba.length ? fileRgba : new Uint8ClampedArray(4);
       const bounds = fileRgba.length ? b.bounds : { top: 0, left: 0, bottom: 1, right: 1 };
-      const origB = soOrigRaster[b.layerIdx] && soOrigRaster[b.layerIdx].bounds;
-      const mE = doc.layers[b.layerIdx] && doc.layers[b.layerIdx].mask;
-      const maskOriginDelta = mE && mE.relative && origB && (origB.top !== b.bounds.top || origB.left !== b.bounds.left)
-        ? { top: origB.top - b.bounds.top, left: origB.left - b.bounds.left } : undefined;
-      buf = rebuildPsdReplacingLayerPixels(buf, b.layerIdx, rgba, bounds, null , { sourcePatch, filterEffectsPatch: fePatch, maskOriginDelta }).buffer;
+      buf = rebuildPsdReplacingLayerPixels(buf, b.layerIdx, rgba, bounds, null , { sourcePatch, filterEffectsPatch: fePatch }).buffer;
       soDone.add(b.layerIdx);
     } catch (e) { notes.skipped.push((so.layerName || ('SO' + k)) + ' 栅格/源图：' + e.message); }
   }
@@ -1597,19 +2072,24 @@ export async function buildPsdBuffer(opts = {}){
   const cloneTransforms = [];
   for (const k of Object.keys(layerTransforms)) {
     const i = +k;
-    if (layerDeletes.has(i)) continue;
+    if (layerDeletes.has(i) || !transformChanged(i)) continue;
     if (i >= N0) { cloneTransforms.push(i); continue; }
     const l = doc.layers[i];
     if (!l || l.hidden) continue;
     const c = rasterizeTransformed(i, { clip: cropClip });
-    if (!c) continue;
+    if (!c) {
+
+
+      if (!l.rgba && (l.lazyChannels || l.lazyCompressedChannels || l.lazyImage || l.lazyRasterFile || l.lazyTileStore))
+        throw new Error(`「${layerNameOf(i)}」的变换需要重采样整层像素；这一层是超大图层，且文档含组 / 蒙版 / 效果 / 文字等结构，暂不能流式烘焙变换。请先拼合其它图层，或取消这次变换。`);
+      continue;
+    }
     
     const mk = transformedMaskFor(i, cropClip);
     if (mk) {
       try {
         await EDIT.load();
-        const b = mk.relative ? { top: mk.bounds.top - c.bounds.top, left: mk.bounds.left - c.bounds.left,
-                                  bottom: mk.bounds.bottom - c.bounds.top, right: mk.bounds.right - c.bounds.left } : mk.bounds;
+        const b = mk.bounds;
         if (mk.isNew) {
           
           const k = maskOps.findIndex(o => o.op === 'addLayerMask' && o.index === i);
@@ -1890,6 +2370,38 @@ export async function buildPsdBuffer(opts = {}){
 
 
 let waitCursorDepth = 0, waitCursorTimer = 0, waitCursorFrame = 0, waitCursorLabel = '正在打开文档…';
+let exportAbort = null, exportEsc = null;
+const isAbort = e => e?.name === 'AbortError';
+export function setExportProgress(value, label){
+  const pct = Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
+  const pEl = document.getElementById('docLoadingPercent');
+  const text = document.getElementById('docLoadingText');
+  const bar = document.getElementById('docLoadingBar');
+  const fill = document.getElementById('docLoadingBarFill');
+  if (pEl) { pEl.hidden = false; pEl.textContent = pct + '%'; }
+  if (text && label) text.textContent = label;
+  if (bar) bar.hidden = false;
+  if (fill) fill.style.width = pct + '%';
+}
+function beginExportTask(label = '正在导出当前文档…'){
+  exportAbort?.abort();
+  const controller = new AbortController();
+  exportAbort = controller;
+  setWaitCursor(true, label);
+  setExportProgress(0, label);
+  const btn = document.getElementById('docLoadingCancel');
+  if (btn) { btn.hidden = false; btn.onclick = () => cancelExportTask(); }
+  exportEsc = e => { if (e.key === 'Escape' && exportAbort) { e.preventDefault(); e.stopImmediatePropagation(); cancelExportTask(); } };
+  addEventListener('keydown', exportEsc, true);
+  return controller.signal;
+}
+function cancelExportTask(){ exportAbort?.abort(new DOMException('导出已取消', 'AbortError')); }
+function endExportTask(){
+  const btn = document.getElementById('docLoadingCancel'); if (btn) { btn.hidden = true; btn.onclick = null; }
+  if (exportEsc) removeEventListener('keydown', exportEsc, true);
+  exportEsc = null; exportAbort = null;
+  setWaitCursor(false);
+}
 export function setWaitCursor(on, label){
   if (!document.body) return;
   if (on && label) waitCursorLabel = label;
@@ -1898,7 +2410,7 @@ export function setWaitCursor(on, label){
   document.body.classList.toggle('doc-loading', busy);
   if (busy && !waitCursorTimer) {
     const tick = () => {
-      const name = `typekitSpinner${(waitCursorFrame++ % 6) + 1}`;
+      const name = 'typekitSpinner' + ((waitCursorFrame++ % 6) + 1);
       const cur = toolCursor(name) || toolCursor('wait') || 'wait';
       document.body.style.setProperty('--ps-loading-cursor', cur);
       document.body.style.cursor = cur;
@@ -1914,10 +2426,14 @@ export function setWaitCursor(on, label){
     overlay.hidden = !busy;
     const text = document.getElementById('docLoadingText');
     if (text && busy) text.textContent = waitCursorLabel;
+    if (!busy) {
+      const pct = document.getElementById('docLoadingPercent'); if (pct) pct.hidden = true;
+      const bar = document.getElementById('docLoadingBar'); if (bar) bar.hidden = true;
+      const btn = document.getElementById('docLoadingCancel'); if (btn) btn.hidden = true;
+    }
   }
   if (!busy) waitCursorLabel = '正在打开文档…';
 }
-
 
 
 
@@ -1960,133 +2476,1307 @@ function pngChunk(type,data){
   const t=new TextEncoder().encode(type), body=new Uint8Array(t.length+data.length);body.set(t);body.set(data,t.length);
   const out=new Uint8Array(12+data.length),dv=new DataView(out.buffer);dv.setUint32(0,data.length);out.set(t,4);out.set(data,8);dv.setUint32(8+data.length,pngCrc(body));return out;
 }
-async function writeLazyPng(layer, index){
-  const [{ decodeLazyTile, readLazyImageTile }]=await Promise.all([import('./21-load-document.js')]);
+
+
+function makeLazyAffineTileReader(layer, index, tr, check = null){
+  const cache = new Map(), sw = layer.width || docW, sh = layer.height || docH;
+  const tileAt = async (tx, ty) => {
+    if (check) check();
+    const key = `${tx}:${ty}`;
+    let t = cache.get(key);
+    if (t) { cache.delete(key); cache.set(key, t); return t; }
+    let base = null;
+    try {
+      if (layer.lazyTileStore || layer.lazyImage || layer.lazyRasterFile) base = await readLazyImageTile(layer, tx, ty);
+      else if (layer.lazyChannels) { await decodeLazyTile(index, tx, ty, 256); base = layer.lazyHighTiles?.get(key) || null; }
+    } catch { base = null; }
+    const edit = pixelPaint[index]?.sparse?.tiles?.get(key);
+    if (edit) base = base ? overlaySparseEdit(base, edit) : edit;
+    if (base) { cache.set(key, base); if (cache.size > 64) cache.delete(cache.keys().next().value); }
+    return base;
+  };
+  const rad = (tr.rot || 0) * Math.PI / 180, cos = Math.cos(rad), sin = Math.sin(rad);
+  const cx = tr.x + tr.w / 2, cy = tr.y + tr.h / 2, kx = sw / tr.w, ky = sh / tr.h;
+  const qinv = tr.quad ? invertQuad(quadMatrix(sw, sh, tr.quad)) : null;
+  if (tr.quad && !qinv) throw new Error('透视变换矩阵退化，无法导出');
+  const srcOf = (dx, dy) => {
+    if (qinv) {
+      const w = qinv[6] * dx + qinv[7] * dy + qinv[8];
+      if (Math.abs(w) < 1e-12) return null;
+      let u = (qinv[0] * dx + qinv[1] * dy + qinv[2]) / w, v = (qinv[3] * dx + qinv[4] * dy + qinv[5]) / w;
+      if (tr.flipX) u = sw - u;
+      if (tr.flipY) v = sh - v;
+      return [u, v];
+    }
+    let u = dx * cos + dy * sin, v = -dx * sin + dy * cos;
+    if (tr.flipX) u = -u;
+    if (tr.flipY) v = -v;
+    return [u * kx + sw / 2, v * ky + sh / 2];
+  };
+  const srcBox = (dx, dy, w, h) => {
+    const q = [srcOf(dx - (qinv ? 0 : cx), dy - (qinv ? 0 : cy)), srcOf(dx + w - (qinv ? 0 : cx), dy - (qinv ? 0 : cy)),
+      srcOf(dx + w - (qinv ? 0 : cx), dy + h - (qinv ? 0 : cy)), srcOf(dx - (qinv ? 0 : cx), dy + h - (qinv ? 0 : cy))].filter(Boolean);
+    if (!q.length) return { x0: 0, x1: 0, y0: 0, y1: 0 };
+    return { x0: Math.max(0, Math.floor(Math.min(...q.map(p => p[0]))) - 1), x1: Math.min(sw, Math.ceil(Math.max(...q.map(p => p[0]))) + 1),
+      y0: Math.max(0, Math.floor(Math.min(...q.map(p => p[1]))) - 1), y1: Math.min(sh, Math.ceil(Math.max(...q.map(p => p[1]))) + 1) };
+  };
+  const fillRect = async (out, destX, destY, w, rectX, rectY, rw, rh) => {
+    const b = srcBox(rectX, rectY, rw, rh);
+    if (!(b.x1 > b.x0 && b.y1 > b.y0)) return;
+    const pw = b.x1 - b.x0, ph = b.y1 - b.y0, patch = new Uint8ClampedArray(pw * ph * 4);
+    for (let ty = Math.floor(b.y0 / 256) * 256; ty < b.y1; ty += 256) for (let tx = Math.floor(b.x0 / 256) * 256; tx < b.x1; tx += 256) {
+      const t = await tileAt(tx, ty); if (!t) continue;
+      const ax0 = Math.max(b.x0, t.x), ax1 = Math.min(b.x1, t.x + t.width), ay0 = Math.max(b.y0, t.y), ay1 = Math.min(b.y1, t.y + t.height);
+      for (let y = ay0; y < ay1; y++)
+        patch.set(t.data.subarray(((y - t.y) * t.width + ax0 - t.x) * 4, ((y - t.y) * t.width + ax1 - t.x) * 4), ((y - b.y0) * pw + ax0 - b.x0) * 4);
+    }
+    for (let yy = 0; yy < rh; yy++) {
+      const gy = rectY + yy;
+      for (let xx = 0; xx < rw; xx++) {
+        const gx = rectX + xx, p = srcOf(gx + 0.5 - (qinv ? 0 : cx), gy + 0.5 - (qinv ? 0 : cy));
+        if (!p) continue;
+        const [sx, sy] = p;
+        const fx = sx - b.x0 - 0.5, fy = sy - b.y0 - 0.5;
+        if (fx <= -1 || fy <= -1 || fx >= pw || fy >= ph) continue;
+        const ix = Math.max(0, Math.min(pw - 1, Math.floor(fx))), iy = Math.max(0, Math.min(ph - 1, Math.floor(fy)));
+        const ix1 = Math.min(pw - 1, ix + 1), iy1 = Math.min(ph - 1, iy + 1);
+        const ax = fx - Math.floor(fx), ay = fy - Math.floor(fy);
+        const w00 = (1 - ax) * (1 - ay), w10 = ax * (1 - ay), w01 = (1 - ax) * ay, w11 = ax * ay;
+        const p00 = (iy * pw + ix) * 4, p10 = (iy * pw + ix1) * 4, p01 = (iy1 * pw + ix) * 4, p11 = (iy1 * pw + ix1) * 4;
+        const a00 = patch[p00 + 3], a10 = patch[p10 + 3], a01 = patch[p01 + 3], a11 = patch[p11 + 3];
+        const a = a00 * w00 + a10 * w10 + a01 * w01 + a11 * w11;
+        if (a <= 0.5) continue;
+        const o = ((gy - destY) * w + gx - destX) * 4;
+        out[o] = (patch[p00] * a00 * w00 + patch[p10] * a10 * w10 + patch[p01] * a01 * w01 + patch[p11] * a11 * w11) / a;
+        out[o + 1] = (patch[p00 + 1] * a00 * w00 + patch[p10 + 1] * a10 * w10 + patch[p01 + 1] * a01 * w01 + patch[p11 + 1] * a11 * w11) / a;
+        out[o + 2] = (patch[p00 + 2] * a00 * w00 + patch[p10 + 2] * a10 * w10 + patch[p01 + 2] * a01 * w01 + patch[p11 + 2] * a11 * w11) / a;
+        out[o + 3] = a;
+      }
+    }
+  };
+  return async (destX, destY) => {
+    if (check) check();
+    const w = Math.min(256, docW - destX), h = Math.min(256, docH - destY);
+    if (!(w > 0 && h > 0)) return { x: destX, y: destY, width: Math.max(0, w), height: Math.max(0, h), data: new Uint8ClampedArray(0) };
+    const out = new Uint8ClampedArray(w * h * 4);
+    let step = 256;
+    for (;;) {
+      const b = srcBox(destX, destY, Math.min(step, w), Math.min(step, h));
+      if ((b.x1 - b.x0) * (b.y1 - b.y0) <= 4e6 || step <= 1) break;
+      step = step >> 1;
+    }
+    for (let sy = 0; sy < h; sy += step) {
+      for (let sx = 0; sx < w; sx += step)
+        await fillRect(out, destX, destY, w, destX + sx, destY + sy, Math.min(step, w - sx), Math.min(step, h - sy));
+      if (check) check();
+    }
+    return { x: destX, y: destY, width: w, height: h, data: out };
+  };
+}
+
+
+
+
+export async function writeLazyPng8(layer, index, overlay = null, onProgress = null, signal = null, tf = null, hiddenBase = false){
+  const { quantizeRGBA } = await import('../../../core/web-formats.js');
+  const W = docW, H = docH, tiles = new Map(), tileSize = 256;
+  const check = () => { if (signal?.aborted) throw signal.reason || new DOMException('导出已取消', 'AbortError'); };
+  const tfTile = tf ? makeLazyAffineTileReader(layer, index, tf, check) : null;
+  let bandY = -1, bandSrc = null;
+  const tileAt = async (x, y) => {
+    check();
+    const key = `${x}:${y}`, hit = tiles.get(key); if (hit) return hit;
+    if (hiddenBase) { const w = Math.min(tileSize, W - x), h = Math.min(tileSize, H - y), tile = { x, y, width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }; tiles.set(key, tile); return tile; }
+    if (tfTile) { const tile = await tfTile(x, y); if (!tile) throw new Error('大图瓦片读取失败'); tiles.set(key, applyOverlays(tile, overlay)); return tiles.get(key); }
+    const edit = pixelPaint[index]?.sparse?.tiles?.get(key);
+    let tile = null;
+    if (layer.lazyTileStore || layer.lazyImage || layer.lazyRasterFile) {
+      if (bandY !== y) { bandY = y; bandSrc = await readLazyImageBand(layer, y, tileSize); }
+      if (!bandSrc) throw new Error('大图行带读取失败');
+      const w = Math.min(tileSize, W - x), h = Math.min(tileSize, H - y), data = new Uint8ClampedArray(w * h * 4);
+      for (let yy = 0; yy < h; yy++) data.set(bandSrc.data.subarray((yy * bandSrc.width + x) * 4, (yy * bandSrc.width + x + w) * 4), yy * w * 4);
+      tile = { x, y, width: w, height: h, data };
+    } else if (layer.rgba && layer.rgba.length >= layer.width * layer.height * 4) {
+      const w = Math.min(tileSize, layer.width - x), h = Math.min(tileSize, layer.height - y), data = new Uint8ClampedArray(w * h * 4);
+      for (let yy = 0; yy < h; yy++) data.set(layer.rgba.subarray(((y + yy) * layer.width + x) * 4, ((y + yy) * layer.width + x + w) * 4), yy * w * 4);
+      tile = { x, y, width: w, height: h, data };
+    } else {
+      await decodeLazyTile(index, x, y, tileSize);
+      tile = layer.lazyHighTiles?.get(key) || null;
+    }
+    if (edit) tile = tile ? overlaySparseEdit(tile, edit) : edit;
+    if (!tile) throw new Error('大图瓦片读取失败');
+    tiles.set(key, applyOverlays(tile, overlay));
+    return tiles.get(key);
+  };
+  const proxy = layer.lazyPreview;
+  let pal, transIndex = -1;
+  if (proxy?.data?.length) {
+    const q = quantizeRGBA(proxy.data, proxy.width, proxy.height, { colors: 255, transparency: true, palette: 'selective', dither: 'none' });
+    pal = q.pal; transIndex = q.transIndex;
+  } else {
+    const S = 256, n = 4, MW = S * n, MH = S * n, rgba = new Uint8ClampedArray(MW * MH * 4);
+    for (let gy = 0; gy < n; gy++) for (let gx = 0; gx < n; gx++) {
+      const tx = Math.min(W - 1, Math.floor((gx + 0.5) * W / n / S) * S), ty = Math.min(H - 1, Math.floor((gy + 0.5) * H / n / S) * S);
+      const t = await tileAt(tx, ty); if (!t) continue;
+      for (let y = 0; y < Math.min(S, MH - gy * S, t.height); y++)
+        rgba.set(t.data.subarray(y * t.width * 4, (y * t.width + Math.min(S, MW - gx * S, t.width)) * 4), ((gy * S + y) * MW + gx * S) * 4);
+    }
+    const q = quantizeRGBA(rgba, MW, MH, { colors: 255, transparency: true, palette: 'selective', dither: 'none' });
+    pal = q.pal; transIndex = q.transIndex;
+  }
+
+  if (transIndex < 0) { transIndex = pal.length; pal = pal.concat([[255, 255, 255]]); }
+  const opaquePal = pal.slice(0, transIndex);
+  let depth = 8; if (pal.length <= 2) depth = 1; else if (pal.length <= 4) depth = 2; else if (pal.length <= 16) depth = 4;
+  const ih = new Uint8Array(13), idv = new DataView(ih.buffer);
+  idv.setUint32(0, W); idv.setUint32(4, H); ih[8] = depth; ih[9] = 3;
+  const plte = new Uint8Array(pal.length * 3); pal.forEach((c, i) => plte.set(c.slice(0, 3), i * 3));
+  const parts = [Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]), pngChunk('IHDR', ih), pngChunk('PLTE', plte)];
+  if (transIndex >= 0) { const tr = new Uint8Array(transIndex + 1).fill(255); tr[transIndex] = 0; parts.push(pngChunk('tRNS', tr)); }
+  const cs = new CompressionStream('deflate'), writer = cs.writable.getWriter();
+  const readDone = (async () => { const r = cs.readable.getReader(); for (;;) { const q = await r.read(); if (q.done) break; if (q.value?.length) parts.push(pngChunk('IDAT', q.value)); } })();
+  const matte = [255, 255, 255], rowB = Math.ceil(W * depth / 8);
+  try {
+    for (let y0 = 0; y0 < H; y0 += tileSize) {
+      check();
+      const rows = Math.min(tileSize, H - y0), band = [];
+      for (let x0 = 0; x0 < W; x0 += tileSize) band.push([x0, await tileAt(x0, y0)]);
+      const raw = new Uint8ClampedArray(rows * W * 4);
+      for (let y = 0; y < rows; y++) for (const [x0, t] of band) {
+        const w = Math.min(tileSize, W - x0), sy = Math.min(t.height - 1, y), si = (sy * t.width) * 4, di = (y * W + x0) * 4;
+        raw.set(t.data.subarray(si, si + w * 4), di);
+      }
+      tiles.clear();
+      const rgb = new Uint8Array(rows * W * 3), clear = new Uint8Array(rows * W); let anyClear = false;
+      for (let i = 0; i < rows * W; i++) {
+        const a = raw[i * 4 + 3] / 255, o = i * 3;
+        if (a < 0.5) { clear[i] = 1; anyClear = true; rgb[o] = matte[0]; rgb[o + 1] = matte[1]; rgb[o + 2] = matte[2]; }
+        else for (let c = 0; c < 3; c++) rgb[o + c] = Math.round(raw[i * 4 + c] * a + matte[c] * (1 - a));
+      }
+      const idx = quantizeRGB(rgb, W, rows, opaquePal.length ? opaquePal : [matte], { dither: 'none' });
+      if (anyClear && transIndex >= 0) for (let i = 0; i < clear.length; i++) if (clear[i]) idx[i] = transIndex;
+      const out = new Uint8Array(rows * (1 + rowB));
+      for (let y = 0; y < rows; y++) {
+        const o = y * (1 + rowB); out[o] = 0;
+        for (let x = 0; x < W; x++) {
+          const v = idx[y * W + x], bit = x * depth;
+          out[o + 1 + (bit >> 3)] |= v << (8 - depth - (bit & 7));
+        }
+      }
+      await writer.write(out);
+      if (onProgress) { try { onProgress(y0 + rows, H); } catch {} }
+    }
+    check(); await writer.close(); await readDone; check();
+    parts.push(pngChunk('IEND', new Uint8Array(0)));
+    return { blob: new Blob(parts, { type: 'image/png' }) };
+  } catch (e) { try { await writer.abort(e); await readDone; } catch {} throw e; }
+}
+
+
+export async function writeLazyGif(layer, index, overlay = null, onProgress = null, signal = null, tf = null, hiddenBase = false){
+  if (docW > 65535 || docH > 65535) throw new Error(`GIF 不支持 ${docW}×${docH}（边长上限 65535）`);
+  const { quantizeRGBA } = await import('../../../core/web-formats.js');
+  const W = docW, H = docH, tiles = new Map(), tileSize = 256;
+  const check = () => { if (signal?.aborted) throw signal.reason || new DOMException('导出已取消', 'AbortError'); };
+  const tfTile = tf ? makeLazyAffineTileReader(layer, index, tf, check) : null;
+  let bandY = -1, bandSrc = null;
+  const tileAt = async (x, y) => {
+    check();
+    const key = `${x}:${y}`, hit = tiles.get(key); if (hit) return hit;
+    if (hiddenBase) { const w = Math.min(tileSize, W - x), h = Math.min(tileSize, H - y), tile = { x, y, width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }; tiles.set(key, tile); return tile; }
+    if (tfTile) { const tile = await tfTile(x, y); if (!tile) throw new Error('大图瓦片读取失败'); tiles.set(key, applyOverlays(tile, overlay)); return tiles.get(key); }
+    const edit = pixelPaint[index]?.sparse?.tiles?.get(key);
+    let tile = null;
+    if (layer.lazyTileStore || layer.lazyImage || layer.lazyRasterFile) {
+      if (bandY !== y) { bandY = y; bandSrc = await readLazyImageBand(layer, y, tileSize); }
+      if (!bandSrc) throw new Error('大图行带读取失败');
+      const w = Math.min(tileSize, W - x), h = Math.min(tileSize, H - y), data = new Uint8ClampedArray(w * h * 4);
+      for (let yy = 0; yy < h; yy++) data.set(bandSrc.data.subarray((yy * bandSrc.width + x) * 4, (yy * bandSrc.width + x + w) * 4), yy * w * 4);
+      tile = { x, y, width: w, height: h, data };
+    } else if (layer.rgba && layer.rgba.length >= layer.width * layer.height * 4) {
+      const w = Math.min(tileSize, layer.width - x), h = Math.min(tileSize, layer.height - y), data = new Uint8ClampedArray(w * h * 4);
+      for (let yy = 0; yy < h; yy++) data.set(layer.rgba.subarray(((y + yy) * layer.width + x) * 4, ((y + yy) * layer.width + x + w) * 4), yy * w * 4);
+      tile = { x, y, width: w, height: h, data };
+    } else {
+      await decodeLazyTile(index, x, y, tileSize);
+      tile = layer.lazyHighTiles?.get(key) || null;
+    }
+    if (edit) tile = tile ? overlaySparseEdit(tile, edit) : edit;
+    if (!tile) throw new Error('大图瓦片读取失败');
+    tiles.set(key, applyOverlays(tile, overlay));
+    return tiles.get(key);
+  };
+  const proxy = layer.lazyPreview;
+  let pal, transIndex = -1;
+  if (proxy?.data?.length) {
+    const q = quantizeRGBA(proxy.data, proxy.width, proxy.height, { colors: 255, transparency: true, palette: 'selective', dither: 'none' });
+    pal = q.pal; transIndex = q.transIndex;
+  } else {
+    const S = 256, n = 4, MW = S * n, MH = S * n, rgba = new Uint8ClampedArray(MW * MH * 4);
+    for (let gy = 0; gy < n; gy++) for (let gx = 0; gx < n; gx++) {
+      const tx = Math.min(W - 1, Math.floor((gx + 0.5) * W / n / S) * S), ty = Math.min(H - 1, Math.floor((gy + 0.5) * H / n / S) * S);
+      const t = await tileAt(tx, ty); if (!t) continue;
+      for (let y = 0; y < Math.min(S, MH - gy * S, t.height); y++)
+        rgba.set(t.data.subarray(y * t.width * 4, (y * t.width + Math.min(S, MW - gx * S, t.width)) * 4), ((gy * S + y) * MW + gx * S) * 4);
+    }
+    const q = quantizeRGBA(rgba, MW, MH, { colors: 255, transparency: true, palette: 'selective', dither: 'none' });
+    pal = q.pal; transIndex = q.transIndex;
+  }
+  if (transIndex < 0) { transIndex = pal.length; pal = pal.concat([[255, 255, 255]]); }
+  const opaquePal = pal.slice(0, transIndex);
+  let bitsPer = 1; while ((1 << bitsPer) < pal.length) bitsPer++;
+  const parts = [], u8 = (...v) => parts.push(Uint8Array.from(v)), u16 = v => parts.push(Uint8Array.from([v & 255, (v >> 8) & 255]));
+  const str = t => parts.push(Uint8Array.from(t, c => c.charCodeAt(0)));
+  str('GIF89a'); u16(W); u16(H); u8(0x80 | ((bitsPer - 1) << 4) | (bitsPer - 1), 0, 0);
+  for (let i = 0, n = 1 << bitsPer; i < n; i++) { const c = pal[i] || [0, 0, 0]; u8(c[0], c[1], c[2]); }
+  u8(0x21, 0xf9, 4, 1); u16(0); u8(transIndex, 0);
+  u8(0x2c); u16(0); u16(0); u16(W); u16(H); u8(0);
+  const minCode = Math.max(2, bitsPer); u8(minCode);
+
+  const out = [];
+  const sub = b => out.push(Uint8Array.from([b.length, ...b]));
+  let cur = 0, bits = 0, codeSize = minCode + 1, next = (1 << minCode) + 2;
+  let dict = new Map(), prefix = -1;
+  let part = [];
+  const flushPart = () => { if (part.length) { sub(part); part = []; } };
+  const putByte = v => { part.push(v & 255); if (part.length === 255) flushPart(); };
+  const emit2 = code => {
+    cur |= code << bits; bits += codeSize;
+    while (bits >= 8) { putByte(cur); cur >>>= 8; bits -= 8; }
+  };
+  emit2(1 << minCode);
+  const reset = () => { dict = new Map(); codeSize = minCode + 1; next = (1 << minCode) + 2; };
+  const push = v => {
+    if (prefix < 0) { prefix = v; return; }
+    const key = prefix * 4096 + v, hit = dict.get(key);
+    if (hit !== undefined) { prefix = hit; return; }
+    emit2(prefix);
+    if (next < 4096) { dict.set(key, next++); if (next > (1 << codeSize) && codeSize < 12) codeSize++; }
+    else { emit2(1 << minCode); reset(); }
+    prefix = v;
+  };
+  const matte = [255, 255, 255];
+  try {
+    for (let y0 = 0; y0 < H; y0 += tileSize) {
+      check();
+      const rows = Math.min(tileSize, H - y0), band = [];
+      for (let x0 = 0; x0 < W; x0 += tileSize) band.push([x0, await tileAt(x0, y0)]);
+      const raw = new Uint8ClampedArray(rows * W * 4);
+      for (let y = 0; y < rows; y++) for (const [x0, t] of band) {
+        const w = Math.min(tileSize, W - x0), sy = Math.min(t.height - 1, y), si = (sy * t.width) * 4, di = (y * W + x0) * 4;
+        raw.set(t.data.subarray(si, si + w * 4), di);
+      }
+      tiles.clear();
+      const rgb = new Uint8Array(rows * W * 3), clear = new Uint8Array(rows * W); let anyClear = false;
+      for (let i = 0; i < rows * W; i++) {
+        const a = raw[i * 4 + 3] / 255, o = i * 3;
+        if (a < 0.5) { clear[i] = 1; anyClear = true; rgb[o] = matte[0]; rgb[o + 1] = matte[1]; rgb[o + 2] = matte[2]; }
+        else for (let c = 0; c < 3; c++) rgb[o + c] = Math.round(raw[i * 4 + c] * a + matte[c] * (1 - a));
+      }
+      const idx = quantizeRGB(rgb, W, rows, opaquePal.length ? opaquePal : [matte], { dither: 'none' });
+      if (anyClear) for (let i = 0; i < clear.length; i++) if (clear[i]) idx[i] = transIndex;
+      for (let i = 0; i < idx.length; i++) push(idx[i]);
+      if (onProgress) { try { onProgress(y0 + rows, H); } catch {} }
+    }
+    if (prefix >= 0) emit2(prefix);
+    emit2((1 << minCode) + 1);
+    if (bits > 0) { putByte(cur); cur = 0; bits = 0; }
+    flushPart();
+    for (const b of out) parts.push(b);
+    u8(0, 0x3b);
+    return { blob: new Blob(parts, { type: 'image/gif' }) };
+  } finally {}
+}
+
+
+export async function writeLazyExr(layer, index, overlay = null, onProgress = null, signal = null, tf = null, hiddenBase = false){
+  const W = docW, H = docH, tiles = new Map(), tileSize = 256;
+  const check = () => { if (signal?.aborted) throw signal.reason || new DOMException('导出已取消', 'AbortError'); };
+  const tfTile = tf ? makeLazyAffineTileReader(layer, index, tf, check) : null;
+  let bandY = -1, bandSrc = null;
+  const tileAt = async (x, y) => {
+    check();
+    const key = `${x}:${y}`, hit = tiles.get(key); if (hit) return hit;
+    if (hiddenBase) { const w = Math.min(tileSize, W - x), h = Math.min(tileSize, H - y), tile = { x, y, width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }; tiles.set(key, tile); return tile; }
+    if (tfTile) { const tile = await tfTile(x, y); if (!tile) throw new Error('大图瓦片读取失败'); tiles.set(key, applyOverlays(tile, overlay)); return tiles.get(key); }
+    const edit = pixelPaint[index]?.sparse?.tiles?.get(key);
+    let tile = null;
+    if (layer.lazyTileStore || layer.lazyImage || layer.lazyRasterFile) {
+      if (bandY !== y) { bandY = y; bandSrc = await readLazyImageBand(layer, y, tileSize); }
+      if (!bandSrc) throw new Error('大图行带读取失败');
+      const w = Math.min(tileSize, W - x), h = Math.min(tileSize, H - y), data = new Uint8ClampedArray(w * h * 4);
+      for (let yy = 0; yy < h; yy++) data.set(bandSrc.data.subarray((yy * bandSrc.width + x) * 4, (yy * bandSrc.width + x + w) * 4), yy * w * 4);
+      tile = { x, y, width: w, height: h, data };
+    } else if (layer.rgba && layer.rgba.length >= layer.width * layer.height * 4) {
+      const w = Math.min(tileSize, layer.width - x), h = Math.min(tileSize, layer.height - y), data = new Uint8ClampedArray(w * h * 4);
+      for (let yy = 0; yy < h; yy++) data.set(layer.rgba.subarray(((y + yy) * layer.width + x) * 4, ((y + yy) * layer.width + x + w) * 4), yy * w * 4);
+      tile = { x, y, width: w, height: h, data };
+    } else {
+      await decodeLazyTile(index, x, y, tileSize);
+      tile = layer.lazyHighTiles?.get(key) || null;
+    }
+    if (edit) tile = tile ? overlaySparseEdit(tile, edit) : edit;
+    if (!tile) throw new Error('大图瓦片读取失败');
+    tiles.set(key, applyOverlays(tile, overlay));
+    return tiles.get(key);
+  };
+  const LE = (n, k = 4) => { const b = new Uint8Array(k), d = new DataView(b.buffer); if (k === 4) d.setUint32(0, n >>> 0, true); else d.setUint16(0, n & 65535, true); return b; };
+  const i32 = v => { const b = new Uint8Array(4); new DataView(b.buffer).setInt32(0, v | 0, true); return b; };
+  const atoms = [];
+  const attr = (name, type, payload) => { atoms.push(new TextEncoder().encode(name + '\0' + type + '\0'), LE(payload.length), payload); };
+  const chlParts = [];
+  for (const nm of ['A', 'B', 'G', 'R']) chlParts.push(new TextEncoder().encode(nm + '\0'), LE(1), new Uint8Array([0, 0, 0, 0]), LE(1), LE(1));
+  chlParts.push(new Uint8Array([0]));
+  const chl = new Uint8Array(chlParts.reduce((n, p) => n + p.length, 0)); { let o = 0; for (const p of chlParts) { chl.set(p, o); o += p.length; } }
+  attr('channels', 'chlist', chl);
+  attr('compression', 'compression', new Uint8Array([0]));
+  const box = new Uint8Array(16), bdv = new DataView(box.buffer); bdv.setInt32(8, W - 1, true); bdv.setInt32(12, H - 1, true);
+  attr('dataWindow', 'box2i', box); attr('displayWindow', 'box2i', box); attr('lineOrder', 'lineOrder', new Uint8Array([0]));
+  attr('pixelAspectRatio', 'float', new Uint8Array(new Float32Array([1]).buffer));
+  attr('screenWindowCenter', 'v2f', new Uint8Array(8));
+  attr('screenWindowWidth', 'float', new Uint8Array(new Float32Array([1]).buffer));
+  const headParts = [LE(20000630), LE(2), ...atoms, new Uint8Array([0])], header = new Uint8Array(headParts.reduce((n, p) => n + p.length, 0));
+  { let o = 0; for (const p of headParts) { header.set(p, o); o += p.length; } }
+  const table = new Uint8Array(H * 8), tdv = new DataView(table.buffer);
+  let off = header.length + table.length;
+  const blockLen = 8 + W * 8;
+  for (let y = 0; y < H; y++) { tdv.setBigUint64(y * 8, BigInt(off), true); off += blockLen; }
+  const linear = new Float32Array(256);
+  for (let i = 0; i < 256; i++) { const c = i / 255; linear[i] = c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); }
+  const fbuf = new Float32Array(1), ibuf = new Int32Array(fbuf.buffer);
+  const half = v => {
+    fbuf[0] = v; const x = ibuf[0], sign = (x >>> 16) & 0x8000;
+    let e = ((x >>> 23) & 0xff) - 127 + 15;
+    if (e <= 0) return sign;
+    if (e >= 31) return sign | 0x7c00;
+    return (sign | (e << 10) | ((x >>> 13) & 0x3ff)) & 0xffff;
+  };
+  const parts = [header, table], hbuf = new Uint8Array(W * 8), hdv = new DataView(hbuf.buffer);
+  for (let y = 0; y < H; y++) {
+    check();
+    const band = [];
+    for (let x = 0; x < W; x += tileSize) band.push([x, await tileAt(x, y)]);
+
+    for (let ch = 0; ch < 4; ch++) {
+      const srcC = [3, 2, 1, 0][ch], dst = ch * W * 2;
+      for (const [x0, t] of band) {
+        const w = Math.min(tileSize, W - x0);
+        for (let x = 0; x < w; x++) {
+          const si = x * 4;
+          const v = ch === 0 ? t.data[si + 3] / 255 : linear[t.data[si + srcC]];
+          hdv.setUint16(dst + (x0 + x) * 2, half(v), true);
+        }
+      }
+    }
+    tiles.clear();
+    parts.push(i32(y), LE(W * 8), hbuf);
+    if (onProgress) { try { onProgress(y + 1, H); } catch {} }
+  }
+  return { blob: new Blob(parts, { type: 'image/x-exr' }) };
+}
+export async function writeLazyRawImage(layer, index, overlay = null, fmt = 'ppm', onProgress = null, signal = null, tf = null, hiddenBase = false){
+  const W = docW, H = docH, tiles = new Map(), tileSize = 256;
+  const check = () => { if (signal?.aborted) throw signal.reason || new DOMException('导出已取消', 'AbortError'); };
+  const tfTile = tf ? makeLazyAffineTileReader(layer, index, tf, check) : null;
+  const tileAt = async (x, y) => {
+    check();
+    const key = `${x}:${y}`, hit = tiles.get(key); if (hit) return hit;
+    if (hiddenBase) { const w = Math.min(tileSize, W - x), h = Math.min(tileSize, H - y), tile = { x, y, width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }; tiles.set(key, tile); return tile; }
+    if (tfTile) { const tile = await tfTile(x, y); if (!tile) throw new Error('大图瓦片读取失败'); tiles.set(key, applyOverlays(tile, overlay)); return tiles.get(key); }
+    const edit = pixelPaint[index]?.sparse?.tiles?.get(key);
+    let tile = null;
+    if (layer.lazyTileStore || layer.lazyImage || layer.lazyRasterFile) {
+      let band = null;
+      if (y !== bandAt.y) { bandAt.y = y; bandAt.src = await readLazyImageBand(layer, y, tileSize); }
+      band = bandAt.src;
+      if (!band) throw new Error('大图行带读取失败');
+      if (band.preview) bandAt.preview = true;
+      const w = Math.min(tileSize, W - x), h = Math.min(tileSize, H - y), data = new Uint8ClampedArray(w * h * 4);
+      for (let yy = 0; yy < h; yy++) data.set(band.data.subarray((yy * band.width + x) * 4, (yy * band.width + x + w) * 4), yy * w * 4);
+      tile = { x, y, width: w, height: h, data };
+    } else if (layer.rgba && layer.rgba.length >= layer.width * layer.height * 4) {
+      const w = Math.min(tileSize, layer.width - x), h = Math.min(tileSize, layer.height - y);
+      const data = new Uint8ClampedArray(w * h * 4);
+      for (let yy = 0; yy < h; yy++) data.set(layer.rgba.subarray(((y + yy) * layer.width + x) * 4, ((y + yy) * layer.width + x + w) * 4), yy * w * 4);
+      tile = { x, y, width: w, height: h, data };
+    } else {
+      await decodeLazyTile(index, x, y, tileSize);
+      tile = layer.lazyHighTiles?.get(key) || null;
+    }
+    if (edit) tile = tile ? overlaySparseEdit(tile, edit) : edit;
+    if (!tile) throw new Error('大图瓦片读取失败');
+    tiles.set(key, applyOverlays(tile, overlay));
+    return tiles.get(key);
+  };
+  const bandAt = { y: -1, src: null, preview: false };
+  const enc = new TextEncoder(), parts = [];
+  const hdr = v => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, v >>> 0, true); return b; };
+  const i32 = v => { const b = new Uint8Array(4); new DataView(b.buffer).setInt32(0, v | 0, true); return b; };
+  if (fmt === 'ppm') parts.push(enc.encode(`P6\n${W} ${H}\n255\n`));
+  else if (fmt === 'pam') parts.push(enc.encode(`P7\nWIDTH ${W}\nHEIGHT ${H}\nDEPTH 4\nMAXVAL 255\nTUPLTYPE RGB_ALPHA\nENDHDR\n`));
+  else if (fmt === 'tga') {
+    if (W > 65535 || H > 65535) throw new Error(`TGA 不支持 ${W}×${H}（边长上限 65535）`);
+    const h = new Uint8Array(18); const dv = new DataView(h.buffer);
+    h[2] = 2; dv.setUint16(12, W, true); dv.setUint16(14, H, true); h[16] = 32; h[17] = 0x28;
+    parts.push(h);
+  } else if (fmt === 'bmp') {
+    const fileSize = 54 + W * H * 4;
+    if (fileSize > 0xffffffff) throw new Error('BMP 文件超过 4GB，无法导出');
+    const h = new Uint8Array(54); const dv = new DataView(h.buffer);
+    h[0] = 0x42; h[1] = 0x4d; dv.setUint32(2, fileSize, true); dv.setUint32(10, 54, true);
+    dv.setUint32(14, 40, true); dv.setInt32(18, W, true); dv.setInt32(22, -H, true);
+    dv.setUint16(26, 1, true); dv.setUint16(28, 32, true); dv.setUint32(34, W * H * 4, true);
+    dv.setUint32(38, 2835, true); dv.setUint32(42, 2835, true);
+    parts.push(h);
+  } else if (fmt === 'hdr') {
+    parts.push(enc.encode(`#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y ${H} +X ${W}\n`));
+  } else throw new Error(`未知原始格式：${fmt}`);
+  const linear = new Float32Array(256);
+  for (let i = 0; i < 256; i++) { const c = i / 255; linear[i] = c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); }
+  const toRGBe = (r, g, b, out, o) => {
+    if (r < 1e-32 && g < 1e-32 && b < 1e-32) { out[o] = out[o + 1] = out[o + 2] = out[o + 3] = 0; return; }
+    const m = Math.max(r, g, b), e = Math.ceil(Math.log2(m)) + 128;
+    if (e < 1) { out[o] = out[o + 1] = out[o + 2] = out[o + 3] = 0; return; }
+    if (e > 255) { out[o] = out[o + 1] = out[o + 2] = 255; out[o + 3] = 255; return; }
+    const s = 256 / Math.pow(2, e - 128);
+    out[o] = Math.min(255, Math.floor(r * s)); out[o + 1] = Math.min(255, Math.floor(g * s));
+    out[o + 2] = Math.min(255, Math.floor(b * s)); out[o + 3] = e;
+  };
+  const rle = (src, out) => {
+    let i = 0;
+    while (i < W) {
+      let run = 1; while (i + run < W && run < 127 && src[i + run] === src[i]) run++;
+      if (run >= 4) { out.push(128 + run, src[i]); i += run; continue; }
+      const start = i; i += run;
+      while (i < W && i - start < 128) {
+        let r2 = 1; while (i + r2 < W && r2 < 127 && src[i + r2] === src[i]) r2++;
+        if (r2 >= 4) break;
+        i += r2;
+      }
+      out.push(i - start); for (let j = start; j < i; j++) out.push(src[j]);
+    }
+  };
+  try {
+    for (let y0 = 0; y0 < H; y0 += tileSize) {
+      check();
+      const rows = Math.min(tileSize, H - y0), band = [];
+      for (let x0 = 0; x0 < W; x0 += tileSize) band.push([x0, await tileAt(x0, y0)]);
+      const raw = new Uint8ClampedArray(rows * W * 4);
+      for (let y = 0; y < rows; y++) for (const [x0, t] of band) {
+        const w = Math.min(tileSize, W - x0), sy = Math.min(t.height - 1, y), si = (sy * t.width) * 4, di = (y * W + x0) * 4;
+        raw.set(t.data.subarray(si, si + w * 4), di);
+      }
+      tiles.clear();
+      if (fmt === 'ppm') {
+        const out = new Uint8Array(rows * W * 3);
+        for (let i = 0, o = 0; i < raw.length; i += 4, o += 3) { out[o] = raw[i]; out[o + 1] = raw[i + 1]; out[o + 2] = raw[i + 2]; }
+        parts.push(out);
+      } else if (fmt === 'pam') parts.push(new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength));
+      else if (fmt === 'tga' || fmt === 'bmp') {
+        const out = new Uint8Array(rows * W * 4);
+        for (let i = 0; i < raw.length; i += 4) { out[i] = raw[i + 2]; out[i + 1] = raw[i + 1]; out[i + 2] = raw[i]; out[i + 3] = raw[i + 3]; }
+        parts.push(out);
+      } else {
+        const row = new Uint8Array(W * 4), line = [];
+        for (let y = 0; y < rows; y++) {
+          for (let x = 0, o = 0; x < W; x++, o += 4) toRGBe(linear[raw[(y * W + x) * 4]] , linear[raw[(y * W + x) * 4 + 1]], linear[raw[(y * W + x) * 4 + 2]], row, o);
+          line.length = 0;
+          if (W < 8 || W > 32767) line.push(...row);
+          else {
+            line.push(2, 2, W >> 8, W & 255);
+            for (let c = 0; c < 4; c++) { const ch = new Uint8Array(W); for (let x = 0; x < W; x++) ch[x] = row[x * 4 + c]; rle(ch, line); }
+          }
+          parts.push(Uint8Array.from(line));
+        }
+      }
+      if (onProgress) { try { onProgress(y0 + rows, H); } catch {} }
+    }
+    check();
+    const mime = fmt === 'ppm' ? 'image/x-portable-pixmap' : fmt === 'pam' ? 'image/x-portable-arbitrarymap'
+      : fmt === 'tga' ? 'image/x-tga' : fmt === 'bmp' ? 'image/bmp' : 'image/vnd.radiance';
+    return { blob: new Blob(parts, { type: mime }), preview: bandAt.preview };
+  } catch (e) { throw e; }
+}
+async function writeLazyPng(layer, index, overlay = null, onProgress = null, signal = null, tf = null, hiddenBase = false){
   if(typeof CompressionStream!=='function')throw new Error('当前浏览器没有流式 PNG 压缩支持');
   const W=docW,H=docH,parts=[Uint8Array.from([137,80,78,71,13,10,26,10])],ih=new Uint8Array(13),idv=new DataView(ih.buffer);
   idv.setUint32(0,W);idv.setUint32(4,H);ih[8]=8;ih[9]=6;parts.push(pngChunk('IHDR',ih));
-  const cs=new CompressionStream('deflate'),writer=cs.writable.getWriter(),chunks=[];
-  const readDone=(async()=>{const r=cs.readable.getReader();for(;;){const q=await r.read();if(q.done)break;chunks.push(q.value);}})();
+  const cs=new CompressionStream('deflate'),writer=cs.writable.getWriter();
+
+  const readDone=(async()=>{const r=cs.readable.getReader();for(;;){const q=await r.read();if(q.done)break;if(q.value?.length)parts.push(pngChunk('IDAT',q.value));}})();
   const tiles=new Map(),tileSize=256;
-  const tileAt=async(x,y)=>{const key=`${x}:${y}`,hit=tiles.get(key);if(hit)return hit;const edit=pixelPaint[index]?.sparse?.tiles?.get(key);if(edit){tiles.set(key,edit);return edit;}let tile;
-    if(layer.lazyImage||layer.lazyRasterFile)tile=await readLazyImageTile(layer,x,y,tileSize);
+  const check=()=>{if(signal?.aborted)throw signal.reason||new DOMException('导出已取消','AbortError');};
+  const tfTile = tf ? makeLazyAffineTileReader(layer, index, tf, check) : null;
+
+
+  let bandY = -1, bandSrc = null, previewFallback = false;
+  const tileFromBand = (band, x, y) => {
+    const w = Math.min(tileSize, W - x), h = Math.min(tileSize, H - y);
+    const data = new Uint8ClampedArray(w * h * 4);
+    for (let yy = 0; yy < h; yy++) data.set(band.data.subarray((yy * band.width + x) * 4, (yy * band.width + x + w) * 4), yy * w * 4);
+    return { x, y, width: w, height: h, data };
+  };
+  const tileAt=async(x,y)=>{check();const key=`${x}:${y}`,hit=tiles.get(key);if(hit)return hit;
+    if(hiddenBase){const w=Math.min(tileSize,W-x),h=Math.min(tileSize,H-y);let tile={x,y,width:w,height:h,data:new Uint8ClampedArray(w*h*4)};tile=applyOverlays(tile,overlay);check();tiles.set(key,tile);return tile;}
+    if(tfTile){let tile=await tfTile(x,y);if(!tile)throw new Error('大图瓦片读取失败');tile=applyOverlays(tile,overlay);check();tiles.set(key,tile);return tile;}
+    const edit=pixelPaint[index]?.sparse?.tiles?.get(key);let tile=null;
+    if(layer.lazyTileStore||layer.lazyImage||layer.lazyRasterFile){
+      if (bandY !== y) { bandY = y; bandSrc = await readLazyImageBand(layer, y, tileSize); }
+      if (!bandSrc) throw new Error('大图行带读取失败');
+      if (bandSrc.preview) previewFallback = true;
+      tile = tileFromBand(bandSrc, x, y);
+    }
     else {await decodeLazyTile(index,x,y,tileSize);tile=layer.lazyHighTiles?.get(key)||null;}
-    if(!tile)throw new Error('大图瓦片读取失败');tiles.set(key,tile);return tile;
+    if(edit) tile = tile ? overlaySparseEdit(tile, edit) : edit;
+    if(!tile)throw new Error('大图瓦片读取失败');
+    tile=applyOverlays(tile,overlay);check();tiles.set(key,tile);return tile;
   };
   try{
-    for(let y0=0;y0<H;y0+=tileSize){const rows=Math.min(tileSize,H-y0),raw=new Uint8Array(rows*(1+W*4)),band=[];
+    for(let y0=0;y0<H;y0+=tileSize){check();const rows=Math.min(tileSize,H-y0),raw=new Uint8Array(rows*(1+W*4)),band=[];
       for(let x0=0;x0<W;x0+=tileSize)band.push([x0,await tileAt(x0,y0)]);
       for(let y=0;y<rows;y++){const ro=y*(1+W*4);for(const [x0,t] of band){const w=Math.min(tileSize,W-x0),srcY=Math.min(t.height-1,y+y0-t.y);raw[ro+1+x0*4]=0;for(let x=0;x<w;x++){const si=(srcY*t.width+x)*4,di=ro+1+(x0+x)*4;raw[di]=t.data[si];raw[di+1]=t.data[si+1];raw[di+2]=t.data[si+2];raw[di+3]=t.data[si+3];}}}
-      await writer.write(raw);
+      await writer.write(raw); tiles.clear();
+      if (onProgress) { try { onProgress(y0 + rows, H); } catch {  } }
     }
-    await writer.close();await readDone;const compressed=new Uint8Array(chunks.reduce((n,c)=>n+c.length,0));let at=0;for(const c of chunks){compressed.set(c,at);at+=c.length;}parts.push(pngChunk('IDAT',compressed));
-    parts.push(pngChunk('IEND',new Uint8Array(0)));return new Blob(parts,{type:'image/png'});
-  }catch(e){try{await writer.abort(e);}catch{}throw e;}
+    check();await writer.close();await readDone;check();
+    parts.push(pngChunk('IEND',new Uint8Array(0)));check();return { blob: new Blob(parts,{type:'image/png'}), preview: previewFallback };
+  }catch(e){try{await writer.abort(e);await readDone;}catch{}throw e;}
 }
-async function runLazyRasterExport(fileName, opts, layer){
+
+export async function writeLazyJpeg(layer, index, overlay = null, quality = 90, onProgress = null, signal = null, tf = null, hiddenBase = false){
+  const { createJpegEncoder } = await import('../../../core/jpeg-encode.js');
+  const W = docW, H = docH, encoder = createJpegEncoder({ width: W, height: H, quality });
+  const tiles = new Map(), tileSize = 256;
+  const check = () => { if (signal?.aborted) throw signal.reason || new DOMException('导出已取消', 'AbortError'); };
+  const tfTile = tf ? makeLazyAffineTileReader(layer, index, tf, check) : null;
+  let bandY = -1, bandSrc = null, previewFallback = false;
+  const tileFromBand = (band, x, y) => {
+    const w = Math.min(tileSize, W - x), h = Math.min(tileSize, H - y);
+    const data = new Uint8ClampedArray(w * h * 4);
+    for (let yy = 0; yy < h; yy++) data.set(band.data.subarray((yy * band.width + x) * 4, (yy * band.width + x + w) * 4), yy * w * 4);
+    return { x, y, width: w, height: h, data };
+  };
+  const tileAt = async (x, y) => {
+    check();
+    const key = `${x}:${y}`, hit = tiles.get(key); if (hit) return hit;
+    if (hiddenBase) { const w = Math.min(tileSize, W - x), h = Math.min(tileSize, H - y); let tile = { x, y, width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }; tile = applyOverlays(tile, overlay); check(); tiles.set(key, tile); return tile; }
+    if (tfTile) { let tile = await tfTile(x, y); if (!tile) throw new Error('大图瓦片读取失败'); tile = applyOverlays(tile, overlay); check(); tiles.set(key, tile); return tile; }
+    const edit = pixelPaint[index]?.sparse?.tiles?.get(key);
+    let tile = null;
+    if (layer.lazyTileStore || layer.lazyImage || layer.lazyRasterFile) {
+      if (bandY !== y) { bandY = y; bandSrc = await readLazyImageBand(layer, y, tileSize); }
+      if (!bandSrc) throw new Error('大图行带读取失败');
+      if (bandSrc.preview) previewFallback = true;
+      tile = tileFromBand(bandSrc, x, y);
+    } else {
+      await decodeLazyTile(index, x, y, tileSize);
+      tile = layer.lazyHighTiles?.get(key) || null;
+    }
+    if (edit) tile = tile ? overlaySparseEdit(tile, edit) : edit;
+    if (!tile) throw new Error('大图瓦片读取失败');
+    tile = applyOverlays(tile, overlay);
+    check(); tiles.set(key, tile); return tile;
+  };
+  try {
+    for (let y0 = 0; y0 < H; y0 += tileSize) {
+      check();
+      const rows = Math.min(tileSize, H - y0), raw = new Uint8ClampedArray(rows * W * 4), band = [];
+      for (let x0 = 0; x0 < W; x0 += tileSize) band.push([x0, await tileAt(x0, y0)]);
+      for (let y = 0; y < rows; y++) for (const [x0, t] of band) {
+        const w = Math.min(tileSize, W - x0), srcY = Math.min(t.height - 1, y);
+        for (let x = 0; x < w; x++) {
+          const si = (srcY * t.width + x) * 4, di = (y * W + x0 + x) * 4;
+          raw[di] = t.data[si]; raw[di + 1] = t.data[si + 1]; raw[di + 2] = t.data[si + 2]; raw[di + 3] = t.data[si + 3];
+        }
+      }
+      encoder.writeRows(raw, rows);
+      tiles.clear();
+      if (onProgress) { try { onProgress(y0 + rows, H); } catch {  } }
+    }
+    check();
+    return { blob: encoder.finish(), preview: previewFallback };
+  } catch (e) {
+    try { encoder.finish(); } catch {}
+    throw e;
+  }
+}
+
+export async function writeLazyCanvas(layer, index, overlay = null, type = 'image/webp', quality = 90, onProgress = null, signal = null, tf = null, hiddenBase = false){
+  const MAX_DIM = 32767, MAX_AREA = 268435456;
+  if (docW > MAX_DIM || docH > MAX_DIM || docW * docH > MAX_AREA)
+    throw new Error(`超大 WebP：浏览器画布上限约 ${MAX_DIM} 边长 / 2.68 亿像素；当前 ${docW}×${docH} 请改用 JPG / PNG / PDF`);
+  const W = docW, H = docH, cv = new OffscreenCanvas(W, H), ctx = cv.getContext('2d');
+  const tiles = new Map(), tileSize = 256;
+  const check = () => { if (signal?.aborted) throw signal.reason || new DOMException('导出已取消', 'AbortError'); };
+  const tfTile = tf ? makeLazyAffineTileReader(layer, index, tf, check) : null;
+  let bandY = -1, bandSrc = null, previewFallback = false;
+  const tileFromBand = (band, x, y) => {
+    const w = Math.min(tileSize, W - x), h = Math.min(tileSize, H - y);
+    const data = new Uint8ClampedArray(w * h * 4);
+    for (let yy = 0; yy < h; yy++) data.set(band.data.subarray((yy * band.width + x) * 4, (yy * band.width + x + w) * 4), yy * w * 4);
+    return { x, y, width: w, height: h, data };
+  };
+  const tileAt = async (x, y) => {
+    check();
+    const key = `${x}:${y}`, hit = tiles.get(key); if (hit) return hit;
+    if (hiddenBase) { const w = Math.min(tileSize, W - x), h = Math.min(tileSize, H - y); let tile = { x, y, width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }; tile = applyOverlays(tile, overlay); check(); tiles.set(key, tile); return tile; }
+    if (tfTile) { let tile = await tfTile(x, y); if (!tile) throw new Error('大图瓦片读取失败'); tile = applyOverlays(tile, overlay); check(); tiles.set(key, tile); return tile; }
+    const edit = pixelPaint[index]?.sparse?.tiles?.get(key);
+    let tile = null;
+    if (layer.lazyTileStore || layer.lazyImage || layer.lazyRasterFile) {
+      if (bandY !== y) { bandY = y; bandSrc = await readLazyImageBand(layer, y, tileSize); }
+      if (!bandSrc) throw new Error('大图行带读取失败');
+      if (bandSrc.preview) previewFallback = true;
+      tile = tileFromBand(bandSrc, x, y);
+    } else {
+      await decodeLazyTile(index, x, y, tileSize);
+      tile = layer.lazyHighTiles?.get(key) || null;
+    }
+    if (edit) tile = tile ? overlaySparseEdit(tile, edit) : edit;
+    if (!tile) throw new Error('大图瓦片读取失败');
+    tile = applyOverlays(tile, overlay);
+    check(); tiles.set(key, tile); return tile;
+  };
+  for (let y0 = 0; y0 < H; y0 += tileSize) {
+    check();
+    const rows = Math.min(tileSize, H - y0), raw = new Uint8ClampedArray(rows * W * 4), band = [];
+    for (let x0 = 0; x0 < W; x0 += tileSize) band.push([x0, await tileAt(x0, y0)]);
+    for (let y = 0; y < rows; y++) for (const [x0, t] of band) {
+      const w = Math.min(tileSize, W - x0), srcY = Math.min(t.height - 1, y);
+      for (let x = 0; x < w; x++) {
+        const si = (srcY * t.width + x) * 4, di = (y * W + x0 + x) * 4;
+        raw[di] = t.data[si]; raw[di + 1] = t.data[si + 1]; raw[di + 2] = t.data[si + 2]; raw[di + 3] = t.data[si + 3];
+      }
+    }
+    ctx.putImageData(new ImageData(raw, W, rows), 0, y0);
+    tiles.clear();
+    if (onProgress) { try { onProgress(y0 + rows, H); } catch {  } }
+  }
+  check();
+  const blob = await cv.convertToBlob({ type, quality: Math.max(0.01, Math.min(1, quality / 100)) });
+  return { blob, preview: previewFallback };
+}
+
+export async function writeLazyTiff(layer, index, overlay = null, onProgress = null, signal = null, tf = null, hiddenBase = false){
+  const { encodeTiffStreaming } = await import('../../../core/tiff-encode.js');
+  const W = docW, H = docH, tiles = new Map(), tileSize = 256;
+  const check = () => { if (signal?.aborted) throw signal.reason || new DOMException('导出已取消', 'AbortError'); };
+  const tfTile = tf ? makeLazyAffineTileReader(layer, index, tf, check) : null;
+  let bandY = -1, bandSrc = null, previewFallback = false;
+  const tileFromBand = (band, x, y) => {
+    const w = Math.min(tileSize, W - x), h = Math.min(tileSize, H - y);
+    const data = new Uint8ClampedArray(w * h * 4);
+    for (let yy = 0; yy < h; yy++) data.set(band.data.subarray((yy * band.width + x) * 4, (yy * band.width + x + w) * 4), yy * w * 4);
+    return { x, y, width: w, height: h, data };
+  };
+  const tileAt = async (x, y) => {
+    check();
+    const key = `${x}:${y}`, hit = tiles.get(key); if (hit) return hit;
+    if (hiddenBase) { const w = Math.min(tileSize, W - x), h = Math.min(tileSize, H - y); let tile = { x, y, width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }; tile = applyOverlays(tile, overlay); check(); tiles.set(key, tile); return tile; }
+    if (tfTile) { let tile = await tfTile(x, y); if (!tile) throw new Error('大图瓦片读取失败'); tile = applyOverlays(tile, overlay); check(); tiles.set(key, tile); return tile; }
+    const edit = pixelPaint[index]?.sparse?.tiles?.get(key);
+    let tile = null;
+    if (layer.lazyTileStore || layer.lazyImage || layer.lazyRasterFile) {
+      if (bandY !== y) { bandY = y; bandSrc = await readLazyImageBand(layer, y, tileSize); }
+      if (!bandSrc) throw new Error('大图行带读取失败');
+      if (bandSrc.preview) previewFallback = true;
+      tile = tileFromBand(bandSrc, x, y);
+    } else {
+      await decodeLazyTile(index, x, y, tileSize);
+      tile = layer.lazyHighTiles?.get(key) || null;
+    }
+    if (edit) tile = tile ? overlaySparseEdit(tile, edit) : edit;
+    if (!tile) throw new Error('大图瓦片读取失败');
+    tile = applyOverlays(tile, overlay);
+    check(); tiles.set(key, tile); return tile;
+  };
+  const readRows = async (y0, rows) => {
+    const raw = new Uint8ClampedArray(rows * W * 4), band = [];
+    for (let x0 = 0; x0 < W; x0 += tileSize) band.push([x0, await tileAt(x0, y0)]);
+    for (let y = 0; y < rows; y++) for (const [x0, t] of band) {
+      const w = Math.min(tileSize, W - x0), srcY = Math.min(t.height - 1, y);
+      for (let x = 0; x < w; x++) {
+        const si = (srcY * t.width + x) * 4, di = (y * W + x0 + x) * 4;
+        raw[di] = t.data[si]; raw[di + 1] = t.data[si + 1]; raw[di + 2] = t.data[si + 2]; raw[di + 3] = t.data[si + 3];
+      }
+    }
+    tiles.clear();
+    return raw;
+  };
+  const blob = await encodeTiffStreaming({ width: W, height: H, rowsPerStrip: tileSize, readRows, onProgress, signal });
+  return { blob, preview: previewFallback };
+}
+
+export async function writeLazyPdf(layer, index, overlay = null, quality = 90, onProgress = null, signal = null, tf = null, hiddenBase = false){
+  const jpeg = await writeLazyJpeg(layer, index, overlay, quality, onProgress, signal, tf, hiddenBase);
+  const bytes = new Uint8Array(await jpeg.blob.arrayBuffer());
+  const ppi = docResolution || 72;
+  let pw = docW / ppi * 72, ph = docH / ppi * 72;
+  const k = Math.min(1, 14400 / Math.max(pw, ph));
+  pw *= k; ph *= k;
+  const { writePdf } = await import('../../../core/pdf-write.js');
+  const pdf = writePdf([{ width: pw, height: ph,
+    images: [{ jpeg: bytes, pw: docW, ph: docH, x: 0, y: 0, w: pw, h: ph }] }],
+  { title: docName || '' });
+  return { blob: new Blob([pdf], { type: 'application/pdf' }), preview: jpeg.preview, page: { w: pw, h: ph } };
+}
+
+
+
+
+
+function blendTileInto(out, src, sw, sh, dx, dy, opacity) {
+  if (!src || !(sw > 0 && sh > 0)) return;
+  const ox = out.x, oy = out.y, ow = out.width, oh = out.height;
+  const x0 = Math.max(0, ox - dx), x1 = Math.min(sw, ox + ow - dx);
+  const y0 = Math.max(0, oy - dy), y1 = Math.min(sh, oy + oh - dy);
+  const dst = out.data;
+  for (let y = y0; y < y1; y++) {
+    const sr = y * sw, dr = (dy + y - oy) * ow;
+    for (let x = x0; x < x1; x++) {
+      const si = (sr + x) * 4, di = (dr + (dx + x - ox)) * 4;
+      const sa = (src[si + 3] / 255) * opacity;
+      if (sa <= 0) continue;
+      const da = dst[di + 3] / 255, oa = sa + da * (1 - sa);
+      if (oa <= 0) continue;
+      dst[di] = (src[si] * sa + dst[di] * da * (1 - sa)) / oa;
+      dst[di + 1] = (src[si + 1] * sa + dst[di + 1] * da * (1 - sa)) / oa;
+      dst[di + 2] = (src[si + 2] * sa + dst[di + 2] * da * (1 - sa)) / oa;
+      dst[di + 3] = oa * 255;
+    }
+  }
+}
+
+
+
+function visibleBelowLazy(lazyLayer) {
+  const order = displayOrder(), at = order.indexOf(doc.layers.indexOf(lazyLayer)), hid = groupHiddenSet();
+  for (let k = 0; k < at; k++) {
+    const i = order[k], l = doc.layers[i];
+    if (!l || l.hidden || hid.has(i)) continue;
+    if (l.rgba || pixelPaint[i]?.sparse?.tiles?.size || textRenders[i] || l.fill || l.adjustment || l.vectorMask) return true;
+  }
+  return false;
+}
+
+function plainPassGroup(l) {
+  const g = l && l.group; if (!g || g.type == null) return false;
+  if (g.type === 3) return true;
+  return (l.blendMode === 'pass' || g.blendKey === 'pass')
+    && (l.opacity ?? 255) === 255 && (g.opacity ?? 255) === 255
+    && !g.mask && !g.vectorMask && !g.effects && !g.artboard && !l.vectorStroke && !l.blendIf && !l.knockout;
+}
+
+
+function groupHiddenSet() {
+  const out = new Set(), stack = [], order = displayOrder();
+  for (let k = order.length - 1; k >= 0; k--) {
+    const i = order[k], l = doc.layers[i]; if (!l) continue;
+    const g = l.group;
+    if (g && g.type === 1) { const v = layerEdits[i]?.visible; stack.push(v == null ? !!l.hidden : !v); continue; }
+    if (g && g.type === 3) { stack.pop(); continue; }
+    if (stack.some(Boolean)) out.add(i);
+  }
+  return out;
+}
+function pngOverlayReason(lazyLayer) {
+  let seenBase = false;
+  const hid = groupHiddenSet();
+  for (const i of displayOrder()) {
+    const l = doc.layers[i];
+    if (!l) continue;
+    if (l === lazyLayer) { seenBase = true; continue; }
+    if (!seenBase) {
+      if (!l.hidden && !hid.has(i) && (l.rgba || pixelPaint[i]?.sparse?.tiles?.size || textRenders[i] || l.fill || l.adjustment))
+        return '懒加载底图下方还有可见图层，流式导出会丢失它们';
+      continue;
+    }
+    const nm = l.name || `图层 ${i}`;
+    if (l.group && l.group.type != null) {
+      if (plainPassGroup(l)) continue;
+      return `图层「${nm}」在组里，且不是直通组；组蒙版/混合模式尚未接入流式合成`;
+    }
+    if (l.hidden || hid.has(i) || (l.opacity ?? 255) === 0) continue;
+    if (l.adjustment || l.fill) return `调整/填充图层「${nm}」会改变下方像素，尚未接入流式合成`;
+    if (l.mask || l.vectorMask || l.effects || l.clipping || (l.fillOpacity ?? 255) !== 255 || (l.blendMode || 'norm') !== 'norm')
+      return `图层「${nm}」的蒙版/效果/混合模式尚未接入流式合成`;
+    if (pixelPaint[i]?.sparse?.tiles?.size || (l.rgba && l.width > 0 && l.height > 0)) continue;
+    if (textRenders[i] && textCrops[i]?.rgba) continue;
+    if (l.isSmartObject || l.isText || l.text) return `图层「${nm}」没有可用的栅格结果，流式导出会把它丢掉`;
+
+    if (!l.rgba && !l.fill && !l.adjustment && !l.vectorMask && !l.mask) continue;
+    return `图层「${nm}」没有可用的栅格结果`;
+  }
+  return '';
+}
+const pngOverlayLayersOK = lazyLayer => !pngOverlayReason(lazyLayer);
+function exportOverlays(lazyLayer) {
+  const list = [], hid = groupHiddenSet();
+  for (const i of displayOrder()) {
+    const l = doc.layers[i];
+    if (!l || l === lazyLayer || l.hidden || hid.has(i) || (l.group && l.group.type != null)) continue;
+    const op = (l.opacity == null ? 255 : l.opacity) / 255;
+    if (op <= 0) continue;
+    const pp = pixelPaint[i];
+    if (pp?.sparse?.tiles?.size) { list.push({ tiles: pp.sparse.tiles, op }); continue; }
+    if (l.rgba && l.width > 0 && l.height > 0)
+      list.push({ rgba: l.rgba, w: l.width, h: l.height, left: l.bounds?.left || 0, top: l.bounds?.top || 0, op });
+
+
+    else if (textRenders[i] && textCrops[i]?.rgba) {
+      const tc = textCrops[i], b = tc.bounds, w = b.right - b.left, h = b.bottom - b.top;
+      if (w > 0 && h > 0 && tc.rgba.length === w * h * 4)
+        list.push({ rgba: tc.rgba, w, h, left: b.left, top: b.top, op });
+    }
+  }
+  return list;
+}
+
+function overlaySparseEdit(base, edit) {
+  if (!base || !edit) return base || edit;
+  if (!edit.original || edit.original.length !== edit.data.length
+      || edit.x !== base.x || edit.y !== base.y || edit.width !== base.width || edit.height !== base.height)
+    return edit;
+  const data = new Uint8ClampedArray(base.data);
+  if ((edit.data.length & 3) === 0 && !(edit.data.byteOffset & 3) && !(edit.original.byteOffset & 3)) {
+    const a = new Uint32Array(edit.data.buffer, edit.data.byteOffset, edit.data.length >> 2);
+    const b = new Uint32Array(edit.original.buffer, edit.original.byteOffset, edit.original.length >> 2);
+    const o = new Uint32Array(data.buffer, data.byteOffset, data.length >> 2);
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) o[i] = a[i];
+  } else {
+    for (let i = 0; i < edit.data.length; i++) if (edit.data[i] !== edit.original[i]) data[i] = edit.data[i];
+  }
+  return { ...base, data };
+}
+function applyOverlays(tile, list) {
+  if (!tile || !list || !list.length) return tile;
+  const out = { x: tile.x, y: tile.y, width: tile.width, height: tile.height, data: new Uint8ClampedArray(tile.data) };
+  for (const o of list) {
+    if (o.tiles) { const t = o.tiles.get(`${out.x}:${out.y}`); if (t) blendTileInto(out, t.data, t.width, t.height, t.x, t.y, o.op); }
+    else blendTileInto(out, o.rgba, o.w, o.h, o.left, o.top, o.op);
+  }
+  return out;
+}
+
+
+function drawOverlaysOnCanvas(g, list) {
+  for (const o of list || []) {
+    if (o.tiles) {
+      for (const t of o.tiles.values()) {
+        const data = o.op >= .999 ? t.data : (() => {
+          const d = new Uint8ClampedArray(t.data);
+          for (let i = 3; i < d.length; i += 4) d[i] = Math.round(d[i] * o.op);
+          return d;
+        })();
+        g.putImageData(new ImageData(data, t.width, t.height), t.x, t.y);
+      }
+    } else if (o.rgba && o.w > 0 && o.h > 0) {
+      const c = document.createElement('canvas'); c.width = o.w; c.height = o.h;
+      c.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(o.rgba), o.w, o.h), 0, 0);
+      g.globalAlpha = o.op; g.drawImage(c, o.left, o.top); g.globalAlpha = 1;
+    }
+  }
+}
+
+
+
+function sparseTilesRGBA(tiles, label) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const t of tiles) {
+    if (t.x < x0) x0 = t.x; if (t.y < y0) y0 = t.y;
+    if (t.x + t.width > x1) x1 = t.x + t.width;
+    if (t.y + t.height > y1) y1 = t.y + t.height;
+  }
+  if (!(x1 > x0 && y1 > y0)) return null;
+  const w = x1 - x0, h = y1 - y0;
+  if (w * h > 64e6)
+    throw new Error(`PSD 导出：图层「${label}」的笔迹覆盖约 ${w}×${h} 像素，分布过散；请把笔迹集中到较小区域，或先拼合图层再导出。`);
+  const rgba = new Uint8ClampedArray(w * h * 4);
+  for (const t of tiles) for (let y = 0; y < t.height; y++)
+    rgba.set(t.data.subarray(y * t.width * 4, (y + 1) * t.width * 4), ((t.y + y - y0) * w + t.x - x0) * 4);
+  return { rgba, bounds: { top: y0, left: x0, bottom: y1, right: x1 } };
+}
+function overlayLayersForPsd(lazyLayer) {
+  const out = [], hid = groupHiddenSet();
+  for (const i of displayOrder()) {
+    const l = doc.layers[i];
+    if (!l || l === lazyLayer || l.hidden || hid.has(i)) continue;
+    if (l.group && l.group.type != null) {
+      if (plainPassGroup(l)) continue;
+      throw new Error('PSD 导出：懒加载底图上方有非直通组；请先取消编组或拼合。');
+    }
+    const nm = l.name || `图层 ${i}`;
+    if (l.mask || l.vectorMask) throw new Error(`PSD 导出：图层「${nm}」的蒙版/矢量蒙版尚未接入流式写回；请先应用蒙版或拼合。`);
+    const pp = pixelPaint[i];
+    if (pp?.sparse?.tiles?.size) {
+      const props = { blendMode: l.blendMode, opacity: l.opacity, fillOpacity: l.fillOpacity, clipping: l.clipping, hidden: l.hidden, effects: l.effects };
+      const u = sparseTilesRGBA([...pp.sparse.tiles.values()], nm);
+      if (!u) out.push({ name: nm, ...props });
+      else out.push({ ...props, name: nm, rgba: u.rgba, bounds: u.bounds });
+      continue;
+    }
+    if (l.rgba && l.width > 0 && l.height > 0 && l.bounds)
+      out.push({ name: nm, rgba: l.rgba, bounds: { top: l.bounds.top, left: l.bounds.left, bottom: l.bounds.bottom, right: l.bounds.right }, blendMode: l.blendMode, opacity: l.opacity, fillOpacity: l.fillOpacity, clipping: l.clipping, hidden: l.hidden, effects: l.effects });
+
+
+
+    else if (textRenders[i] && textCrops[i] && textCrops[i].rgba) {
+      const tc = textCrops[i], b = tc.bounds, cw = b.right - b.left, ch = b.bottom - b.top;
+      if (cw > 0 && ch > 0 && tc.rgba.length === cw * ch * 4)
+        out.push({ name: nm, rgba: new Uint8ClampedArray(tc.rgba), bounds: { ...b }, blendMode: l.blendMode, opacity: l.opacity, fillOpacity: l.fillOpacity, clipping: l.clipping, hidden: l.hidden, effects: l.effects });
+      else out.push({ name: nm });
+    }
+    else {
+      if (l.adjustment || l.fill || l.isSmartObject || l.isText || l.text)
+        throw new Error(`PSD 导出：图层「${nm}」没有可写回的栅格结果（调整/形状/智能对象/未栅格化文字）；请先栅格化或拼合。`);
+      out.push({ name: nm });
+    }
+  }
+  return out;
+}
+async function runLazyRasterExport(fileName, opts, layer, signal){
+  if (visibleBelowLazy(layer)) throw new Error('图层顺序：懒加载底图下方还有可见图层，流式导出会丢失它们；请把这些图层移到原图上方，或先拼合。');
+  if (layer.mask || layer.vectorMask) throw new Error('懒加载底图的蒙版/矢量蒙版暂不支持流式导出；请先应用蒙版或拼合。');
   const fmt = opts.format || $('#exportFormat').value, source = doc?.lazyRasterFile, idx = doc?.layers?.indexOf(layer) ?? -1;
+
+
+  if (!['psd', 'png', 'jpg', 'webp'].includes(fmt))
+    throw new Error(`${fmt.toUpperCase()} 的超大图片导出尚未接入按行带编码；请改用 JPG / PNG / TIFF / PDF / WebP 或分层 PSD`);
+  const tf = fmt !== 'psd' && idx >= 0 ? transformChanged(idx) : null;
+  if (fmt !== 'psd') {
+    if (tf?.quad) throw new Error('懒加载底图的透视 / 变形暂不支持流式导出；请先拼合或栅格化。');
+    const otherTf = Object.keys(layerTransforms).some(k => {
+      if (+k === idx || !transformChanged(+k) || layerDeletes.has(+k)) return false;
+      const e = layerEdits[+k], l = doc.layers[+k];
+      return !(e && e.visible != null ? !e.visible : l?.hidden);
+    });
+    if (otherTf) throw new Error('懒加载底图之外的图层带有未应用的旋转 / 缩放：请先拼合，或只对底图做变换后再导出。');
+  }
+  if (fmt !== 'psd') {
+    const why = pngOverlayReason(layer);
+    if (why) throw new Error(`${fmt.toUpperCase()} 导出：${why}；请先栅格化/拼合，或导出分层 PSD。`);
+  }
   const pp = idx >= 0 ? pixelPaint[idx] : null, edited = !!pp?.sparse?.tiles?.size;
-  setWaitCursor(true, '正在导出当前文档…');
+  const overlay = exportOverlays(layer);
   try {
     if (fmt === 'psd') {
-      const [{ writeLazyRasterPsd }, { readLazyImageTile }] = await Promise.all([import('../../../core/psd-lazy-write.js'), import('./21-load-document.js')]);
+      const psb = docW > 30000 || docH > 30000;
+
+
+      const transformed = Object.keys(layerTransforms).some(i => transformChanged(+i) && !layerDeletes.has(+i));
+      if (doc.layers.length > 1 || transformed) {
+        let shown = -1;
+        const built = await buildPsdBuffer({ asBlob: true, abortSignal: signal,
+          onProgress: (done, total) => {
+            const pct = Math.min(99, Math.floor(done * 100 / Math.max(1, total)));
+            if (pct === shown) return; shown = pct;
+            setExportProgress(pct, `正在导出当前文档… ${docW}×${docH} 分层 PSB`);
+          } });
+        if (signal.aborted) throw signal.reason;
+        setExportProgress(99, '正在准备下载…');
+        const blob = built.buf instanceof Blob ? built.buf : new Blob([built.buf], { type: 'image/vnd.adobe.photoshop' });
+        const url = URL.createObjectURL(blob), a = document.createElement('a'); a.href = url; a.download = fileName + (psb ? '.psb' : '.psd'); a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        $('#info').textContent = `已导出原始尺寸 ${docW} × ${docH} 的分层 ${psb ? 'PSB' : 'PSD'}（分块写回，共 ${doc.layers.length} 个图层）`;
+        return true;
+      }
+      const { writeLazyRasterPsd } = await import('../../../core/psd-lazy-write.js');
+      const previewLayers = previewCompositeDoc(doc).layers;
+      const extraLayers = overlayLayersForPsd(layer).map(extra => {
+        const source = doc.layers.find(L => L.name === extra.name), current = source ? previewLayers[doc.layers.indexOf(source)] : null;
+        return { ...extra, effects: current?.effects || extra.effects, blendMode: current?.blendMode || extra.blendMode,
+          opacity: current?.opacity ?? extra.opacity, fillOpacity: current?.fillOpacity ?? extra.fillOpacity, clipping: current?.clipping ?? extra.clipping };
+      });
+      let shownPct = -1;
+      const onProgress = (done, total) => {
+        const pct = Math.min(99, Math.floor(done * 100 / Math.max(1, total)));
+        if (pct === shownPct) return;
+        shownPct = pct;
+        setExportProgress(pct, `正在导出当前文档… ${docW}×${docH} ${psb ? 'PSB' : 'PSD'}`);
+      };
+
+
+
+      let bandY = -1, band = null, bandPreview = false;
+      const readRowBand = async (y0) => {
+        if (bandY === y0) return band;
+        bandY = y0; band = null;
+        const bandW = Math.min(256, docH - y0);
+        if (bandW <= 0) return band;
+        band = await readLazyImageBand(layer, y0, bandW);
+        if (band?.preview) bandPreview = true;
+        return band;
+      };
       const buf = await writeLazyRasterPsd({ width: docW, height: docH, name: layer.name || docName || '图层 0', readTile: async (x, y) => {
-        const base = await readLazyImageTile(layer, x, y), edit = pp?.sparse?.tiles?.get(`${x}:${y}`);
-        return edit ? { x, y, width: edit.width, height: edit.height, data: edit.data } : base;
-      }, psb: docW > 30000 || docH > 30000 });
-      const url = URL.createObjectURL(new Blob([buf], { type: 'image/vnd.adobe.photoshop' })), a = document.createElement('a'); a.href = url; a.download = fileName + (docW > 30000 || docH > 30000 ? '.psb' : '.psd'); a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-      $('#info').textContent = `已导出原始尺寸 ${docW} × ${docH} 的 ${docW > 30000 || docH > 30000 ? 'PSB' : 'PSD'}（分块写回）`; return true;
+        if (signal.aborted) throw signal.reason;
+        const edit = pp?.sparse?.tiles?.get(`${x}:${y}`);
+        const sourceBand = await readRowBand(y);
+        if (!sourceBand) return overlaySparseEdit(await readLazyImageTile(layer, x, y), edit);
+        const w = Math.min(256, docW - x), h = Math.min(256, docH - y);
+        const data = new Uint8ClampedArray(w * h * 4);
+        for (let yy = 0; yy < h; yy++) data.set(sourceBand.data.subarray((yy * docW + x) * 4, (yy * docW + x + w) * 4), yy * w * 4);
+        return overlaySparseEdit({ x, y, width: w, height: h, data }, edit);
+      }, psb, extraLayers, onProgress, abortSignal: signal, asBlob: true });
+      if (signal.aborted) throw signal.reason;
+      setExportProgress(99, '正在准备下载…');
+      const blob = buf instanceof Blob ? buf : new Blob([buf], { type: 'image/vnd.adobe.photoshop' });
+      const url = URL.createObjectURL(blob), a = document.createElement('a'); a.href = url; a.download = fileName + (psb ? '.psb' : '.psd'); a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      $('#info').textContent = `已导出原始尺寸 ${docW} × ${docH} 的 ${psb ? 'PSB' : 'PSD'}（分块写回，共 ${extraLayers.length + 1} 个图层）`
+        + (bandPreview ? '；注意：原始像素区域解码失败，部分行带使用预览级像素' : ''); return true;
     }
-    if (!edited && fmt === 'jpg' && source) {
+    if (!edited && !overlay.length && !tf && !layer.lazyTileStore && !layer.lazyPixelOps?.length && fmt === 'jpg' && source) {
+      if (signal.aborted) throw signal.reason;
       const url = URL.createObjectURL(source), a = document.createElement('a'); a.href = url; a.download = fileName + '.jpg'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
       $('#info').textContent = '已导出原始 JPEG（像素未改变）'; return true;
     }
     if (docW * docH > 180e6) throw new Error('这份图片超过当前浏览器的分块编码上限；已阻止导出以避免丢失原始像素');
+    setExportProgress(15, '正在合成导出画面…');
     const cv = document.createElement('canvas'); cv.width = docW; cv.height = docH;
     const g = cv.getContext('2d', { willReadFrequently: false });
-    let sourceImage = layer.lazyImage;
-    let ownedSourceImage = false;
-    if (!sourceImage && layer.lazyRasterFile) {
-      sourceImage = await decodeImageFile(layer.lazyRasterFile);
-      ownedSourceImage = true;
+
+    const sw = layer.width || docW, sh = layer.height || docH;
+    const beginTf = t => { g.save(); g.translate(t.x + t.w / 2, t.y + t.h / 2); if (t.rot) g.rotate(t.rot * Math.PI / 180); if (t.flipX || t.flipY) g.scale(t.flipX ? -1 : 1, t.flipY ? -1 : 1); g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high'; };
+    const drawTileTf = (tile, t) => {
+      const c = document.createElement('canvas'); c.width = tile.width; c.height = tile.height;
+      c.getContext('2d').putImageData(new ImageData(tile.data, tile.width, tile.height), 0, 0);
+      g.drawImage(c, -t.w / 2 + tile.x * t.w / sw, -t.h / 2 + tile.y * t.h / sh, tile.width * t.w / sw, tile.height * t.h / sh);
+    };
+    if (layer.lazyTileStore || layer.lazyPixelOps?.length) {
+
+      const tiles = [];
+      for (let ty = 0; ty < docH; ty += 256) for (let tx = 0; tx < docW; tx += 256) {
+        if (signal.aborted) throw signal.reason;
+        const tile = await readLazyImageTile(layer, tx, ty, 256);
+        if (tile) tiles.push(tile);
+      }
+      if (tf) {
+        beginTf(tf);
+        for (const tile of tiles) drawTileTf(tile, tf);
+        if (edited) for (const tile of pp.sparse.tiles.values()) drawTileTf(tile, tf);
+        g.restore();
+      } else {
+        for (const tile of tiles) g.putImageData(new ImageData(tile.data, tile.width, tile.height), tile.x, tile.y);
+        if (edited) for (const tile of pp.sparse.tiles.values()) g.putImageData(new ImageData(tile.data, tile.width, tile.height), tile.x, tile.y);
+      }
+    } else {
+      let sourceImage = layer.lazyImage, ownedSourceImage = false;
+      if (!sourceImage && layer.lazyRasterFile) { sourceImage = await decodeImageFile(layer.lazyRasterFile); ownedSourceImage = true; }
+      if (!sourceImage) throw new Error('原始图片源已释放，无法导出');
+      if (signal.aborted) throw signal.reason;
+      if (tf) {
+        beginTf(tf);
+        g.drawImage(sourceImage, -tf.w / 2, -tf.h / 2, tf.w, tf.h);
+        if (edited) for (const tile of pp.sparse.tiles.values()) drawTileTf(tile, tf);
+        g.restore();
+      } else {
+        g.drawImage(sourceImage, 0, 0, docW, docH);
+        if (edited) for (const tile of pp.sparse.tiles.values()) g.putImageData(new ImageData(tile.data, tile.width, tile.height), tile.x, tile.y);
+      }
+      if (ownedSourceImage) sourceImage.close?.();
     }
-    if (!sourceImage) throw new Error('原始图片源已释放，无法导出');
-    g.drawImage(sourceImage, 0, 0, docW, docH);
-    if (ownedSourceImage) sourceImage.close?.();
-    if (edited) for (const tile of pp.sparse.tiles.values()) g.putImageData(new ImageData(tile.data, tile.width, tile.height), tile.x, tile.y);
+    drawOverlaysOnCanvas(g, overlay);
     if (fmt === 'jpg') { const bg = document.createElement('canvas'); bg.width = docW; bg.height = docH; const b = bg.getContext('2d'); b.fillStyle = '#fff'; b.fillRect(0, 0, docW, docH); b.drawImage(cv, 0, 0); cv.width = docW; cv.height = docH; g.drawImage(bg, 0, 0); }
-    const blob = await canvasToBlob(cv, fmt === 'jpg' ? 'jpg' : fmt === 'webp' ? 'webp' : 'png', Math.max(1, Math.min(100, Math.round(+$('#exportQuality').value) || 92)));
+    setExportProgress(55, '正在编码图片…');
+    const blob = await canvasToBlob(cv, fmt === 'jpg' ? 'jpg' : fmt === 'webp' ? 'webp' : 'png', Math.max(1, Math.min(100, Math.round(+$('#exportQuality').value) || 92)), signal);
+    if (signal.aborted) throw signal.reason;
+    setExportProgress(99, '正在准备下载…');
     const url = URL.createObjectURL(blob), a = document.createElement('a'); a.href = url; a.download = fileName + '.' + (fmt === 'jpg' ? 'jpg' : fmt === 'webp' ? 'webp' : 'png'); a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     $('#info').textContent = `已导出原始尺寸 ${docW} × ${docH} 的 ${fmt.toUpperCase()}${edited ? '（含局部修改）' : ''}`; return true;
-  } finally { setWaitCursor(false); }
+  } finally {}
 }
 async function runExport(fileName, opts = {}){
-  if(!origBuffer){ $('#err').textContent='先打开一个 PSD'; return; }
+  if(!origBuffer){ $('#err').textContent='先打开一个 PSD'; return false; }
   const fmt = opts.format || $('#exportFormat').value;
-  const lazyPsd = doc?.layers?.find(l => l?.lazyChannels || l?.lazyCompressedChannels);
-  const lazySimple = lazyPsd && doc.layers.length === 1 && !lazyPsd.rgba && lazyPsd.bounds?.left === 0 && lazyPsd.bounds?.top === 0
-    && lazyPsd.bounds?.right === docW && lazyPsd.bounds?.bottom === docH && !lazyPsd.hidden && (lazyPsd.opacity ?? 255) === 255
-    && !lazyPsd.effects && !lazyPsd.mask && !lazyPsd.vectorMask && !Object.keys(layerTransforms).some(i => transformChanged(+i));
-  // shortcut: one simple layer only; upgrade to a streaming compositor for multi-layer PNG.
-  if(fmt === 'png' && docW * docH > 64e6 && lazySimple){
-    setWaitCursor(true, '正在按瓦片导出 PNG…');
-    try { const blob=await writeLazyPng(lazyPsd,doc.layers.indexOf(lazyPsd)),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=fileName+'.png';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);$('#info').textContent=`已按瓦片导出原始尺寸 ${docW} × ${docH} 的 PNG`;return true; }
-    catch(e){ $('#err').textContent='导出失败：'+e.message;return false; } finally { setWaitCursor(false); }
-  }
-  const lazyRaster = doc?.layers?.find(l => l?.lazyRasterSource);
-  if (lazyRaster) { try { return await runLazyRasterExport(fileName, opts, lazyRaster); } catch (e) { $('#err').textContent = '导出失败：' + e.message; return false; } }
-  setWaitCursor(true, '正在导出文档…');
+  const exportSignal = beginExportTask('正在导出当前文档…');
   try {
+    const lazyPsd = doc?.layers?.find((l, i) => !layerDeletes.has(i) && (l?.lazyChannels || l?.lazyCompressedChannels
+      || (l?.lazyRasterSource && (l?.lazyImage || l?.lazyRasterFile))));
+    const lazyBaseIdx = lazyPsd ? doc.layers.indexOf(lazyPsd) : -1;
+    const lazyTfKeys = Object.keys(layerTransforms).filter(i => transformChanged(+i) && !layerDeletes.has(+i));
+    const lazyTf = lazyPsd && lazyTfKeys.length === 1 && +lazyTfKeys[0] === lazyBaseIdx ? transformChanged(lazyBaseIdx) : null;
+    const baseHidden = lazyBaseIdx >= 0 && ((layerEdits[lazyBaseIdx]?.visible != null ? !layerEdits[lazyBaseIdx].visible : !!lazyPsd.hidden) || groupHiddenSet().has(lazyBaseIdx));
+    const lazySimpleBase = lazyPsd && doc.depth === 8 && doc.mode === 3 && !lazyPsd.rgba && lazyPsd.bounds?.left === 0 && lazyPsd.bounds?.top === 0
+      && lazyPsd.bounds?.right === docW && lazyPsd.bounds?.bottom === docH && (lazyPsd.opacity ?? 255) === 255
+      && (lazyPsd.fillOpacity ?? 255) === 255 && !lazyPsd.clipping && lazyPsd.blendMode === 'norm'
+      && !layerDeletes.size && !layerDupes.length && !layerReorder
+      && (!docSizeBase || (docW === docSizeBase.w && docH === docSizeBase.h))
+      && !lazyPsd.effects && !lazyPsd.fill && !lazyPsd.vectorMask
+      && pngOverlayLayersOK(lazyPsd);
+
+    const streamTf = lazyTf || null;
+    const lazyStream = !!lazySimpleBase && (!lazyTfKeys.length || !!streamTf);
+    if(fmt === 'png' && docW * docH > 64e6 && lazyStream){
+      let pct = -1;
+      const out=await writeLazyPng(lazyPsd,doc.layers.indexOf(lazyPsd),exportOverlays(lazyPsd),(done,total)=>{
+        const p=Math.min(99,Math.floor(done*100/Math.max(1,total)));if(p===pct)return;pct=p;setExportProgress(p,`正在导出当前文档… ${docW}×${docH} PNG`);
+      },exportSignal,streamTf,baseHidden);
+      if (exportSignal.aborted) throw exportSignal.reason;
+      setExportProgress(99, '正在准备下载…');
+      const url=URL.createObjectURL(out.blob),a=document.createElement('a');a.href=url;a.download=fileName+'.png';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+      $('#info').textContent=`已按瓦片导出原始尺寸 ${docW} × ${docH} 的 PNG` + (out.preview ? '；注意：原始像素区域解码失败，部分行带使用预览级像素' : '');return true;
+    }
+    if(fmt === 'jpg' && docW * docH > 64e6 && lazyStream && $('#modeSel').value !== 'cmyk'){
+      const quality = Math.max(1, Math.min(100, Math.round(+$('#exportQuality').value) || 92));
+      let pct = -1;
+      const out = await writeLazyJpeg(lazyPsd, doc.layers.indexOf(lazyPsd), exportOverlays(lazyPsd), quality, (done, total) => {
+        const p = Math.min(99, Math.floor(done * 100 / Math.max(1, total))); if (p === pct) return; pct = p;
+        setExportProgress(p, `正在按行带编码 JPEG… ${docW}×${docH}`);
+      }, exportSignal, streamTf, baseHidden);
+      if (exportSignal.aborted) throw exportSignal.reason;
+      setExportProgress(99, '正在准备下载…');
+      const url = URL.createObjectURL(out.blob), a = document.createElement('a');
+      a.href = url; a.download = fileName + '.jpg'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+      $('#info').textContent = `已按行带导出原始尺寸 ${docW} × ${docH} 的 JPEG` + (out.preview ? '；注意：原始像素区域解码失败，部分行带使用预览级像素' : '');
+      return true;
+    }
+    if(fmt === 'webp' && docW * docH > 64e6 && lazyStream && $('#modeSel').value !== 'cmyk'){
+      const quality = Math.max(1, Math.min(100, Math.round(+$('#exportQuality').value) || 92));
+      let pct = -1;
+      const out = await writeLazyCanvas(lazyPsd, doc.layers.indexOf(lazyPsd), exportOverlays(lazyPsd), 'image/webp', quality, (done, total) => {
+        const p = Math.min(99, Math.floor(done * 100 / Math.max(1, total))); if (p === pct) return; pct = p;
+        setExportProgress(p, `正在按行带编码 WebP… ${docW}×${docH}`);
+      }, exportSignal, streamTf, baseHidden);
+      if (exportSignal.aborted) throw exportSignal.reason;
+      setExportProgress(99, '正在准备下载…');
+      const url = URL.createObjectURL(out.blob), a = document.createElement('a');
+      a.href = url; a.download = fileName + '.webp'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+      $('#info').textContent = `已按行带导出 ${docW} × ${docH} 的 WebP` + (out.preview ? '；部分行带使用预览级像素' : '');
+      return true;
+    }
+    if(fmt === 'tiff' && docW * docH > 64e6 && lazyStream && $('#modeSel').value !== 'cmyk'){
+      let pct = -1;
+      const out = await writeLazyTiff(lazyPsd, doc.layers.indexOf(lazyPsd), exportOverlays(lazyPsd), (done, total) => {
+        const p = Math.min(99, Math.floor(done * 100 / Math.max(1, total))); if (p === pct) return; pct = p;
+        setExportProgress(p, `正在按行带编码 TIFF… ${docW}×${docH}`);
+      }, exportSignal, streamTf, baseHidden);
+      if (exportSignal.aborted) throw exportSignal.reason;
+      setExportProgress(99, '正在准备下载…');
+      const url = URL.createObjectURL(out.blob), a = document.createElement('a');
+      a.href = url; a.download = fileName + '.tif'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+      $('#info').textContent = `已按行带导出 ${docW} × ${docH} 的 TIFF（Deflate 条带）` + (out.preview ? '；部分行带使用预览级像素' : '');
+      return true;
+    }
+    if(fmt === 'pdf' && docW * docH > 64e6 && lazyStream && $('#modeSel').value !== 'cmyk'){
+      const quality = Math.max(1, Math.min(100, Math.round(+$('#exportQuality').value) || 92));
+      let pct = -1;
+      const out = await writeLazyPdf(lazyPsd, doc.layers.indexOf(lazyPsd), exportOverlays(lazyPsd), quality, (done, total) => {
+        const p = Math.min(99, Math.floor(done * 100 / Math.max(1, total))); if (p === pct) return; pct = p;
+        setExportProgress(p, `正在按行带编码 PDF… ${docW}×${docH}`);
+      }, exportSignal, streamTf, baseHidden);
+      if (exportSignal.aborted) throw exportSignal.reason;
+      setExportProgress(99, '正在准备下载…');
+      const url = URL.createObjectURL(out.blob), a = document.createElement('a');
+      a.href = url; a.download = fileName + '.pdf'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+      $('#info').textContent = `已按行带导出原始尺寸 ${docW} × ${docH} 的图像 PDF（JPEG 压缩，页面 ${out.page.w.toFixed(0)}×${out.page.h.toFixed(0)} pt）`;
+      return true;
+    }
+    if (fmt === 'gif' && docW * docH > 64e6 && lazyStream && $('#modeSel').value !== 'cmyk') {
+      const out = await writeLazyGif(lazyPsd, lazyBaseIdx, exportOverlays(lazyPsd), (done, total) => {
+        const p = Math.min(99, Math.floor(done * 100 / Math.max(1, total)));
+        setExportProgress(p, `正在按行带量化并编码 GIF… ${docW}×${docH}`);
+      }, exportSignal, streamTf, baseHidden);
+      if (exportSignal.aborted) throw exportSignal.reason;
+      setExportProgress(99, '正在准备下载…');
+      const url = URL.createObjectURL(out.blob), a = document.createElement('a');
+      a.href = url; a.download = fileName + '.gif'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+      $('#info').textContent = `已按行带导出原始尺寸 ${docW} × ${docH} 的 GIF（256 色调板）`;
+      return true;
+    }
+    if (fmt === 'png8' && docW * docH > 64e6 && lazyStream && $('#modeSel').value !== 'cmyk') {
+      const out = await writeLazyPng8(lazyPsd, lazyBaseIdx, exportOverlays(lazyPsd), (done, total) => {
+        const p = Math.min(99, Math.floor(done * 100 / Math.max(1, total)));
+        setExportProgress(p, `正在按行带量化并编码 PNG-8… ${docW}×${docH}`);
+      }, exportSignal, streamTf, baseHidden);
+      if (exportSignal.aborted) throw exportSignal.reason;
+      setExportProgress(99, '正在准备下载…');
+      const url = URL.createObjectURL(out.blob), a = document.createElement('a');
+      a.href = url; a.download = fileName + '.png'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+      $('#info').textContent = `已按行带导出原始尺寸 ${docW} × ${docH} 的 PNG-8（256 色调板）`;
+      return true;
+    }
+    if (fmt === 'exr' && docW * docH > 64e6 && lazyStream && $('#modeSel').value !== 'cmyk') {
+      const out = await writeLazyExr(lazyPsd, lazyBaseIdx, exportOverlays(lazyPsd), (done, total) => {
+        const p = Math.min(99, Math.floor(done * 100 / Math.max(1, total)));
+        setExportProgress(p, `正在按行带编码 EXR… ${docW}×${docH}`);
+      }, exportSignal, streamTf, baseHidden);
+      if (exportSignal.aborted) throw exportSignal.reason;
+      setExportProgress(99, '正在准备下载…');
+      const url = URL.createObjectURL(out.blob), a = document.createElement('a');
+      a.href = url; a.download = fileName + '.exr'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+      $('#info').textContent = `已按行带导出原始尺寸 ${docW} × ${docH} 的 EXR（HALF，不压缩）`;
+      return true;
+    }
+    if (['ppm', 'pam', 'tga', 'bmp', 'hdr'].includes(fmt) && docW * docH > 64e6 && lazyStream && $('#modeSel').value !== 'cmyk') {
+      const out = await writeLazyRawImage(lazyPsd, lazyBaseIdx, exportOverlays(lazyPsd), fmt, (done, total) => {
+        const p = Math.min(99, Math.floor(done * 100 / Math.max(1, total)));
+        setExportProgress(p, `正在按行带编码 ${fmt.toUpperCase()}… ${docW}×${docH}`);
+      }, exportSignal, streamTf, baseHidden);
+      if (exportSignal.aborted) throw exportSignal.reason;
+      setExportProgress(99, '正在准备下载…');
+      const url = URL.createObjectURL(out.blob), a = document.createElement('a');
+      a.href = url; a.download = fileName + '.' + EXPORT_EXT[fmt]; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+      $('#info').textContent = `已按行带导出原始尺寸 ${docW} × ${docH} 的 ${fmt.toUpperCase()}` + (out.preview ? '；部分行带使用预览级像素' : '');
+      return true;
+    }
+    const lazyRaster = doc?.layers?.find((l, i) => l?.lazyRasterSource && !layerDeletes.has(i));
+    if (lazyRaster) return await runLazyRasterExport(fileName, opts, lazyRaster, exportSignal);
+
     let buf0 = null, mc = null, notes = { skipped: [], srcNotes: [], warp: 0 }, buildErr = null;
-    try { ({ buf: buf0, canvas: mc, notes } = await buildPsdBuffer()); }
+    setExportProgress(5, '正在整理图层…');
+    const wantCmykNow = $('#modeSel').value === 'cmyk';
+    try { ({ buf: buf0, canvas: mc, notes } = await buildPsdBuffer({ abortSignal: exportSignal, asBlob: fmt === 'psd' && !wantCmykNow, onProgress: (done,total)=>setExportProgress(5+Math.floor(55*done/Math.max(1,total)),'正在生成文档…') })); }
     catch (e) { buildErr = e; console.error(e); }
+    if (exportSignal.aborted) throw exportSignal.reason;
     if(buildErr&&docW*docH>64e6)throw buildErr;
-    try { LB && LB.afterSave(); } catch {}   
+    try { LB && LB.afterSave(); } catch {}
     if (!mc&&!notes.tiled) mc = previewCompositeCanvas();
     let buf = buf0;
     const warns = [];
     if (buildErr) warns.push(`分层写回失败（${buildErr.message}），已按当前画面导出`);
     if (notes.skipped.length) warns.push('以下项目未能写回：\n· ' + notes.skipped.join('\n· '));
     let srcNote = notes.srcNotes.length ? '；' + notes.srcNotes.join('；') : '';
-    
     const wantCmyk = $('#modeSel').value === 'cmyk';
     if(notes.tiled&&(fmt!=='psd'||wantCmyk))throw new Error('此超大文档目前支持分层 PSD/PSB 写回，该图像格式的流式导出仍待接入');
-    let cmyk = wantCmyk && fmt !== 'png' && fmt !== 'webp';   
+    let cmyk = wantCmyk && fmt !== 'png' && fmt !== 'webp';
     const quality = Math.max(1, Math.min(100, Math.round(+$('#exportQuality').value) || 92));
     const icc = !$('#exportIccRow').hidden ? ($('#exportIcc').value || '') : '';
     let outBlob, outType;
+    setExportProgress(30, '正在写入文档…');
     if (fmt === 'psd') {
       outType = 'image/vnd.adobe.photoshop';
       if (!buf) {
-        
         const rgba = mc.getContext('2d').getImageData(0, 0, docW, docH).data;
         try { buf = replacePsdCompositeImage(origBuffer.slice(0), rgba).buffer; } catch { buf = origBuffer.slice(0); }
         warns.push('PSD 里的图层是修改前的版本，只有合成图是当前画面');
       }
-      if (cmyk && buf0 && doc && doc.mode !== 4) {   
+      if (cmyk && buf0 && doc && doc.mode !== 4) {
         let serverErr = null;
         try { outBlob = await serverRender(buf, { format: 'psd', colorMode: 'cmyk', icc: icc || undefined }); }
         catch (e) { serverErr = e; }
+        if (exportSignal.aborted) throw exportSignal.reason;
         if (!outBlob) {
-          buf = await convertDocCmykLocal(buf);       
+          buf = await convertDocCmykLocal(buf);
           const lint2 = lintPsd(buf);
           if (!lint2.ok) warns.push('生成的 PSD 结构校验有问题（仍已导出）：\n· ' + lint2.errors.join('\n· '));
           srcNote += `；服务端不可用（${serverErr ? serverErr.message : '未知原因'}），已用浏览器快速分色（无 ICC）`;
           outBlob = new Blob([buf], { type: outType });
         }
       } else {
-        let lint = { ok: true };
-        try { lint = lintPsd(buf); } catch (e) { lint = { ok: false, errors: [e.message] }; }
-        if (!lint.ok) warns.push('生成的 PSD 结构校验有问题（仍已导出，如 PS 打不开请把这段反馈给开发者）：\n· ' + lint.errors.join('\n· '));
-        outBlob = new Blob([buf], { type: outType });
+        if (buf instanceof Blob) outBlob = buf;
+        else {
+          let lint = { ok: true };
+          try { lint = lintPsd(buf); } catch (e) { lint = { ok: false, errors: [e.message] }; }
+          if (!lint.ok) warns.push('生成的 PSD 结构校验有问题（仍已导出，如 PS 打不开请把这段反馈给开发者）：\n· ' + lint.errors.join('\n· '));
+          outBlob = new Blob([buf], { type: outType });
+        }
       }
     } else if (fmt !== 'psd' && (opts.perArtboard ?? (!$('#exportAbRow').hidden && $('#exportPerArtboard').checked))) {
-      
-      const abs = docArtboards();
-      const files = [];
-      const used = new Set();
-      for (const ab of abs) {
-        const r = ab.rect;
+      const abs = docArtboards(), files = [], used = new Set();
+      for (let ai = 0; ai < abs.length; ai++) {
+        if (exportSignal.aborted) throw exportSignal.reason;
+        const ab = abs[ai], r = ab.rect;
         const x0 = Math.max(0, Math.round(r.x)), y0 = Math.max(0, Math.round(r.y));
         const x1 = Math.min(docW, Math.round(r.x + r.w)), y1 = Math.min(docH, Math.round(r.y + r.h));
         if (x1 <= x0 || y1 <= y0) continue;
@@ -2097,11 +3787,11 @@ async function runExport(fileName, opts = {}){
         let blob;
         if (fmt === 'tiff') blob = encodeTiffRGBA(g.getImageData(0, 0, c.width, c.height).data, c.width, c.height);
         else if (EXTRA_EXPORT.has(fmt)) blob = await encodeExtraCanvas(fmt, c, quality);
-        else blob = await canvasToBlob(c, fmt, quality);
-        let base = (ab.name || '画板').replace(/[\\/:*?"<>|]/g, '_'), nm = base, k = 2;
-        while (used.has(nm)) nm = `${base} (${k++})`;
-        used.add(nm);
+        else blob = await canvasToBlob(c, fmt, quality, exportSignal);
+        const base = String((ab.name || 'artboard').trim() || 'artboard').replace(/[\\/:*?"<>|]/g, '_');
+        let nm = base, k = 2; while (used.has(nm)) nm = `${base} (${k++})`; used.add(nm);
         files.push({ name: nm + '.' + EXPORT_EXT[fmt], data: new Uint8Array(await blob.arrayBuffer()), blob });
+        setExportProgress(30 + Math.round((ai + 1) * 55 / Math.max(1, abs.length)), '正在编码画板…');
       }
       if (cmyk) { warns.push('按画板导出时颜色为 RGB（CMYK 分色请整幅导出）'); cmyk = false; }
       if (!files.length) throw new Error('画板都在画布之外，没有可导出的内容');
@@ -2110,52 +3800,40 @@ async function runExport(fileName, opts = {}){
       notes.artboardFiles = files.length;
     } else if (EXTRA_EXPORT.has(fmt)) {
       if (cmyk) { warns.push('这个格式按 RGB 输出'); cmyk = false; }
-      outBlob = await encodeExtraCanvas(fmt, mc, quality);
-      outType = outBlob.type;
+      outBlob = await encodeExtraCanvas(fmt, mc, quality); outType = outBlob.type;
     } else if ((fmt === 'tiff' || cmyk) && buf0 && await (async () => {
       try { outBlob = await serverRender(buf, { format: fmt, colorMode: cmyk ? 'cmyk' : 'rgb', quality, icc: (cmyk && icc) ? icc : undefined }); return !!outBlob; }
       catch (e) { warns.push(`服务端编码不可用（${e.message}），已改用浏览器本地编码${cmyk ? '，颜色为 RGB（CMYK 分色需要服务端）' : ''}`); cmyk = false; return false; }
     })()) {
       outType = outBlob.type || 'application/octet-stream';
     } else if (fmt === 'tiff') {
-      outBlob = encodeTiffRGBA(mc.getContext('2d').getImageData(0, 0, docW, docH).data, docW, docH);
-      outType = 'image/tiff';
+      outBlob = encodeTiffRGBA(mc.getContext('2d').getImageData(0, 0, docW, docH).data, docW, docH); outType = 'image/tiff';
     } else {
       let src = mc;
       if (fmt === 'jpg') {
         src = document.createElement('canvas'); src.width = docW; src.height = docH;
         const c2 = src.getContext('2d'); c2.fillStyle = '#fff'; c2.fillRect(0, 0, docW, docH); c2.drawImage(mc, 0, 0);
       }
-      outBlob = await canvasToBlob(src, fmt, quality);
+      outBlob = await canvasToBlob(src, fmt, quality, exportSignal);
       outType = { png: 'image/png', jpg: 'image/jpeg', webp: 'image/webp' }[fmt];
     }
+    if (exportSignal.aborted) throw exportSignal.reason;
+    setExportProgress(99, '正在准备下载…');
     if (warns.length) $('#err').textContent = warns.join('\n');
     const dlURL = URL.createObjectURL(outBlob);
-    const psb=fmt==='psd'&&buf&&new DataView(buf).getUint16(4)===2;
+    const psb=fmt==='psd'&&(buf instanceof Blob ? (docW>30000||docH>30000) : buf&&new DataView(buf).getUint16(4)===2);
     const a=document.createElement('a'); a.href=dlURL; a.download=fileName + '.' + (outType === 'application/zip' ? 'zip' : psb?'psb':EXPORT_EXT[fmt]); a.click();
-    if (fmt === 'psd' && HXP) HXP.onSaved();         
-    fireScriptEvent(fmt === 'psd' ? 'save' : 'export');   
+    if (fmt === 'psd' && HXP) HXP.onSaved();
+    fireScriptEvent(fmt === 'psd' ? 'save' : 'export');
     setTimeout(() => URL.revokeObjectURL(dlURL), 1000);
-    const fmtLabel = psb?'PSB':{ psd: 'PSD', png: 'PNG', jpg: 'JPG', tiff: 'TIFF', webp: 'WebP', pdf: 'PDF', png8: 'PNG-8', gif: 'GIF', bmp: 'BMP', tga: 'TGA', ico: 'ICO', exr: 'OpenEXR', hdr: 'HDR', ppm: 'PPM', pam: 'PAM' }[fmt];
-    $('#info').textContent = `已导出 ${fmtLabel}${cmyk ? '（CMYK）' : ''}：${notes.warp} 个智能对象保留可编辑 warp`
-      + (notes.quilted ? `（其中 ${notes.quilted} 个网格已拆分，写为 quiltWarp）` : '')
-      + (notes.deformed ? `；${notes.deformed} 个透视/操控变形已写回滤镜` : '')
-      + (notes.deformNew ? `；新建了 ${notes.deformNew} 条变形滤镜（PS 打开可继续编辑）` : '')
-      + (notes.soBaked ? `；${notes.soBaked} 个智能对象缓存栅格已更新（打开即显示，无需 Ctrl+T）` : '')
-      + (notes.layerEdits ? `；已写回 ${notes.layerEdits} 个图层的可见性/不透明度/混合模式` : '')
-      + (notes.attrOps ? `；已写回 ${notes.attrOps} 项图层属性（蒙版/样式/锁定/颜色标签/填充/参数${notes.maskOps ? `，其中 ${notes.maskOps} 项在像素烘焙之后执行` : ''}）` : '')
-      + ((notes.attrWarn && notes.attrWarn.length) ? `；图层属性写回提示：${notes.attrWarn.slice(0, 2).join('；')}${notes.attrWarn.length > 2 ? `（另有 ${notes.attrWarn.length - 2} 条）` : ''}` : '')
-      + (notes.textEdits ? `；已编辑 ${notes.textEdits} 个文字图层（${notes.textRaster} 个已重绘栅格${Object.keys(textFontSubst).length ? '，' + Object.keys(textFontSubst).length + ' 个换了字体' : ''}）` : '')
-      + (notes.renames ? `；已重命名 ${notes.renames} 个图层` : '')
-      + (notes.transforms ? `；已变换 ${notes.transforms} 个图层` : '')
-      + (notes.reordered ? `；已重排序图层` : '')
-      + (notes.deleted ? `；已删除 ${notes.deleted} 个图层` : '')
-      + (notes.artboardFiles ? `；按画板导出 ${notes.artboardFiles} 个文件` : '')
-      + srcNote;
-  } catch(e){ $('#err').textContent='导出失败：'+e.message; console.error(e); }
-  finally { setWaitCursor(false); }
+    const fmtLabel = psb?'PSB':{ psd: 'PSD', png: 'PNG', jpg: 'JPG', tiff: 'TIFF', webp: 'WebP', pdf: 'PDF', png8: 'PNG-8', gif: 'GIF', bmp: 'BMP', tga: 'TGA', ico: 'ICO', exr: 'EXR', hdr: 'HDR', ppm: 'PPM', pam: 'PAM' }[fmt];
+    $('#info').textContent = `已导出 ${fmtLabel}${cmyk ? '（CMYK）' : ''}`;
+    return true;
+  } catch(e){
+    if (isAbort(e)) { $('#err').textContent = ''; $('#info').textContent = '已取消导出'; return false; }
+    $('#err').textContent='导出失败：'+e.message; console.error(e); return false;
+  } finally { endExportTask(); }
 }
-
 
 export const dispTextOf = (i, l) => layerTextEdits[i] != null ? layerTextEdits[i] : l.text.content;
 export let fontSeq = 0;

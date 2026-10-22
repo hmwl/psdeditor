@@ -67,8 +67,8 @@ import { drawGizmo, gizmo, toDoc } from './46-smart-filter-panel.js';
 import { closeInlineText } from './47-canvas-context-menu.js';
 import { syncInfoPanel } from './48-info-export.js';
 import {
-  JUSTIFY_CODE, applyTextAntiAlias, cropCanvasAlpha, drawRichText, fontPop, resolveFont, runCanvasFont,
-  textLayoutApi, textToolFontPs,
+  JUSTIFY_CODE, applyTextAntiAlias, drawRichText, fontPop, resolveFont, runCanvasFont, textLayoutApi,
+  textToolFontPs,
 } from './49-fonts-text-model.js';
 import { rotateCanvas } from './51-image-select-menu.js';
 import { RETOUCH_TOOLS, retouchState, rtPending, set_retouchState } from './53-retouch-clone-pattern.js';
@@ -608,7 +608,16 @@ export function drawAuxTools(ctx) {
     }
   }
   if (maskTextSession?.canvas) { ctx.globalAlpha=.65; ctx.drawImage(maskTextSession.canvas,0,0); }
-  if (maskEdit?.overlay) { ctx.globalAlpha=1; ctx.drawImage(maskEdit.overlay,0,0); }   
+  if (maskEdit?.overlay && maskEdit.overlayBounds) {
+    const b = maskEdit.overlayBounds;
+    ctx.save(); ctx.globalAlpha = 1; ctx.fillStyle = 'rgba(255,0,0,0.5)';
+    if (b.top > 0) ctx.fillRect(0, 0, docW, b.top);
+    if (b.bottom < docH) ctx.fillRect(0, b.bottom, docW, docH - b.bottom);
+    if (b.left > 0) ctx.fillRect(0, b.top, b.left, b.bottom - b.top);
+    if (b.right < docW) ctx.fillRect(b.right, b.top, docW - b.right, b.bottom - b.top);
+    ctx.drawImage(maskEdit.overlay, b.left, b.top);
+    ctx.restore();
+  }
   ctx.restore();
 }
 function toolTextDialog(title, initial, onInput, onCommit) {
@@ -711,22 +720,40 @@ async function maskEditRender(){
   if (!maskEdit || maskEdit !== m || my !== m.seq) return;
   const css = res && res.ok ? res.css : null;
   const model = maskEditModel();
-  const cv = document.createElement('canvas'); cv.width = docW; cv.height = docH;
-  const ctx = cv.getContext('2d');
   const cssMap = new Map([[model.runs[0], css]]);
-  const lay = layoutRichText({ ...model, text: model.text || ' ' }, textLayoutApi(ctx, cssMap));
-  if (model.text) {
-    drawRichText(ctx, layoutRichText(model, textLayoutApi(ctx, cssMap)), cssMap);
-    const cp = cropCanvasAlpha(cv);
-    if (cp) applyTextAntiAlias(cv, cp, textToolOpts.aa);
+
+
+  const probe = document.createElement('canvas').getContext('2d');
+  const lay = layoutRichText({ ...model, text: model.text || ' ' }, textLayoutApi(probe, cssMap));
+  m.lay = lay; m.css = css;
+  const bb = model.text && lay.bounds;
+  if (!bb || !(bb.right > bb.left && bb.bottom > bb.top)) {
+    m.canvas = null; m.bounds = null; m.overlay = null; m.overlayBounds = null;
+    maskEditPlace(); drawGizmo(); return;
   }
-  m.canvas = cv; m.lay = lay; m.css = css;
+  const pad = Math.ceil((model.runs[0]?.fontSize || 12) * 0.25) + 4;
+  const bx = Math.max(0, Math.floor(bb.left - pad)), by = Math.max(0, Math.floor(bb.top - pad));
+  const ex = Math.min(docW, Math.ceil(bb.right + pad)), ey = Math.min(docH, Math.ceil(bb.bottom + pad));
+  const cw = ex - bx, ch = ey - by;
+  if (!(cw > 0 && ch > 0)) {
+    m.canvas = null; m.bounds = null; m.overlay = null; m.overlayBounds = null;
+    maskEditPlace(); drawGizmo(); return;
+  }
+  const cv = m.canvas || (m.canvas = document.createElement('canvas'));
+  cv.width = cw; cv.height = ch;
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, cw, ch); ctx.translate(-bx, -by);
+  drawRichText(ctx, lay, cssMap);
+  applyTextAntiAlias(cv, { rgba: ctx.getImageData(0, 0, cw, ch).data, bounds: { left: 0, top: 0, right: cw, bottom: ch } }, textToolOpts.aa);
+  m.bounds = { left: bx, top: by, right: ex, bottom: ey };
   
   const ov = m.overlay || (m.overlay = document.createElement('canvas'));
-  ov.width = docW; ov.height = docH;
+  ov.width = cw; ov.height = ch;
   const o = ov.getContext('2d');
-  o.fillStyle = 'rgba(255,0,0,0.5)'; o.fillRect(0, 0, docW, docH);
+  o.clearRect(0, 0, cw, ch);
+  o.fillStyle = 'rgba(255,0,0,0.5)'; o.fillRect(0, 0, cw, ch);
   o.globalCompositeOperation = 'destination-out'; o.drawImage(cv, 0, 0); o.globalCompositeOperation = 'source-over';
+  m.overlayBounds = { left: bx, top: by, right: ex, bottom: ey };
   maskEditPlace(); drawGizmo();
 }
 
@@ -822,18 +849,26 @@ export function closeMaskEdit(commit){
   const m = maskEdit; if (!m) return;
   set_maskEdit(null); m.ta.remove();
   drawGizmo(); try { syncTextBar(); } catch {}
-  if (!commit || doc !== m.owner || !m.canvas) return;
+  if (!commit || doc !== m.owner || !m.canvas || !m.bounds) return;
   const text = m.ta.value.replace(/\n$/, '');
   if (!text.trim()) return;
-  const rgba = m.canvas.getContext('2d').getImageData(0, 0, docW, docH).data;
-  const alpha = new Uint8Array(docW * docH); let any = 0;
+  const b = m.bounds, cw = b.right - b.left, ch = b.bottom - b.top;
+  const rgba = m.canvas.getContext('2d').getImageData(0, 0, cw, ch).data;
+  const alpha = new Uint8Array(cw * ch); let any = 0;
   for (let i = 0; i < alpha.length; i++) { alpha[i] = rgba[i * 4 + 3]; any |= alpha[i]; }
   if (!any) return;
-  combineInto(SELM.createSelection(docW, docH, 0, 0, docW, docH, alpha), m.mode);
+  combineInto(SELM.createSelection(docW, docH, b.left, b.top, cw, ch, alpha), m.mode);
   shell.status('文字蒙版：已生成选区');
 }
 
 export const SEL_TOOLS = new Set(['selRect', 'selEllipse', 'selRow', 'selCol', 'lasso', 'lassoPoly', 'lassoMagnetic', 'selectionBrush', 'wand', 'quickSelect', 'objectSelect']);
+
+
+
+try {
+  if (typeof requestIdleCallback === 'function') requestIdleCallback(() => kick(SELECT), { timeout: 4000 });
+  else setTimeout(() => kick(SELECT), 1500);
+} catch {  }
 
 
 export const PAINT_TOOLS = new Set(['brush', 'eraser', 'pencil', 'cloneStamp', 'patternStamp',

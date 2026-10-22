@@ -113,10 +113,125 @@ function lazySample(ch, x, y) {
   if (ch.depth === 16) return (row[o] * 256 + row[o + 1]) * 255 / 65535;
   const f = new DataView(row.buffer, row.byteOffset + o, 4).getFloat32(0); return Math.max(0, Math.min(255, f * 255));
 }
+const MASK_TILE = 256;
+function readLazyMaskBase(layer, mx, my) {
+  const m = layer.mask, c = layer.lazyChannels && layer.lazyChannels[m.lazyChannel];
+  if (!c) return null;
+  const def = m.defaultColor != null ? m.defaultColor : 255;
+  return (mx >= 0 && my >= 0 && mx < m.width && my < m.height) ? lazySample(c, mx, my) : def;
+}
+
+export function readLazyMaskEdit(layer, mx, my) {
+  const e = layer && layer.lazyMaskEdits; if (!e) return null;
+  const tx = Math.floor(mx / MASK_TILE) * MASK_TILE, ty = Math.floor(my / MASK_TILE) * MASK_TILE;
+  const t = e.tiles.get(`${tx}:${ty}`); if (!t) return null;
+  return t[(my - ty) * MASK_TILE + (mx - tx)];
+}
+const maskProp = (layer, key, fallback) => {
+  const ov = layer && layer.lazyMaskOverride;
+  return ov && ov[key] !== undefined ? ov[key] : fallback;
+};
+function readLazyMaskRaw(layer, mx, my) {
+  let v = readLazyMaskEdit(layer, mx, my);
+  if (v == null && layer.lazyMaskEdits && layer.lazyMaskEdits.uniform != null) v = layer.lazyMaskEdits.uniform;
+  if (v == null) v = readLazyMaskBase(layer, mx, my);
+  return v;
+}
+
+function featheredMaskTile(layer, tx, ty) {
+  const m = layer.mask, f = m && maskProp(layer, 'feather', m.feather);
+  if (!(f > 0.2)) return null;
+  const e = layer.lazyMaskEdits;
+  const sig = `${f}|${maskProp(layer, 'density', m.density) ?? 255}|${m.width}x${m.height}|${e?.version || 0}`;
+  const cache = layer.lazyMaskFeatherCache || (layer.lazyMaskFeatherCache = { sig, tiles: new Map() });
+  if (cache.sig !== sig) { cache.tiles.clear(); cache.sig = sig; }
+  const key = `${tx}:${ty}`, hit = cache.tiles.get(key); if (hit) return hit;
+  const pad = Math.ceil(f * 3) + 2;
+  const sx0 = Math.max(0, tx - pad), sy0 = Math.max(0, ty - pad);
+  const sx1 = Math.min(m.width, tx + MASK_TILE + pad), sy1 = Math.min(m.height, ty + MASK_TILE + pad);
+  const sw = sx1 - sx0, sh = sy1 - sy0;
+  if (!(sw > 0 && sh > 0)) return null;
+  const def = m.defaultColor != null ? m.defaultColor : 255;
+  const src = new Uint8Array(sw * sh);
+  for (let y = 0; y < sh; y++) for (let x = 0; x < sw; x++)
+    src[y * sw + x] = readLazyMaskRaw(layer, sx0 + x, sy0 + y) ?? def;
+  const res = featherDensityPlane({ gray: src, width: sw, height: sh, top: sy0, left: sx0, defaultColor: def, relative: false },
+    { top: ty, left: tx, width: MASK_TILE, height: MASK_TILE }, f, 255);
+  cache.tiles.set(key, res.gray);
+  if (cache.tiles.size > 64) cache.tiles.delete(cache.tiles.keys().next().value);
+  return res.gray;
+}
+
+export function readLazyMaskValue(layer, mx, my, applyProps = true) {
+  const m = layer && layer.mask;
+  if (!m || maskProp(layer, 'disabled', m.disabled) || (m.lazyChannel == null && !m.gray)) return null;
+  let v = null;
+  if (applyProps && maskProp(layer, 'feather', m.feather) > 0.2 && mx >= 0 && my >= 0 && mx < m.width && my < m.height) {
+    const tx = Math.floor(mx / MASK_TILE) * MASK_TILE, ty = Math.floor(my / MASK_TILE) * MASK_TILE;
+    const tile = featheredMaskTile(layer, tx, ty);
+    if (tile) v = tile[(my - ty) * MASK_TILE + (mx - tx)];
+  }
+  if (v == null) v = readLazyMaskRaw(layer, mx, my);
+  if (v == null) {
+    const def = m.defaultColor != null ? m.defaultColor : 255;
+    v = (mx >= 0 && my >= 0 && mx < m.width && my < m.height) ? (m.gray && m.gray[my * m.width + mx] != null ? m.gray[my * m.width + mx] : def) : def;
+  }
+  if (v == null) return null;
+  if (!applyProps) return v;
+  const den = maskProp(layer, 'density', m.density) != null ? maskProp(layer, 'density', m.density) : 255;
+  if (den < 255) v = 255 - Math.round((255 - v) * den / 255);
+  if (maskProp(layer, 'invert', m.invert)) v = 255 - v;
+  return v;
+}
+
+export function readLazyMaskPixel(layer, x, y, applyProps = true) {
+  const m = layer && layer.mask;
+  if (!m || maskProp(layer, 'disabled', m.disabled) || (m.lazyChannel == null && !m.gray)) return null;
+  const left = layer.bounds?.left || 0, top = layer.bounds?.top || 0, rel = maskProp(layer, 'relative', m.relative);
+  return readLazyMaskValue(layer, (rel ? x : left + x) - (m.left || 0), (rel ? y : top + y) - (m.top || 0), applyProps);
+}
+
+
+export function writeLazyMaskRect(layer, x, y, w, h, data) {
+  const m = layer && layer.mask;
+  if (!m || m.lazyChannel == null || !(w > 0 && h > 0)) return false;
+  const e = layer.lazyMaskEdits || (layer.lazyMaskEdits = { tiles: new Map(), version: 0 });
+  for (let ty = Math.floor(y / MASK_TILE) * MASK_TILE; ty < y + h; ty += MASK_TILE)
+    for (let tx = Math.floor(x / MASK_TILE) * MASK_TILE; tx < x + w; tx += MASK_TILE) {
+      const key = `${tx}:${ty}`;
+      let t = e.tiles.get(key);
+      if (!t) {
+        t = new Uint8Array(MASK_TILE * MASK_TILE);
+        for (let yy = 0; yy < MASK_TILE; yy++) for (let xx = 0; xx < MASK_TILE; xx++)
+          t[yy * MASK_TILE + xx] = readLazyMaskRaw(layer, tx + xx, ty + yy) ?? (m.defaultColor != null ? m.defaultColor : 255);
+        e.tiles.set(key, t);
+      }
+      const x0 = Math.max(x, tx), x1 = Math.min(x + w, tx + MASK_TILE);
+      const y0 = Math.max(y, ty), y1 = Math.min(y + h, ty + MASK_TILE);
+      for (let yy = y0; yy < y1; yy++)
+        t.set(data.subarray((yy - y) * w + x0 - x, (yy - y) * w + x1 - x), (yy - ty) * MASK_TILE + x0 - tx);
+    }
+  e.version++;
+  return true;
+}
+
+export function applyLazyMaskToRGBA(layer, data, x0, y0, w, h) {
+  const m = layer?.mask;
+  if (!m || maskProp(layer, 'disabled', m.disabled) || (m.lazyChannel == null && !m.gray)) return data;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const v = readLazyMaskPixel(layer, x0 + x, y0 + y);
+    if (v == null) continue;
+    const o = (y * w + x) * 4 + 3;
+    data[o] = Math.round(data[o] * v / 255);
+  }
+  return data;
+}
 
 export function readLazyLayerPixel(layer, x, y, mode = 3) {
   const c = layer && layer.lazyChannels; if (!c || x < 0 || y < 0 || x >= layer.width || y >= layer.height) return null;
-  const a = c[-1] ? lazySample(c[-1], x, y) : 255;
+  let a = c[-1] ? lazySample(c[-1], x, y) : 255;
+  const mv = readLazyMaskPixel(layer, x, y);
+  if (mv != null) a = Math.round(a * mv / 255);
   if (mode === 3) return [lazySample(c[0], x, y), lazySample(c[1], x, y), lazySample(c[2], x, y), a];
   const g = lazySample(c[0], x, y); return [g, g, g, a];
 }
@@ -125,7 +240,9 @@ export function readLazyLayerPixel(layer, x, y, mode = 3) {
 
 export function readLazyLayerRectChannels(layer, x, y, width, height){
   if (!layer?.lazyChannels || x < 0 || y < 0 || width <= 0 || height <= 0 || x + width > layer.width || y + height > layer.height) return null;
-  return Object.entries(layer.lazyChannels).map(([id, c]) => {
+
+
+  return Object.entries(layer.lazyChannels).filter(([id]) => +id !== -2 && +id !== -3).map(([id, c]) => {
     const start = x * c.bps, count = width * c.bps, end = start + count;
     const out = new Uint8Array(2 + count * height); 
     for (let dy = 0; dy < height; dy++) {
@@ -356,7 +473,10 @@ export function createLayerTileSession(chans, options = {}) {
 
 
 async function decodeChannel(bytes, width, height, depth, psb, isColor = false, keepNative = null) {
-  const r = new R(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), psb);
+
+
+
+  const r = new R(bytes, psb);
   const comp = r.u16();
   if (![8, 16, 32].includes(depth)) throw new Error(`不支持的位深 ${depth}`);
   const bytesPerSample = depth === 8 ? 1 : depth === 16 ? 2 : 4;
@@ -366,10 +486,10 @@ async function decodeChannel(bytes, width, height, depth, psb, isColor = false, 
     throw new Error(`通道尺寸非法：${width}×${height} @ ${depth}bit`);
   let raw; 
   if (comp === 0) {                       
-    raw = r.bytes(expectedBytes);
+    raw = r.bytes(expectedBytes).slice();
   } else if (comp === 1) {                
-    const counts = [];
-    for (let y = 0; y < height; y++) counts.push(psb ? r.u32() : r.u16());
+    const counts = new Uint32Array(height);
+    for (let y = 0; y < height; y++) counts[y] = psb ? r.u32() : r.u16();
     raw = new Uint8Array(rowBytes * height);
     for (let y = 0; y < height; y++) {
       const packed = r.bytes(counts[y]);
@@ -468,12 +588,36 @@ function planesToRGBA(planes, width, height, mode, opacity255, maskInfo = null, 
   const maskDisabled = !!(maskInfo && (maskInfo.maskFlags & 2));
   const maskInvert = !!(maskInfo && (maskInfo.maskFlags & 4));
   const maskRelativeToLayer = !!(maskInfo && (maskInfo.maskFlags & 1));
-  const hasRelativeMask = M && maskInfo && (maskInfo.maskW !== width || maskInfo.maskH !== height);
+  const hasRelativeMask = M && maskInfo && (maskInfo.maskW !== width || maskInfo.maskH !== height || maskInfo.top !== maskInfo.layerTop || maskInfo.left !== maskInfo.layerLeft);
   const mw = maskInfo ? maskInfo.maskW : width, mh = maskInfo ? maskInfo.maskH : height;
   const mTop = maskInfo ? maskInfo.top : 0, mLeft = maskInfo ? maskInfo.left : 0;
   const lTop = maskInfo ? maskInfo.layerTop : 0, lLeft = maskInfo ? maskInfo.layerLeft : 0;
   const defM = (maskInfo && maskInfo.defaultColor != null) ? maskInfo.defaultColor : 255;
   const cPl = codec ? [planes[0], planes[1], planes[2], planes[3]] : null, tmp = [0, 0, 0];
+
+
+
+  if (!codec && mode === 3) {
+    const p0 = planes[0], p1 = planes[1], p2 = planes[2], n = width * height;
+    if (p0 && p1 && p2 && p0.length >= n && p1.length >= n && p2.length >= n) {
+      const alphaOK = !A || A.length >= n;
+      if ((!M || maskDisabled) && alphaOK) {
+        if (A) for (let i = 0, o = 0; i < n; i++, o += 4) { rgba[o] = p0[i]; rgba[o + 1] = p1[i]; rgba[o + 2] = p2[i]; rgba[o + 3] = A[i]; }
+        else for (let i = 0, o = 0; i < n; i++, o += 4) { rgba[o] = p0[i]; rgba[o + 1] = p1[i]; rgba[o + 2] = p2[i]; rgba[o + 3] = opacity255; }
+        return rgba;
+      }
+      if (M && !maskDisabled && !hasRelativeMask && !maskRelativeToLayer && M.length >= n && alphaOK) {
+        for (let i = 0, o = 0; i < n; i++, o += 4) {
+          let mv = M[i]; if (maskInvert) mv = 255 - mv;
+          let a = (A ? A[i] : 255);
+          a = (a * mv) / 255;
+          if (opacity255 !== 255) a = (a * opacity255) / 255;
+          rgba[o] = p0[i]; rgba[o + 1] = p1[i]; rgba[o + 2] = p2[i]; rgba[o + 3] = a;
+        }
+        return rgba;
+      }
+    }
+  }
 
   for (let i = 0; i < width * height; i++) {
     let r, g, b;
@@ -549,7 +693,7 @@ export async function decodeLayerJob(job, tileSession = null) {
   }
   const planes = {}, warns = [];
   for (const ch of job.chans) {
-    if (!(ch.w > 0 && ch.h > 0)) continue;
+    if (!(ch.w > 0 && ch.h > 0)) { if (ch.id === -2 || ch.id === -3) planes[ch.id] = new Uint8Array(0); continue; }
     if (!ch.bytes || !ch.bytes.length) { warns.push({ id: ch.id, message: '通道数据为空' }); planes[ch.id] = new Uint8Array(ch.w * ch.h); continue; }
     try { planes[ch.id] = await decodeChannel(ch.bytes, ch.w, ch.h, job.depth, job.psb, ch.id >= 0); }
     catch (e) { warns.push({ id: ch.id, message: String(e && e.message || e) }); planes[ch.id] = new Uint8Array(ch.w * ch.h); }
@@ -629,7 +773,7 @@ export async function parsePsdRaster(buffer, opts = {}) {
 
 
         let reused = null, sig = null;
-        if (opts.reuse && opts.keepPlanes !== true && !opts.keepNativePlanes) {
+        if (opts.reuse && opts.keepPlanes !== true && !opts.keepNativePlanes && !rec.maskPresent) {
           sig = rasterSigAt(r.dv, rec, r.o, mode, depth, liEnd, codec);
           if (sig) {
             const prev = opts.reuse(sig);
@@ -642,14 +786,17 @@ export async function parsePsdRaster(buffer, opts = {}) {
         if (lazyLarge && rec.width > 0 && rec.height > 0) {
           lazyChannels = {}; lazyCandidate = true; let probe = r.o;
           for (const ch of rec.channels) {
-            if (ch.id === -2 || ch.id === -3) { lazyCandidate = false; break; }
-            const cw = rec.width, chh = rec.height;
+            const isMask = ch.id === -2 || ch.id === -3;
+            const cw = isMask ? rec.maskW : rec.width, chh = isMask ? rec.maskH : rec.height;
             const end = probe + ch.length;
-            if (!Number.isSafeInteger(end) || end > liEnd || !(cw > 0 && chh > 0)) { lazyCandidate = false; break; }
-            const bytes = new Uint8Array(r.dv.buffer, r.dv.byteOffset + probe, ch.length);
-            const lazy = lazyChannel(bytes, cw, chh, depth, psb, ch.id >= 0);
+            if (!Number.isSafeInteger(end) || end > liEnd) { lazyCandidate = false; break; }
+            probe = end;
+
+            if (!(cw > 0 && chh > 0)) continue;
+            const bytes = new Uint8Array(r.dv.buffer, r.dv.byteOffset + end - ch.length, ch.length);
+            const lazy = lazyChannel(bytes, cw, chh, depth, psb, !isMask);
             if (!lazy) { lazyCandidate = false; break; }
-            lazyChannels[ch.id] = lazy; probe = end;
+            lazyChannels[ch.id] = lazy;
           }
           if (lazyCandidate) {
             r.seek(probe); rec._planes = {}; rec._nativePlanes = null; rec._lazyChannels = lazyChannels;
@@ -693,6 +840,7 @@ export async function parsePsdRaster(buffer, opts = {}) {
               catch (e) { channelWarning(ch, e); planes[ch.id] = new Uint8Array(cw * chh); }
             }
           }
+          if (isMask && !(cw > 0 && chh > 0)) planes[ch.id] = new Uint8Array(0);
           r.seek(end);
         }
         rec._planes = planes; rec._nativePlanes = nativePlanes;
@@ -726,13 +874,18 @@ export async function parsePsdRaster(buffer, opts = {}) {
           };
           rgba = planesToRGBA(maskFeathered(rec._planes, rec, maskInfo), rec.width, rec.height, mode, 255, maskInfo, codec);
         }
+        const lazyMaskId = rec._lazyChannels ? (rec._lazyChannels[-2] ? -2 : rec._lazyChannels[-3] ? -3 : null) : null;
+        const maskGray = rec._planes[-2] || rec._planes[-3] || null;
+        const hasMask = !(rec.frame && (rec.maskFlags & 8)) && rec.maskPresent
+          && (maskGray || lazyMaskId || rec.maskW === 0 || rec.maskH === 0);
         layers.push({
           name: rec.name, bounds: rec.bounds, width: rec.width, height: rec.height,
+          isBackground: layers.length === 0 && !rec.group && !rec.channels.some(c => c.id === -1),
           rgba, opacity: rec.opacity, blendMode: rec.blendMode, clipping: rec.clipping,
           hidden: rec.hidden, isSmartObject: rec.isSmartObject, isText: rec.isText,
           group: rec.group, frame: rec.frame, isFrame: !!rec.frame, layerType: rec.layerType, adjustment: rec.adjustment,
           fill: rec.fill, fillOpacity: rec.fillOpacity, vectorMask: rec.vectorMask, vectorStroke: rec.vectorStroke, vectorOrigin: rec.vectorOrigin,
-          effects: rec.effects,
+          effects: rec.effects, blendClipped: rec.blendClipped, blendInterior: rec.blendInterior, transparencyShapes: rec.transparencyShapes, knockout: rec.knockout,
           ...(rec._lazyChannels ? { lazyChannels: rec._lazyChannels } : {}),
           ...(rec._lazyCompressedChannels ? { lazyCompressedChannels: rec._lazyCompressedChannels } : {}),
           ...(rec._lazyCompressedChannels ? { lazyCompressedPsb: psb } : {}),
@@ -741,14 +894,15 @@ export async function parsePsdRaster(buffer, opts = {}) {
           
           
           
-          mask: !(rec.frame && (rec.maskFlags & 8)) && (rec.maskW > 0 && rec.maskH > 0 && (rec._planes[-2] || rec._planes[-3])) ? {
+          mask: hasMask ? {
             width: rec.maskW, height: rec.maskH, top: rec.maskTop, left: rec.maskLeft,
             defaultColor: rec.maskDefaultColor, flags: rec.maskFlags,
             disabled: !!(rec.maskFlags & 2), invert: !!(rec.maskFlags & 4),
             relative: !!(rec.maskFlags & 1), fromOtherData: !!(rec.maskFlags & 8),
             ...(rec.maskDensity != null ? { density: rec.maskDensity } : {}),
             ...(rec.maskFeather != null ? { feather: rec.maskFeather } : {}),
-            gray: rec._planes[-2] || rec._planes[-3]
+            gray: maskGray,
+            ...(lazyMaskId ? { lazyChannel: lazyMaskId } : {})
           } : null,
           ...(rec._decodeWarnings.length ? { decodeWarnings: rec._decodeWarnings } : {}),
           ...(rec._sig ? { rasterSig: rec._sig } : {}),
@@ -854,6 +1008,7 @@ function readRecord(r, psb) {
   let adjustment = null, fill = null, fillOpacity = 255, vectorMask = false, vectorStroke = null, vectorOrigin = null, effects = false;
   let frame = null;
   let channelsOff = null;   
+  let blendClipped = true, blendInterior = false, transparencyShapes = true, knockout = null;
   while (r.o + 12 <= extraEnd) {
     const sig = r.key4(); if (sig !== '8BIM' && sig !== '8B64') break;
     
@@ -863,6 +1018,10 @@ function readRecord(r, psb) {
     const len = isBig ? r.u64() : r.u32(); const de = r.o + len;
     try {
       if (key === 'luni') uname = r.unicode();
+      else if (key === 'knko') knockout = r.u8();
+      else if (key === 'clbl') blendClipped = r.u8() !== 0;
+      else if (key === 'infx') blendInterior = r.u8() !== 0;
+      else if (key === 'tsly') transparencyShapes = r.u8() !== 0;
       else if (key === 'brst') { const off = []; for (let k = 0; k + 4 <= len; k += 4) { const c = r.dv.getInt32(r.o + k); if (c >= 0 && c < 4) off.push(c); } if (off.length) channelsOff = off; }
       else if (key === 'SoLd' || key === 'PlLd') isSmartObject = true;
       else if (key === 'TySh') isText = true;
@@ -949,13 +1108,16 @@ function readRecord(r, psb) {
     if (maskParams.vectorDensity != null) vectorMask.density = maskParams.vectorDensity;
     if (maskParams.vectorFeather != null) vectorMask.feather = maskParams.vectorFeather;
   }
+
+
+  if (maskFlags & 1) { maskTop -= top; maskBottom -= top; maskLeft -= left; maskRight -= left; }
   return {
     bounds: { top, left, bottom, right }, width: right - left, height: bottom - top,
-    maskW, maskH, maskTop, maskLeft, maskBottom, maskRight, maskDefaultColor, maskFlags,
+    maskPresent: maskLen >= 18, maskW, maskH, maskTop, maskLeft, maskBottom, maskRight, maskDefaultColor, maskFlags,
     maskDensity: maskParams ? maskParams.density : null, maskFeather: maskParams ? maskParams.feather : null,
     channels, blendMode: (group && (group.type === 1 || group.type === 2) && group.blendKey) ? group.blendKey : blendMode, opacity, clipping, hidden: !!(flags & 2),
     name: uname || name, isSmartObject, isText, group, frame,
-    adjustment, fill, fillOpacity, vectorMask, vectorStroke, vectorOrigin, effects, layerType,
+    adjustment, fill, fillOpacity, vectorMask, vectorStroke, vectorOrigin, effects, layerType, blendClipped, blendInterior, transparencyShapes, knockout,
     ...(blendIf ? { blendIf } : {}), ...(channelsOff ? { channelsOff } : {}),
   };
 }

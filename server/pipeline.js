@@ -196,10 +196,7 @@ export async function writePsdOutput(ctx) {
     } catch (e) { a.sourceReplaced = '失败(' + e.message + ')，双击智能对象仍是原图'; }
     
     
-    const l0 = doc.layers[a.layerIndex], m0 = l0 && l0.mask;
-    const maskOriginDelta = m0 && m0.relative && (l0.bounds.top !== b.top || l0.bounds.left !== b.left)
-      ? { top: l0.bounds.top - b.top, left: l0.bounds.left - b.left } : undefined;
-    buf = rebuildPsdReplacingLayerPixels(buf, a.layerIndex, crop(surf, b).data, b, merged.data, { sourcePatch, filterEffectsPatch, maskOriginDelta }).buffer;
+    buf = rebuildPsdReplacingLayerPixels(buf, a.layerIndex, crop(surf, b).data, b, merged.data, { sourcePatch, filterEffectsPatch }).buffer;
   }
   
   try { buf = await writeThumbnailFromSurface(buf, merged, docW, docH); }

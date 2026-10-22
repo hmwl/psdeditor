@@ -9,12 +9,9 @@ import { formDialog } from '../dialog.js';
 import { isShapeLayer } from '../property-panel.js';
 import { shell } from '../shell.js';
 import { tools } from '../tools.js';
+import { $, BLEND, EDIT, SELM, createSelection, ensureLazy, getVectorMaskPath, isEmptySelection } from './01-boot.js';
 import {
-  $, BLEND, EDIT, SELECT, SELM, createSelection, ensureLazy, getVectorMaskPath, isEmptySelection, runLazy,
-} from './01-boot.js';
-import {
-  brushHistory, doc, docH, docW, layerRenames, layerTree, li, origBuffer, selection, set_selPathCache,
-  set_selection,
+  doc, docH, docW, layerRenames, layerTree, li, origBuffer, selection, set_selPathCache, set_selection,
 } from './02-doc-state.js';
 import { histLog, pushDocHistory, syncHistoryPanel, updateUndoButtons } from './03-history.js';
 import { cropRGBA, opaqueBBox, renderLayerAlone } from './05-layer-lock-guides.js';
@@ -26,7 +23,9 @@ import { layerOrderView, renderLayerPanel, selLayer, smartFilterInfo } from './2
 import { humanEditError, renderProps } from './24-layer-ops-queue.js';
 import { transformChanged } from './28-layer-props-transform.js';
 import { hexOf } from './31-selection-brush.js';
-import { combineInto, sampleRGBA, selectAll, setSelection, syncAnts } from './32-cursors-select-options.js';
+import {
+  combineInto, endSelBrush, sampleRGBA, selBrushDown, selBrushMove, setQuickMaskOverlay, setSelection, syncAnts,
+} from './32-cursors-select-options.js';
 import { osOpts, osSegment } from './33-lasso-quick-select.js';
 import {
   clampSliceRect, makeSlice, set_sliceSel, set_slicesDirty, sliceModel, sliceWriteWhy, userSlices,
@@ -65,21 +64,45 @@ try {
 function saveQmaskOpts(){ try { localStorage.setItem('psd_editor.qmaskOpts', JSON.stringify(qmaskOpts)); } catch {} }
 export function qmaskRefresh(){
   if (!qmask) return;
-  if (!qmask.cv) { qmask.cv = document.createElement('canvas'); qmask.cv.width = docW; qmask.cv.height = docH; qmask.img = qmask.cv.getContext('2d').createImageData(docW, docH); }
-  const d = qmask.img.data, g = qmask.gray;
-  const [cr, cg, cb] = qmaskOpts.color, k = qmaskOpts.opacity / 100;
-  for (let i = 0, o = 0; i < g.length; i++, o += 4) { d[o] = cr; d[o + 1] = cg; d[o + 2] = cb; d[o + 3] = Math.round((255 - g[i]) * k); }
-  qmask.cv.getContext('2d').putImageData(qmask.img, 0, 0);
+  setQuickMaskOverlay(qmask.sel, { color: qmaskOpts.color, opacity: qmaskOpts.opacity / 100, inverted: qmask.inverted });
+  drawGizmo();
 }
 
 export function setQmaskInverted(on){
   on = !!on;
   if (on === qmaskOpts.inverted) return;
   qmaskOpts.inverted = on; saveQmaskOpts();
-  if (qmask) { const g = qmask.gray; for (let i = 0; i < g.length; i++) g[i] = 255 - g[i]; qmaskRefresh(); drawGizmo(); }
+  if (qmask) { qmask.inverted = on; qmaskRefresh(); }
   try { tools.setQuickMask(!!qmask, on); } catch {}
   shell.status('快速蒙版色彩指示：' + (on ? '所选区域' : '被蒙版区域'));
 }
+
+
+export function qmaskStrokeBegin(pt, opts = {}){
+  if (!qmask) return false;
+  const desired = qmask.inverted ? 255 - (opts.tone | 0) : (opts.tone | 0);
+  const add = desired >= 128;
+  const strength = Math.max(0, Math.min(1, (add ? desired : 255 - desired) / 255));
+  selBrushDown(null, pt, {
+    base: qmask.sel, mode: add ? 'add' : 'subtract',
+    opts: { size: opts.size || 60, hardness: opts.hardness ?? 1, opacity: Math.max(.01, (opts.opacity ?? 1) * strength) },
+    onUpdate: sel => {
+      if (!qmask) return;
+      qmask.sel = sel;
+      set_selection(sel); set_selPathCache(null);
+      qmaskRefresh();
+    },
+    onEnd: sel => {
+      if (!qmask) return;
+      qmask.sel = sel;
+      setSelection(sel, { label: '快速蒙版' });
+      qmaskRefresh();
+    },
+  });
+  return true;
+}
+export function qmaskStrokeMove(pt){ selBrushMove(null, pt); }
+export function qmaskStrokeEnd(){ return endSelBrush(); }
 let qmaskDlg = null;
 export function openQuickMaskOptions(){
   if (!qmaskDlg) {
@@ -127,30 +150,23 @@ export function toggleQuickMask(){
   if (!doc || li) return;
   if (!qmask) {
     if (selection && !SELM) return;
-    const gray = selection ? Uint8Array.from(selectionGrayFull(selection)) : new Uint8Array(docW * docH).fill(255);
-    if (qmaskOpts.inverted) for (let i = 0; i < gray.length; i++) gray[i] = 255 - gray[i];   
-    qmask = { gray, cv: null, img: null, histFrom: histLog.items.length };
-    set_selection(null); set_selPathCache(null); syncAnts();
+
+    const full = SELM && SELM.rectSelection ? SELM.rectSelection(docW, docH, 0, 0, docW, docH) : null;
+    const base = selection || full;
+    if (!base) { $('#notice').textContent = '快速蒙版：当前文档建不出底选区。'; return; }
+    qmask = { sel: base, inverted: qmaskOpts.inverted, histFrom: histLog.items.length };
+    set_selection(base); set_selPathCache(null);
     qmaskRefresh();
     try { tools.setQuickMask(true, qmaskOpts.inverted); } catch {}
     shell.status(qmaskOpts.inverted ? '快速蒙版（所选区域）：用画笔涂黑 = 加进选区、涂白 = 去掉选区；再按 Q 退出'
                                     : '快速蒙版：用画笔涂黑 = 去掉选区、涂白 = 加进选区；再按 Q 退出');
   } else {
-    if (qmaskOpts.inverted) { const q = qmask.gray; for (let i = 0; i < q.length; i++) q[i] = 255 - q[i]; }   
-    const g = qmask.gray; let any = false, all = true;
-    for (let i = 0; i < g.length; i++) { if (g[i]) any = true; if (g[i] !== 255) all = false; }
-    
-    brushHistory.undo = brushHistory.undo.filter(e => e.kind !== 'qmask');
-    brushHistory.redo = brushHistory.redo.filter(e => e.kind !== 'qmask');
-    const before = histLog.items.length;
-    histLog.items = histLog.items.filter((it, k) => !(k >= qmask.histFrom && it.label === '快速蒙版'));
-    histLog.cursor = Math.max(0, Math.min(histLog.items.length - 1, histLog.cursor - (before - histLog.items.length)));
-    const gray = g;
+    const sel = qmask.sel;
     qmask = null;
+    setQuickMaskOverlay(null);
     try { tools.setQuickMask(false, qmaskOpts.inverted); } catch {}
-    if (all) { runLazy(SELECT, '快速蒙版', () => { selectAll(); }); }
-    else if (any) runLazy(SELECT, '快速蒙版', () => { const sel = createSelection(docW, docH, 0, 0, docW, docH, gray); setSelection(sel, { label: '快速蒙版' }); });
-    else setSelection(null);
+    set_selection(sel || null); set_selPathCache(null);
+    syncAnts(); drawGizmo();
     updateUndoButtons(); syncHistoryPanel();
   }
   drawGizmo();
@@ -278,7 +294,7 @@ export async function layerViaSelection(cut){
     return duplicateLayerUI(selLayer) >= 0; }
   const keep = pixelClipboard;
   try {
-    const ok = cut ? cutPixelsUI() : copyPixelsUI(false);
+    const ok = cut ? await cutPixelsUI() : await copyPixelsUI(false);
     if (ok === false || !pixelClipboard || pixelClipboard === keep) return false;
     await pasteClipboardUI('inPlace');
     return true;

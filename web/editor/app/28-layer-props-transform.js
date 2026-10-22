@@ -6,11 +6,11 @@
 import './27-gradient-editor.js';   
 import { isShapeLayer, pathBounds } from '../property-panel.js';
 import { shell } from '../shell.js';
-import { $, BLEND_KEYS, BLEND_LABELS, EDIT, ensureLazy, selectionBounds } from './01-boot.js';
+import { $, BLEND_KEYS, BLEND_LABELS, EDIT, applyEdits, ensureLazy, selectionBounds } from './01-boot.js';
 import {
   TInputs, aspectLock, doc, docH, docName, docStack, docW, layerDeletes, layerEdits, layerRenames,
-  layerTransforms, layerTree, li, meshEditInProgress, meshFlipState, meshRotState, origBuffer, pushHistory,
-  selection, set_layerReorder, soLayerIndex, sos, textCrops,
+  layerTransforms, layerTree, li, meshEditInProgress, meshFlipState, meshRotState, origBuffer, pixelPaint,
+  pushHistory, selection, set_layerReorder, soLayerIndex, sos, textCrops,
 } from './02-doc-state.js';
 import {
   actRecord, docHistLock, pushDocHistory, set_docHistLock, structuralBegin, structuralDone, updateUndoButtons,
@@ -19,7 +19,7 @@ import { isBackgroundLayer } from './05-layer-lock-guides.js';
 import { commit, editablePoints, layerSelBBox, mapEditable, quadBBox } from './06-view-zoom-move.js';
 import { moveLockWhy, sayLocked, tfState } from './19-free-transform.js';
 import { duplicateLayerBlockUI, refreshAll } from './20-snap-smart-object.js';
-import { defaultTargetLayer, initDocument } from './21-load-document.js';
+import { defaultTargetLayer, initDocument, restoreLazySource } from './21-load-document.js';
 import { exitSO, matchLayer } from './22-deform-tools.js';
 import {
   hideAltClipLine, layerCanvasCache, layerOrderView, renderLayerPanel, selLayer, selLayers, set_selLayer,
@@ -35,11 +35,11 @@ import { renderStaticLayers } from './30-render.js';
 import { PAINT_TOOLS, docTool, moveOpts, syncMoveBar } from './31-selection-brush.js';
 import { abOpts, artboardOfLayer, docArtboards } from './35-artboard.js';
 import { abRelayoutByOrder, frameRectOfLayer } from './36-clipboard-frame.js';
-import { autoTargetMask } from './38-brush-engine.js';
+import { autoTargetMask, restoreSparsePaint } from './38-brush-engine.js';
 import { syncBrushPanel } from './40-options-bar-wiring.js';
 import { clonePathSubpaths, effPathSubpaths, pathSubpathsEq, readVectorPath, set_pathModel } from './44-vector-path.js';
 import { drawGizmo } from './46-smart-filter-panel.js';
-import { buildPsdBuffer } from './48-info-export.js';
+import { buildPsdBuffer, ensureStructuralBase } from './48-info-export.js';
 
 
 
@@ -54,11 +54,11 @@ export function syncLayerControls(){
     hdrBlend.disabled = true; hdrOpacity.disabled = true;
     if (hdrFill) hdrFill.disabled = true;
     hdrBlend.innerHTML = '';
-    hdrBlend.appendChild(mkEl('option', { textContent: '未选中图层', disabled: true, selected: true }));
+    hdrBlend.appendChild(mkEl('option', { textContent: '正常', value: 'norm', selected: true }));
     return;
   }
   hdrBlend.disabled = false; hdrOpacity.disabled = false;
-  if (hdrFill) { hdrFill.disabled = false; hdrFill.value = Math.round(effFillOpacity(l.index, l) / 2.55); }
+  if (hdrFill) { hdrFill.disabled = false; if (document.activeElement !== hdrFill) hdrFill.value = Math.round(effFillOpacity(l.index, l) / 2.55); }
   const ed = layerEdits[l.index] || {};
   const cur = ed.blendKey != null ? ed.blendKey : (l.blendKey || (l.isGroup ? 'pass' : 'norm'));
   const keys = l.isGroup ? ['pass', ...BLEND_KEYS] : BLEND_KEYS.slice();
@@ -66,7 +66,8 @@ export function syncLayerControls(){
   for (const k of keys) hdrBlend.appendChild(mkEl('option', { value: k, textContent: BLEND_LABELS[k] || k }));
   if (!keys.includes(cur)) hdrBlend.appendChild(mkEl('option', { value: cur, textContent: '[' + String(cur).trim() + ']' }));
   hdrBlend.value = cur;
-  hdrOpacity.value = Math.round((ed.opacity != null ? ed.opacity : (l.opacity ?? 255)) / 2.55);
+
+  if (document.activeElement !== hdrOpacity) hdrOpacity.value = Math.round((ed.opacity != null ? ed.opacity : (l.opacity ?? 255)) / 2.55);
 }
 
 export function batchTargets(idx){
@@ -82,6 +83,7 @@ hdrBlend.onchange = () => {
 hdrOpacity.onchange = () => {
   if (selLayer < 0) return;
   const v = Math.max(0, Math.min(100, Math.round(+hdrOpacity.value || 0)));
+  hdrOpacity.value = v;
   pushDocHistory();
   for (const i of batchTargets(selLayer)) setLayerOpacity(i, Math.round(v * 2.55));
   actRecord('layerProps', { opacity: v });
@@ -203,6 +205,47 @@ export async function deleteLayersReal(picks){
     const prev = structuralBegin();
     for (const k of targets) layerDeletes.add(k);               
     if (li && targets.has(soLayerIndex)) exitSO();
+
+
+
+
+    const lazyRaster = doc.layers.find(l => l && l.lazyRasterSource);
+    if (lazyRaster) {
+      const lazyIdx = doc.layers.indexOf(lazyRaster);
+      const prevPaints = [];
+      for (const [k, pp] of Object.entries(pixelPaint)) {
+        if (!pp?.sparse?.tiles?.size) continue;
+        const l = doc.layers[+k];
+        if (!l || l.lazyRasterSource) continue;
+        prevPaints.push({ name: l.name, tiles: new Map(pp.sparse.tiles), w: pp.w, h: pp.h, left: pp.left, top: pp.top });
+      }
+      let buf = await ensureStructuralBase(origBuffer);
+
+      for (const k of [...targets].sort((a, b) => b - a)) buf = applyEdits(buf, [{ op: 'deleteLayer', index: k }]).buffer;
+      await initDocument(buf, docName, { nested: docStack.length > 0 });
+      try { restoreLazySource(lazyRaster, Math.max(0, lazyIdx - [...targets].filter(t => t < lazyIdx).length)); } catch (e) { console.warn('[删除图层] 惰性原图恢复失败', e); }
+      if (prevPaints.length) {
+        try {
+          for (const e of prevPaints) {
+            const idx = doc.layers.findIndex(l => l && l.name === e.name);
+            if (idx >= 0) restoreSparsePaint(idx, e.tiles, e);
+          }
+        } catch (err) { console.warn('[删除图层] 笔迹恢复失败', err); }
+      }
+      const lo0 = Math.min(...targets);
+      const survivors0 = view.order.filter(i => !targets.has(i));
+      const below0 = survivors0.filter(i => i < lo0);
+      const pickOld0 = below0.length ? below0[below0.length - 1] : survivors0[0];
+      const dec0 = s => s - [...targets].filter(t => t < s).length;
+      selLayers.clear();
+      set_selLayer(defaultTargetLayer(pickOld0 == null ? -1 : dec0(pickOld0)));
+      refreshAll(false);
+      structuralDone(prev, '删除图层');
+      const msg0 = names.length === 1 ? `已删除「${names[0]}」`
+        : `已删除 ${names.length} 个图层（${names.slice(0, 3).join('、')}${names.length > 3 ? ' 等' : ''}）`;
+      $('#notice').textContent = msg0; shell.status(msg0);
+      return true;
+    }
     const built = await buildPsdBuffer({ fast: true });
     await initDocument(built.buf, docName, { nested: docStack.length > 0 });
     
@@ -374,7 +417,8 @@ export function getPropertyTransformValues(idx){
   return v;
 }
 export function smartPropertyBaseRotation(idx){
-  const so = sos.find(s => matchLayer(s) === idx), q = so?.info?.layerInfo?.placementQuad;
+  const so = sos.find(s => matchLayer(s) === idx), info = so?.info?.layerInfo, q = info?.placementQuad;
+  if (Number.isFinite(info?.placementRotation)) return info.placementRotation;
   return q?.length === 4 ? Math.atan2(q[1].y - q[0].y, q[1].x - q[0].x) * 180 / Math.PI : 0;
 }
 export function setShapePropertyTransform(idx, patch){
@@ -437,7 +481,7 @@ export function syncTransformInputs(){
   if (TInputs.y) TInputs.y.value = Math.round(v.y);
   if (TInputs.w) TInputs.w.value = Math.round(v.w);
   if (TInputs.h) TInputs.h.value = Math.round(v.h);
-  if (TInputs.rot) TInputs.rot.value = Math.round(v.rot);
+  if (TInputs.rot) TInputs.rot.value = Math.round(v.rot * 100) / 100;
   if (TInputs.rotVal) TInputs.rotVal.textContent = '°';
   if (TInputs.fh) TInputs.fh.classList.toggle('on', !!v.flipX);
   if (TInputs.fv) TInputs.fv.classList.toggle('on', !!v.flipY);

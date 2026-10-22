@@ -432,7 +432,7 @@ export async function settleForDocSwitch(){
   set_sliceDrag(null); set_abState(null); set_frameState(null); set_shapeState(null); set_gradDrag(null); set_liveGradEdit(null); selDrag = null;
   if (penState) { penState.drag = null; if (!commitPen(false)) cancelPen(); }
   set_freePen(null); set_magPen(null); set_pathSubDrag(null); set_pathAnchorDrag(null); set_pathSegDrag(null); set_pathMarquee(null); set_retouchState(null);
-  if (rtPending) rtPendingCommit();
+  if (rtPending) await rtPendingCommit();
   if (moveDrag) endMoveDrag();
   if (qmask) toggleQuickMask();                      
   if (li) await exitSO();

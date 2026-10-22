@@ -6,7 +6,7 @@
 import './22-deform-tools.js';   
 import { compositeAll, hasRenderableFill, vectorStrokeRenderParams } from '../../../core/app.js';
 import { rasterizeVectorMask } from '../../../core/compose.js';
-import { readLazyLayerPixel } from '../../../core/psd-raster.js';
+import { readLazyLayerPixel, readLazyMaskValue } from '../../../core/psd-raster.js';
 import { toolCursor, UI_CURSOR_VAR } from '../icons.js';
 import { FX_PANEL_ORDER, FX_PANE_LIST } from '../layer-style-panes.js';
 import { preferences as PREF } from '../preferences.js';
@@ -88,7 +88,12 @@ export function revealLayerRow(idx){
   }
   return rowEls[idx] || null;
 }
+let rowHeightsCache = null, rowHeightsKey = '';
 function measureLayerRowHeights(list){
+
+
+  const key = `${THUMB_BOX}|${list.clientWidth}`;
+  if (rowHeightsCache && rowHeightsKey === key) return rowHeightsCache;
   const classes = ['lrow', 'lrow grouprow', 'lrow frame-row grouprow', 'lrow fillrow', 'lfx'];
   const probes = classes.map(c => {
     const el = mkEl('div', { className: c });
@@ -99,12 +104,14 @@ function measureLayerRowHeights(list){
   list.append(...probes);
   const heights = probes.map(el => el.getBoundingClientRect().height || parseFloat(getComputedStyle(el).height) || 27);
   probes.forEach(el => el.remove());
-  return { regular: heights[0], group: heights[1], frame: heights[2], smallFill: heights[3], effect: heights[4] };
+  rowHeightsKey = key;
+  rowHeightsCache = { regular: heights[0], group: heights[1], frame: heights[2], smallFill: heights[3], effect: heights[4] };
+  return rowHeightsCache;
 }
 { const lf = $('#layerFilter'); if (lf) lf.addEventListener('input', () => renderLayerPanel()); }   
 
 
-export let THUMB_BOX = 38;                 
+export let THUMB_BOX = 32;
 export function set_THUMB_BOX(v) { return (THUMB_BOX = v); }   
 
 function thumbRect(i){
@@ -120,7 +127,7 @@ function thumbAspectSize(i){
   let W = docW, H = docH;
   const dl = doc && doc.layers[i];
   { const tr = thumbRect(i); if (tr.bounds) { W = tr.w; H = tr.h; } }
-  if (dl && dl.isSmartObject && Array.isArray(sos)) {
+  if (LP?.opts.thumbContent === 'bounds' && dl && dl.isSmartObject && Array.isArray(sos)) {
     const so = sos.find(x => matchLayer(x) === i);
     const o = so && (so.info?.summary?.originalSize || null);
     if (o && o.width > 0 && o.height > 0) { W = o.width; H = o.height; }
@@ -173,7 +180,15 @@ function drawLazyThumb(ctx, layer, index, dx, dy, dw, dh){
 }
 function layerThumb(i){
   if (thumbCache[i]) return thumbCache[i];
-  const l = doc && doc.layers[i];
+  const l = doc && doc.layers[i], paint = pixelPaint[i], rgba = paint?.rgba || l?.rgba;
+
+
+  const pixel = new Uint8ClampedArray(4), planes = !paint && l?.mask && l.planes;
+  const sample = planes?.[0]?.length === l?.width * l?.height ? (x, y, out) => {
+    const p = y * l.width + x, q = p * 4;
+    pixel[0] = rgba[q]; pixel[1] = rgba[q + 1]; pixel[2] = rgba[q + 2]; pixel[3] = planes[-1]?.[p] ?? 255;
+    out.data = pixel; out.offset = 0;
+  } : null;
   const fr = thumbAspectSize(i), dpr = 2;
   const CW = fr.w * dpr, CH = fr.h * dpr;
   const c = document.createElement('canvas'); c.width = CW; c.height = CH;
@@ -182,7 +197,7 @@ function layerThumb(i){
   const kx = docW ? CW / docW : 1, ky = docH ? CH / docH : 1;
   const soIdx = l && l.isSmartObject && Array.isArray(sos) ? sos.findIndex(x => matchLayer(x) === i) : -1;
   const src = textRenders[i];                    
-  if (soIdx >= 0) {
+  if (soIdx >= 0 && LP?.opts.thumbContent === 'bounds') {
     
 
     const ins = soInside[soIdx] && soInside[soIdx].composite;
@@ -191,9 +206,9 @@ function layerThumb(i){
       drawRGBAThumb(ctx, ins.data, ins.width, ins.height, 0, 0, CW, CH);
     } else if (img && (img.naturalWidth || img.width)) {
       ctx.drawImage(img, 0, 0, CW, CH);
-    } else if (l.rgba && l.width > 0 && l.height > 0) {
+    } else if (rgba && l.width > 0 && l.height > 0) {
       const k = Math.min(CW / l.width, CH / l.height), w = Math.max(1, l.width * k), h = Math.max(1, l.height * k);
-      drawRGBAThumb(ctx, l.rgba, l.width, l.height, (CW - w) / 2, (CH - h) / 2, w, h);
+      drawRGBAThumb(ctx, rgba, l.width, l.height, (CW - w) / 2, (CH - h) / 2, w, h, sample);
     }
   } else if (src) {
     
@@ -202,17 +217,17 @@ function layerThumb(i){
     if (cropCv && thumbRect(i).bounds) ctx.drawImage(cropCv, 0, 0, CW, CH);   
     else if (cropCv) { const b = tc.bounds; ctx.drawImage(cropCv, b.left * kx, b.top * ky, (b.right - b.left) * kx, (b.bottom - b.top) * ky); }
     else if (src.width === docW && src.height === docH) ctx.drawImage(src, 0, 0, CW, CH);
-  } else if (l && l.rgba && l.width > 0 && l.height > 0) {
+  } else if (l && rgba && l.width > 0 && l.height > 0) {
     
-    if (thumbRect(i).bounds) drawRGBAThumb(ctx, l.rgba, l.width, l.height, 0, 0, CW, CH);
-    else drawRGBAThumb(ctx, l.rgba, l.width, l.height, l.bounds.left * kx, l.bounds.top * ky, l.width * kx, l.height * ky);
+    if (thumbRect(i).bounds) drawRGBAThumb(ctx, rgba, l.width, l.height, 0, 0, CW, CH, sample);
+    else drawRGBAThumb(ctx, rgba, l.width, l.height, l.bounds.left * kx, l.bounds.top * ky, l.width * kx, l.height * ky, sample);
   } else if (l && l.lazyPreview && l.lazyPreview.data) {
     if (thumbRect(i).bounds) drawLazyThumb(ctx,l,i,0,0,CW,CH);
     else drawLazyThumb(ctx,l,i,l.bounds.left*kx,l.bounds.top*ky,l.width*kx,l.height*ky);
   } else if (l && l.lazyChannels) {
     if (thumbRect(i).bounds) drawLazyThumb(ctx,l,i,0,0,CW,CH);
     else drawLazyThumb(ctx,l,i,l.bounds.left*kx,l.bounds.top*ky,l.width*kx,l.height*ky);
-  } else if (l && docW && docH && (hasRenderableFill(l.fill, l.vectorMask, doc.patterns) || vectorStrokeRenderParams(l.vectorStroke, l.vectorMask) || findLayerOp(i, 'setVectorMaskPath'))) {
+  } else if (l && docW && docH && docW * docH <= 128e6 && (hasRenderableFill(l.fill, l.vectorMask, doc.patterns) || vectorStrokeRenderParams(l.vectorStroke, l.vectorMask) || findLayerOp(i, 'setVectorMaskPath'))) {
     
 
     try {
@@ -274,7 +289,7 @@ function layerTypeBadge(l, idx){
   return b;
 }
 
-export const LABEL_COLORS = { 1:'#c9463f', 2:'#d08834', 3:'#c9bb3f', 4:'#4f9f4f', 5:'#3f6fc9', 6:'#8a4fc9', 7:'#7a7a7e' };
+export const LABEL_COLORS = { 1:'#933839', 2:'#aa7136', 3:'#927c26', 4:'#3f6335', 5:'#566595', 6:'#5c4682', 7:'#5c5c5c' };
 const LABEL_NAMES  = { 1:'红', 2:'橙', 3:'黄', 4:'绿', 5:'蓝', 6:'紫', 7:'灰' };
 
 
@@ -312,29 +327,49 @@ function maskThumb(i, node, kind = 'pixel'){
   const box = document.createElement('span');
   box.className = 'maskthumb' + (mDis ? ' off' : '');
   box.dataset.maskKind = 'pixel';
-  if (m && m.gray && m.width > 0 && m.height > 0) {
+  if (m && (m.gray || m.lazyChannel != null) && m.width > 0 && m.height > 0) {
     
-    const fr = thumbAspectSize(dl && dl.isSmartObject ? -1 : i), CW = fr.w * 2, CH = fr.h * 2;
+    const fr = thumbAspectSize(dl && dl.isSmartObject ? -1 : i), CW = Math.max(1, fr.w * 2), CH = Math.max(1, fr.h * 2);
     const c = document.createElement('canvas'); c.width = CW; c.height = CH;
     const ctx = c.getContext('2d');
-    const off = new OffscreenCanvas(m.width, m.height);
-    const img = new ImageData(m.width, m.height);
-    for (let p = 0; p < m.width * m.height; p++) {
-      const v = mInv ? 255 - m.gray[p] : m.gray[p];
-      img.data[p * 4] = img.data[p * 4 + 1] = img.data[p * 4 + 2] = v; img.data[p * 4 + 3] = 255;
-    }
-    off.getContext('2d').putImageData(img, 0, 0);
-    const def = m.defaultColor != null ? m.defaultColor : 255, dv = mInv ? 255 - def : def;
-    ctx.fillStyle = `rgb(${dv},${dv},${dv})`; ctx.fillRect(0, 0, CW, CH);
-    const mL = m.relative ? dl.bounds.left + m.left : m.left, mT = m.relative ? dl.bounds.top + m.top : m.top;
+    const def = m.defaultColor != null ? m.defaultColor : 255;
+    const mL = m.relative ? (dl ? dl.bounds.left + m.left : m.left) : m.left;
+    const mT = m.relative ? (dl ? dl.bounds.top + m.top : m.top) : m.top;
     const tR = thumbRect(dl && dl.isSmartObject ? -1 : i);
-    if (tR.bounds) ctx.drawImage(off, (mL - tR.x) * CW / tR.w, (mT - tR.y) * CH / tR.h, m.width * CW / tR.w, m.height * CH / tR.h);
-    else if (docW && docH) ctx.drawImage(off, mL * CW / docW, mT * CH / docH, m.width * CW / docW, m.height * CH / docH);
-    else { const k = Math.min(CW / m.width, CH / m.height); ctx.drawImage(off, (CW - m.width * k) / 2, (CH - m.height * k) / 2, m.width * k, m.height * k); }
+
+
+
+    const rx = tR.bounds ? tR.x : 0, ry = tR.bounds ? tR.y : 0;
+    const rw = tR.bounds ? tR.w : (docW || m.width), rh = tR.bounds ? tR.h : (docH || m.height);
+    if (rw > 0 && rh > 0) {
+      const img = ctx.createImageData(CW, CH), o = img.data;
+      const lazyM = !m.gray && m.lazyChannel != null && dl ? { ...dl, mask: { ...m, disabled: false } } : null;
+      for (let y = 0; y < CH; y++) {
+        const my = Math.floor(ry + (y + 0.5) * rh / CH - 0.5 - mT);
+        const inY = my >= 0 && my < m.height;
+        for (let x = 0; x < CW; x++) {
+          const mx = Math.floor(rx + (x + 0.5) * rw / CW - 0.5 - mL);
+          let v = def;
+          if (inY && mx >= 0 && mx < m.width) v = m.gray ? (m.gray[my * m.width + mx] ?? def) : (readLazyMaskValue(lazyM, mx, my, false) ?? def);
+          if (mInv) v = 255 - v;
+          const q = (y * CW + x) * 4;
+          o[q] = o[q + 1] = o[q + 2] = v; o[q + 3] = 255;
+        }
+      }
+      ctx.putImageData(img, 0, 0);
+    } else {
+      const dv = mInv ? 255 - def : def;
+      ctx.fillStyle = `rgb(${dv},${dv},${dv})`; ctx.fillRect(0, 0, CW, CH);
+    }
     box.appendChild(c);
     box.title = `像素蒙版 ${m.width}×${m.height}${mDis ? '（已停用）' : ''}${mInv ? '（反相）' : ''}`;
   } else {
-    box.title = node.vectorMask ? '矢量蒙版 / 形状路径' : '蒙版';
+
+    const fr = thumbAspectSize(dl?.isSmartObject ? -1 : i), c = document.createElement('canvas');
+    c.width = fr.w * 2; c.height = fr.h * 2;
+    const ctx = c.getContext('2d'), def = m.defaultColor ?? 255, value = mInv ? 255 - def : def;
+    ctx.fillStyle = `rgb(${value},${value},${value})`; ctx.fillRect(0, 0, c.width, c.height); box.append(c);
+    box.title = `像素蒙版（${value === 255 ? '全显' : value === 0 ? '全隐' : '默认灰度 ' + value}）${mDis ? '（已停用）' : ''}`;
   }
   applyThumbFrame(box, dl && dl.isSmartObject ? -1 : i);
   return (maskThumbCache[cacheKey] = box);
@@ -616,15 +651,26 @@ export function renderLayerPanel({ scrollOnly = false } = {}){
       if (filter && !String(layerRenames[idx] || l.name || ('图层 ' + idx)).toLowerCase().includes(filter)) continue;
       const smallFill = l.adjustment?.kind === 'fill' && !isShapeLayer(l) && Math.min(docW, docH) < THUMB_BOX && ['GdFl', 'PtFl'].includes(l.adjustment.key);
       let height = smallFill ? heights.smallFill : l.isFrame && vnode.group ? heights.frame : vnode.group ? heights.group : heights.regular;
+      if (!smallFill && !l.isFrame && LP?.opts.thumbSize !== 'none') {
+        const source = doc.layers[idx], hasThumb = !vnode.group || source?.mask || source?.vectorMask || maskPaint[idx];
+        if (hasThumb) {
+          const square = !vnode.group && (l.adjustment?.kind === 'adjust' || l.text && !l.isSmartObject);
+          const thumbHeight = square ? THUMB_BOX : thumbAspectSize(idx).h;
+          height = Math.max(heights.regular, thumbHeight + (LP?.opts.thumbSize === 'medium' || !LP ? 9 : 4));
+        }
+      }
+      const rowHeight = height;
       if (fxListOpen(idx, l)) { const count = layerFxItems(idx, l).length; if (count) height += (count + 1) * heights.effect; }
       
       if (l.isSmartObject && sfListOpen(idx)) { const info = smartFilterInfo(idx, false); if (info?.filters.length) height += (info.filters.length + 1) * heights.effect; }
-      entries.push({ idx, top, bottom: top + height }); top += height;
+      entries.push({ idx, top, bottom: top + height, rowHeight }); top += height;
     }
     layerVirtualModel = { doc, view, entries, height: top };
   }
   const model = layerVirtualModel, order = model.entries;
-  const virtual = order.length > 240 && list.clientHeight > 0;
+
+
+  const virtual = order.length > 60 && list.clientHeight > 0;
   const overscan = 16;
   const scrollTop = virtual ? Math.min(priorScrollTop, Math.max(0, model.height - list.clientHeight)) : priorScrollTop;
   const lowerBound = y => { let a = 0, b = order.length; while (a < b) { const m = (a + b) >> 1; if (order[m].bottom <= y) a = m + 1; else b = m; } return a; };
@@ -651,13 +697,14 @@ export function renderLayerPanel({ scrollOnly = false } = {}){
     if (!l) continue;
     const row = document.createElement('div'); row.className = 'lrow' + (idx === selLayer || selLayers.has(idx) ? ' sel' : '') + (layerDeletes.has(idx) ? ' del' : '');
     row.dataset.layerIndex = String(idx);
+    row.style.height = order[orderPos].rowHeight + 'px';
     rowEls[idx] = row;
     
     const isArtboardRow = !!vnode.group && !li && docArtboards().some(a => a.index === idx);
     if (isArtboardRow) row.classList.add('artboard');
     else if (vnode.group) row.classList.add('grouprow');
     const visible = layerEdits[idx] && layerEdits[idx].visible != null ? layerEdits[idx].visible : l.visible;
-    const eye = document.createElement('span'); eye.className = 'eye' + (visible ? '' : ' off'); eye.append(icon(visible ? 'eye' : 'eye-off', 13));
+    const eye = document.createElement('span'); eye.className = 'eye' + (visible ? '' : ' off'); eye.append(icon('eye', 16));
     eye.title = '显示/隐藏（Alt+点击 = 单独显示该层，再按一次恢复；多选时批量开关）';
     eye.draggable = false;
     eye.onclick = e => e.stopPropagation();
@@ -673,14 +720,14 @@ export function renderLayerPanel({ scrollOnly = false } = {}){
       if (!visUndo) visibilityIntoHistory();
       if (idx === selLayer) actRecord('visible', { visible: nv });
       set_eyeDrag({ nv, done: new Set([idx]) });
-      eye.classList.toggle('off', !nv); eye.replaceChildren(icon(nv ? 'eye' : 'eye-off', 13));
+      eye.classList.toggle('off', !nv);
       const up = () => { removeEventListener('pointerup', up, true); set_eyeDrag(null); if (!visUndo) visibilityIntoHistory(); renderLayerPanel(); };
       addEventListener('pointerup', up, true);
     };
     eye.onpointerenter = () => {
       if (!eyeDrag || eyeDrag.done.has(idx)) return;
       eyeDrag.done.add(idx); setLayerVisible(idx, eyeDrag.nv);
-      eye.classList.toggle('off', !eyeDrag.nv); eye.replaceChildren(icon(eyeDrag.nv ? 'eye' : 'eye-off', 13));
+      eye.classList.toggle('off', !eyeDrag.nv);
     };
     const isFillThumb = l.adjustment?.kind === 'fill' && !isShapeLayer(l);
     row.classList.toggle('fillrow', isFillThumb);
@@ -720,7 +767,15 @@ export function renderLayerPanel({ scrollOnly = false } = {}){
       else wrap.append(ar, fi);
       th.append(wrap);
       th.title = folded ? '展开组' : '折叠组';
-      const toggleGroup = e => { e.stopPropagation(); if (collapsedGroups.has(idx)) collapsedGroups.delete(idx); else collapsedGroups.add(idx); renderLayerPanel(); };
+      const toggleGroup = e => {
+        e.stopPropagation(); pushDocHistory('切换组折叠');
+        const collapsed = !collapsedGroups.has(idx);
+        if (collapsed) collapsedGroups.add(idx); else collapsedGroups.delete(idx);
+        const edits = layerEdits[idx] || (layerEdits[idx] = {});
+        if (collapsed === (l.groupType === 2)) delete edits.groupCollapsed; else edits.groupCollapsed = collapsed;
+        if (!Object.keys(edits).length) delete layerEdits[idx];
+        renderLayerPanel();
+      };
       if (l.isFrame) {
         ar.onclick = toggleGroup;
         th.onclick = e => { e.stopPropagation(); selLayers.clear(); selLayer = idx; renderLayerPanel(); renderProps(); drawGizmo(); };
@@ -804,12 +859,11 @@ export function renderLayerPanel({ scrollOnly = false } = {}){
     const name = document.createElement('span'); name.className = 'lname';
     name.textContent = layerRenames[idx] || l.name || ('图层 ' + idx);
     
-
-
-    if (effClipping(idx, l)) {
+    const above = view.order[vnode.pos + 1], aboveNode = view.nodes[above];
+    const aboveL = above != null ? layerTree.flat[above] : null;
+    if (!effClipping(idx, l) && aboveNode?.parent === vnode.parent && aboveL && effClipping(above, aboveL))
       name.classList.add('clipped');
-    }
-    name.title = '双击重命名；⌥/Alt + 点行 = 剪贴到下层开关';
+    name.title = name.textContent + '\n双击重命名；⌥/Alt + 点行 = 剪贴到下层开关';
     name.ondblclick = e => {
       e.stopPropagation();
       if (l.isSmartObject) { const soIdx = sos.findIndex(so => matchLayer(so) === idx); if (soIdx >= 0) { openInside(soIdx); return; } }
@@ -827,11 +881,15 @@ export function renderLayerPanel({ scrollOnly = false } = {}){
     };
     name.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); name.blur(); } if (e.key === 'Escape') { name.textContent = layerRenames[idx] || l.name; name.contentEditable = 'false'; } };
     row.append(eye);
-    if (vnode.depth) { const ind = mkEl('span', { className: 'lindent' }); ind.style.width = (vnode.depth * 18) + 'px'; row.append(ind); }
+    if (vnode.depth) { const ind = mkEl('span', { className: 'lindent' }); ind.style.width = (vnode.depth * 8) + 'px'; row.append(ind); }
     
     
     const clab = effColorLabel(idx, l);
-    if (clab) { const c = document.createElement('span'); c.className = 'clabel'; c.style.background = LABEL_COLORS[clab] || 'transparent'; c.title = '颜色标签：' + (LABEL_NAMES[clab] || clab); row.append(c); }
+    if (LABEL_COLORS[clab]) {
+      eye.dataset.colorLabel = String(clab);
+      eye.style.background = LABEL_COLORS[clab];
+      eye.title += '；颜色标签：' + (LABEL_NAMES[clab] || clab);
+    }
     row.append(th);
     if (frameContentThumb) row.append(frameContentThumb);
     
@@ -845,16 +903,26 @@ export function renderLayerPanel({ scrollOnly = false } = {}){
       const vector = maskThumb(idx, l, 'vector');
       if (vector) masks.push(vector);
     }
-    if (!masks.length && l.adjustment?.kind === 'adjust' && LP?.opts?.showMaskBadges !== false) {
-      const plain = document.createElement('span'); plain.className = 'maskthumb plain'; plain.dataset.maskKind = 'pixel'; plain.title = '蒙版（全显）';
-      const c = document.createElement('canvas'); const side = Math.max(8, thumbAspectSize(idx).w * 2); c.width = c.height = side;
-      const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, side, side); plain.append(c); applyThumbFrame(plain, idx); masks.push(plain);
-    }
     for (const mask of masks) {
       const kind = mask.dataset.maskKind;
-      const ml = mkEl('span', { className: 'masklink', title: '蒙版' });
-      if (kind === 'vector' ? !doc.layers[idx]?.vectorMask?.notLink : l.mask?.relative === false)
-        ml.append(icon('mask-link', 16));
+      const vector = kind === 'vector', op = vector ? 'setVectorMaskFlags' : 'setMaskProps', field = vector ? 'notLink' : 'relative';
+      const original = vector ? !!doc.layers[idx]?.vectorMask?.notLink : !!l.mask?.relative;
+      const unlinked = opField(idx, op, field) ?? original;
+      const ml = mkEl('button', { type: 'button', className: 'masklink', title: (unlinked ? '链接' : '取消链接') + (vector ? '矢量蒙版' : '图层蒙版') });
+      ml.dataset.maskKind = kind;
+      ml.setAttribute('aria-label', ml.title); ml.setAttribute('aria-pressed', String(!unlinked));
+      ml.onkeydown = ml.onkeyup = ev => { if (ev.key === ' ' || ev.key === 'Enter') ev.stopPropagation(); };
+      if (!unlinked) ml.append(icon('mask-link', 16));
+      ml.onclick = async ev => {
+        ev.stopPropagation();
+        await row.onclick({});
+        if (selLayer !== idx) return;
+        const value = opField(idx, op, field) ?? original;
+        pushDocHistory((value ? '链接' : '取消链接') + (vector ? '矢量蒙版' : '图层蒙版'));
+        setOpField(idx, { op }, field, !value, original);
+        renderLayerPanel(); renderProps();
+        rowEls[idx]?.querySelector(`.masklink[data-mask-kind="${kind}"]`)?.focus({ preventScroll: true });
+      };
       row.append(ml, mask);
       const showMask = async ev => {
         ev.stopPropagation();
@@ -916,6 +984,12 @@ export function renderLayerPanel({ scrollOnly = false } = {}){
     
 
     const sfInfo = smartFilterInfo(idx);
+    if (sfInfo?.error) {
+      const retry = mkEl('button', { className: 'ltag lock', textContent: '滤镜读取失败 · 重试', title: sfInfo.error });
+      retry.dataset.attr = 'sf-error';
+      retry.onclick = ev => { ev.stopPropagation(); loadFilterList(sfInfo.soIdx); };
+      row.append(retry);
+    }
     if (sfInfo && sfInfo.filters.length) {
       const anyOn = sfInfo.master && sfInfo.filters.some(f => f.on);
       const t = document.createElement('span'); t.className = 'ltag fx icon-only' + (anyOn ? '' : ' lock');
@@ -1048,7 +1122,7 @@ export function renderLayerPanel({ scrollOnly = false } = {}){
     if (!vnode.divider) {
       row.draggable = true;
       row.ondragstart = e => {
-        if (e.target.closest && e.target.closest('.ract, .eye')) { e.preventDefault(); return; }  
+        if (e.target.closest && e.target.closest('.ract, .eye, .masklink')) { e.preventDefault(); return; }
         set_dragRowIndex(idx);
         
 
@@ -1080,7 +1154,7 @@ export function renderLayerPanel({ scrollOnly = false } = {}){
           row.dataset.dropInto = '1';
           if (collapsedGroups.has(idx)) set_dropOpenTimer(setTimeout(() => { collapsedGroups.delete(idx); renderLayerPanel(); }, 600));
         } else {
-          row.style.setProperty('--drop-inset', (36 + vnode.depth * 18) + 'px');
+          row.style.setProperty('--drop-inset', (36 + vnode.depth * 8) + 'px');
           row.classList.add('drop-target'); row.classList.toggle('drop-after', after);
           row.dataset.dropAfter = after ? '1' : '';
         }
@@ -1217,7 +1291,8 @@ export function smartFilterInfo(idx, load = true){
   const e = soEdits[k];
   const pendingNew = e && e.deforms ? e.deforms.filter(x => x.create).map(x => x.deform)
                    : (e && e.deform && e.created ? [e.deform] : []);
-  if (!d && !pendingNew.length) return null;
+  if (!d && !pendingNew.length) return S?.state === 'error'
+    ? { soIdx: k, error: S.error, filters: [] } : null;
   const master = (soFilterEdits[k] && soFilterEdits[k].style && soFilterEdits[k].style.enabled !== undefined)
     ? soFilterEdits[k].style.enabled : (d && d.style ? d.style.enabled !== false : true);
   const filters = d ? d.filters.map(f => ({

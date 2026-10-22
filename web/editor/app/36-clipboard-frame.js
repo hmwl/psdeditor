@@ -46,7 +46,7 @@ import {
   abState, addArtboardBeside, artboardCache, artboardMembers, artboardOfLayer, artboardWriteWhy, docArtboards,
   set_abSel,
 } from './35-artboard.js';
-import { commitPixelPaint, cutRect, ensurePixelPaint } from './38-brush-engine.js';
+import { commitPixelPaint, ensurePixelPaint, sparsePixelHistory } from './38-brush-engine.js';
 import { dispThr, drawGizmo } from './46-smart-filter-panel.js';
 import { closeInlineText } from './47-canvas-context-menu.js';
 import { buildPsdBuffer, ensureStructuralBase } from './48-info-export.js';
@@ -108,7 +108,7 @@ export function lbReplacePixels(idx, drawFn, opts = {}){
   const rect = { x: 0, y: 0, w: pp.w, h: pp.h };
   pp.rgba.set(out);
   if (!opts.noHistory) {                              
-    brushHistory.undo.push({ kind: 'pixels', idx, rect, before: cutRect(base, pp.w, rect, 4), after: cutRect(out, pp.w, rect, 4), px: 4 });
+    brushHistory.undo.push(sparsePixelHistory(idx, base, out, pp.w, pp.h));
     if (brushHistory.undo.length > 40) brushHistory.undo.shift();
     brushHistory.redo.length = 0;
     histPush('替换像素（变量）', 'brush');

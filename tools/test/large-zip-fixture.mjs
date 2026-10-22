@@ -34,7 +34,21 @@ function rlePlane(width, height, color, patterned, psb) {
   }
   return out;
 }
-export async function largeZipFixture(width = 9390, height = 30000, { patterned = false, compression = 'zip', layerCount = 1,opaque=false } = {}) {
+function packRun(value, length, parts) {
+  while (length > 0) { const n = Math.min(128, length); parts.push(Buffer.from([1 - n, value])); length -= n; }
+}
+
+function rleMaskPlane(width, height, psb) {
+  const half = Math.floor(width / 2), rows = [], counts = [];
+  for (let y = 0; y < height; y++) {
+    const parts = []; packRun(255, half, parts); packRun(0, width - half, parts);
+    const row = Buffer.concat(parts); rows.push(row); counts.push(row.length);
+  }
+  const header = Buffer.alloc(2 + height * (psb ? 4 : 2)); header.writeUInt16BE(1, 0);
+  for (let y = 0; y < height; y++) { if (psb) header.writeUInt32BE(counts[y], 2 + y * 4); else header.writeUInt16BE(counts[y], 2 + y * 2); }
+  return Buffer.concat([header, ...rows]);
+}
+export async function largeZipFixture(width = 9390, height = 30000, { patterned = false, compression = 'zip', layerCount = 1, opaque = false, mask = false } = {}) {
   if (!Number.isInteger(layerCount) || layerCount < 1 || layerCount > 64) throw new Error('invalid fixture layerCount');
   const psb = width > 30000 || height > 30000;
   const u16 = n => { const b = Buffer.alloc(2); b.writeUInt16BE(n & 65535); return b; };
@@ -53,11 +67,20 @@ export async function largeZipFixture(width = 9390, height = 30000, { patterned 
   header.writeUInt16BE(8, 22); header.writeUInt16BE(3, 24);
   const name = Buffer.from('Large ZIP'), pascal = Buffer.alloc(Math.ceil((name.length + 1) / 4) * 4);
   pascal[0] = name.length; name.copy(pascal, 1);
-  const extra = Buffer.concat([u32(0), u32(0), pascal]);
-  const record = Buffer.concat([u32(0), u32(0), u32(height), u32(width), u16(4),
-    ...channels.flatMap((bytes, i) => [u16(i === 3 ? -1 : i), len(bytes.length)]),
+  const layerChannels = channels.map((bytes, i) => ({ id: i === 3 ? -1 : i, bytes }));
+  let maskExtra = u32(0);
+  if (mask) {
+    layerChannels.push({ id: -2, bytes: rleMaskPlane(width, height, psb) });
+    const rect = Buffer.alloc(16); rect.writeUInt32BE(0, 0); rect.writeUInt32BE(0, 4);
+    rect.writeUInt32BE(height, 8); rect.writeUInt32BE(width, 12);
+    maskExtra = Buffer.concat([u32(18), rect, Buffer.from([0, 0])]);
+  }
+  const extra = Buffer.concat([maskExtra, u32(0), pascal]);
+  const record = Buffer.concat([u32(0), u32(0), u32(height), u32(width), u16(layerChannels.length),
+    ...layerChannels.flatMap(c => [u16(c.id), len(c.bytes.length)]),
     Buffer.from('8BIMnorm'), Buffer.from([255, 0, 0, 0]), u32(extra.length), extra]);
-  let info = Buffer.concat([u16(layerCount), ...Array(layerCount).fill(record), ...Array.from({ length: layerCount }, () => channels).flat()]);
+  let info = Buffer.concat([u16(layerCount), ...Array(layerCount).fill(record),
+    ...Array.from({ length: layerCount }, () => layerChannels.map(c => c.bytes)).flat()]);
   if (info.length & 1) info = Buffer.concat([info, Buffer.alloc(1)]);
   const lmi = Buffer.concat([len(info.length), info, u32(0)]);
   const composite = await zipBands(width, height, colors.slice(0, 3), patterned, patterned&&!opaque);

@@ -5,6 +5,7 @@
 
 import './50-clipboard-merge-mask.js';   
 import { compositeAll } from '../../../core/app.js';
+import { brushSelection } from '../../../core/selection.js';
 import { promptDialog } from '../dialog.js';
 import { preferences as PREF } from '../preferences.js';
 import { shell } from '../shell.js';
@@ -14,19 +15,22 @@ import {
 } from './01-boot.js';
 import {
   doc, docH, docW, globalLight, globalLightBase, guides, layerDeletes, layerOps, layerRenames, layerReorder,
-  layerTree, li, selection, set_globalLight, set_globalLightDirty, set_guides, set_guidesDirty,
+  layerTree, li, pixelPaint, selection, set_globalLight, set_globalLightDirty, set_guides, set_guidesDirty,
+  textCrops, textRenders,
 } from './02-doc-state.js';
 import { actRecord, pushDocHistory } from './03-history.js';
 import { tfFrame } from './06-view-zoom-move.js';
 import { applyDocSize, transformableLayers } from './08-doc-size.js';
 import { cropExtGen, set_cropExtGen } from './10-crop.js';
 import { set_tfState, tfState, tfSyncBar, tfWriteQuad } from './19-free-transform.js';
+import { readLazyImageBand } from './21-load-document.js';
 import { fxMasterBase, layerFxItems, renderLayerPanel, selLayer } from './23-layers-panel.js';
 import {
   addedFxValue, commitLayerOps, dropLayerOp, effFxMaster, humanEditError, opField, opKeyOf, putLayerOp,
   renderProps, setParamField, setSingleOp,
 } from './24-layer-ops-queue.js';
 import { ensureLayerTransform, transformChanged } from './28-layer-props-transform.js';
+import { displayOrder } from './29-scrubby-live.js';
 import {
   PREVIEW_EFFECT_MULTI, chanCount, chanSupported, composeDocForOrder, previewCompositeDoc, renderStaticLayers,
 } from './30-render.js';
@@ -600,6 +604,161 @@ export function applyTrim(basis, sides){
 
 
 
+const RS_BITS = 6, RS_SIZE = 1 << RS_BITS, RS_STEP = 256 >> RS_BITS;
+function rsDilateAxis(grid, r, axis) {
+  const S = RS_SIZE, line = new Int32Array(S), tmp = new Uint8Array(S);
+  const idx = (a, b, c) => axis === 0 ? (c * S + a) * S + b : axis === 1 ? (a * S + c) * S + b : (a * S + b) * S + c;
+  for (let a = 0; a < S; a++) for (let b = 0; b < S; b++) {
+    for (let c = 0; c < S; c++) tmp[c] = grid[idx(a, b, c)];
+    let last = -1e9;
+    for (let c = 0; c < S; c++) { if (tmp[c]) last = c; line[c] = c - last; }
+    last = 1e9;
+    for (let c = S - 1; c >= 0; c--) { if (tmp[c]) last = c; if (last - c < line[c]) line[c] = last - c; }
+    for (let c = 0; c < S; c++) if (line[c] <= r) grid[idx(a, b, c)] = 1;
+  }
+}
+const rsFullSel = (sel) => !!(sel && sel.x === 0 && sel.y === 0 && sel.width === docW && sel.height === docH
+  && sel.data?.__virtual && !sel.data.__tiles.size && !sel.data.__base && !sel.data.__neg && (sel.data.__fill | 0) === 255);
+async function buildReselectGrid(sel, tol) {
+  const grid = new Uint8Array(RS_SIZE * RS_SIZE * RS_SIZE);
+  if (rsFullSel(sel)) { grid.fill(1); return grid; }
+  const b = selectionBounds(sel); if (!b) return grid;
+  const x0 = Math.max(0, b.x), y0 = Math.max(0, b.y), x1 = Math.min(docW, b.x + b.width), y1 = Math.min(docH, b.y + b.height);
+  const area = Math.max(1, (x1 - x0) * (y1 - y0));
+  const stride = Math.max(1, Math.floor(Math.sqrt(area / 4e6)));
+  for (let yy = y0; yy < y1; yy += 256) {
+    const h = Math.min(256, y1 - yy);
+    const rgba = await sampleLazyBandRGBA(yy, h, true);
+    for (let y = yy; y < yy + h; y++) {
+      if ((y - y0) % stride) continue;
+      for (let x = x0; x < x1; x += stride) {
+        if (selectionValueAt(sel, x, y) <= 0) continue;
+        const o = ((y - yy) * docW + x) * 4;
+        grid[((rgba[o] >> 2) * RS_SIZE + (rgba[o + 1] >> 2)) * RS_SIZE + (rgba[o + 2] >> 2)] = 1;
+      }
+    }
+    await new Promise(r => setTimeout(r, 0));
+  }
+  const r = Math.max(0, Math.round(tol / RS_STEP));
+  if (r > 0) for (let axis = 0; axis < 3; axis++) rsDilateAxis(grid, r, axis);
+  return grid;
+}
+const rsHit = (grid, r, g, b) => grid[((r >> 2) * RS_SIZE + (g >> 2)) * RS_SIZE + (b >> 2)];
+async function reselectLazy(sel, tol, similar) {
+  const grid = await buildReselectGrid(sel, tol);
+  if (rsFullSel(sel)) return sel;
+  const b = selectionBounds(sel); if (!b) return null;
+  const sx0 = Math.max(0, b.x), sy0 = Math.max(0, b.y), sx1 = Math.min(docW, b.x + b.width), sy1 = Math.min(docH, b.y + b.height);
+  if (similar) {
+    const cols = Math.ceil(docW / 256), tiles = new Map();
+    for (let yy = 0; yy < docH; yy += 256) {
+      const h = Math.min(256, docH - yy);
+      const rgba = await sampleLazyBandRGBA(yy, h, true);
+      for (let y = yy; y < yy + h; y++) for (let x = 0; x < docW; x++) {
+        const o = ((y - yy) * docW + x) * 4;
+        let v = rsHit(grid, rgba[o], rgba[o + 1], rgba[o + 2]) ? 255 : 0;
+        if (v !== 255 && x >= sx0 && x < sx1 && y >= sy0 && y < sy1) v = selectionValueAt(sel, x, y);
+        else if (v === 255 && x >= sx0 && x < sx1 && y >= sy0 && y < sy1) {
+          const c = selectionValueAt(sel, x, y); if (c > v) v = c;
+        }
+        if (!v) continue;
+        const tx = (x / 256) | 0, ty = (y / 256) | 0, k = ty * cols + tx;
+        let t = tiles.get(k); if (!t) { t = new Uint8Array(256 * 256); tiles.set(k, t); }
+        t[(y % 256) * 256 + (x % 256)] = v;
+      }
+      await new Promise(r => setTimeout(r, 0));
+    }
+    return trimSelection(brushSelection(docW, docH, tiles, null));
+  }
+  return growLazy(sel, grid, { x0: sx0, y0: sy0, x1: sx1, y1: sy1 });
+}
+
+async function growLazy(sel, grid, box) {
+  const cols = Math.ceil(docW / 256), tiles = new Map();
+  const bands = new Map(), order = [];
+  const bandKey = y => Math.floor(y / 256) * 256;
+  const bandSync = y => bands.get(bandKey(y)) || null;
+  const ensureBand = async y => {
+    const sy = bandKey(y);
+    if (bands.has(sy)) return bands.get(sy);
+    const band = await sampleLazyBandRGBA(sy, Math.min(256, docH - sy), true);
+    bands.set(sy, band); order.push(sy);
+    while (order.length > 6) bands.delete(order.shift());
+    return band;
+  };
+  const baseTile = (tx, ty) => {
+    const k = ty * cols + tx;
+    let t = tiles.get(k); if (t) return t;
+    t = new Uint8Array(256 * 256);
+    const gx0 = tx * 256, gy0 = ty * 256;
+    const gx1 = Math.min(docW, gx0 + 256), gy1 = Math.min(docH, gy0 + 256);
+    if (gx1 > box.x0 && gy1 > box.y0 && gx0 < box.x1 && gy0 < box.y1) {
+      const d = sel.data, sparse = !!(d && d.__virtual);
+      if (sparse && !d.__base && !d.__neg && !d.__brushBase && !d.__tiles.size) t.fill(d.__fill | 0);
+      else for (let y = gy0; y < gy1; y++) for (let x = gx0; x < gx1; x++)
+        t[(y - gy0) * 256 + x - gx0] = selectionValueAt(sel, x, y);
+    }
+    tiles.set(k, t);
+    return t;
+  };
+  const filled = (x, y) => {
+    const t = tiles.get(((y / 256) | 0) * cols + ((x / 256) | 0));
+    return t ? t[(y % 256) * 256 + (x % 256)] > 0 : false;
+  };
+  const selected = (x, y) => x >= box.x0 && x < box.x1 && y >= box.y0 && y < box.y1 && selectionValueAt(sel, x, y) > 0;
+  const hitBand = (band, x, y) => {
+    const o = ((y - bandKey(y)) * docW + x) * 4;
+    return rsHit(grid, band[o], band[o + 1], band[o + 2]);
+  };
+  const eligibleAt = (x, y) => {
+    if (filled(x, y) || selected(x, y)) return false;
+    const band = bandSync(y);
+    return band ? hitBand(band, x, y) : false;
+  };
+  const fill = (x, y) => {
+    const tx = (x / 256) | 0, ty = (y / 256) | 0;
+    baseTile(tx, ty)[(y % 256) * 256 + (x % 256)] = 255;
+  };
+  const stack = [];
+  for (const r of SELM.selectionBorderTiles(sel, 1)) {
+    const x0 = Math.max(r.x, box.x0), x1 = Math.min(r.x + r.width, box.x1);
+    const y0 = Math.max(r.y, box.y0), y1 = Math.min(r.y + r.height, box.y1);
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+      if (!selected(x, y)) continue;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = x + dx, ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= docW || ny >= docH) continue;
+        await ensureBand(ny);
+        if (eligibleAt(nx, ny)) stack.push(ny * docW + nx);
+      }
+    }
+  }
+  let guard = 0;
+  while (stack.length) {
+    const i = stack.pop(), y = (i / docW) | 0, x = i - y * docW;
+    if (filled(x, y) || selected(x, y)) continue;
+    if ((guard++ & 1023) === 0) await new Promise(r => setTimeout(r, 0));
+    const band = await ensureBand(y);
+    const hit = xx => hitBand(band, xx, y);
+    if (!hit(x)) continue;
+    let lx = x, rx = x;
+    while (lx > 0 && !filled(lx - 1, y) && !selected(lx - 1, y) && hit(lx - 1)) lx--;
+    while (rx < docW - 1 && !filled(rx + 1, y) && !selected(rx + 1, y) && hit(rx + 1)) rx++;
+    for (let xx = lx; xx <= rx; xx++) if (!selected(xx, y)) fill(xx, y);
+    for (const dy of [-1, 1]) {
+      const ny = y + dy; if (ny < 0 || ny >= docH) continue;
+      await ensureBand(ny);
+      let inRun = false;
+      for (let xx = lx; xx <= rx; xx++) {
+        const ok = eligibleAt(xx, ny);
+        if (ok && !inRun) { stack.push(ny * docW + xx); inRun = true; }
+        else if (!ok) inRun = false;
+      }
+    }
+  }
+  return trimSelection(brushSelection(docW, docH, tiles, sel));
+}
+
 function reselectSampling(){
   const all = $('#wandAll').checked;
   if (!all && selLayer < 0) { $('#err').textContent = '按「当前图层」取样：先选中一个图层，或勾上魔棒选项里的「取样全部图层」。'; return null; }
@@ -607,19 +766,41 @@ function reselectSampling(){
 }
 export function growSelUI(similar){
   if (!selection || !SELM) return false;
+  const tol = Math.max(0, Math.min(255, +$('#wandTol').value || 0));
+  const label = similar ? '选取相似' : '扩大选取';
+  if (docW * docH > 64e6) {
+    const before = selection;
+    shell.status(`${label}：正在按行带扫描 ${docW}×${docH}…`);
+    return reselectLazy(before, tol, similar).then(next => {
+      if (selection !== before) return false;
+      if (!next || isEmptySelection(next)) { setSelection(null); shell.status(`${label}：没有可扩展的像素`); return true; }
+      setSelection(next, { label });
+      $('#err').textContent = '';
+      shell.status(`${label}：容差 ${tol}（颜色按 4 级量化，容差取 4 的倍数）`);
+      return true;
+    }).catch(e => { $('#err').textContent = label + '失败：' + humanEditError(e && e.message || e); return false; });
+  }
   const s = reselectSampling();
   if (!s) return false;
   try {
     const fn = similar ? SELM.similarSelection : SELM.growSelection;
     const next = fn(selection, s.rgba, docW, docH, { tolerance: s.tolerance });
-    setSelection(next, { label: similar ? '选取相似' : '扩大选取' });
+    setSelection(next, { label });
     $('#err').textContent = '';
-    shell.status(`${similar ? '选取相似' : '扩大选取'}：容差 ${s.tolerance}（颜色按 4 级量化，容差取 4 的倍数）`);
+    shell.status(`${label}：容差 ${s.tolerance}（颜色按 4 级量化，容差取 4 的倍数）`);
     return true;
-  } catch (e) { $('#err').textContent = (similar ? '选取相似' : '扩大选取') + '失败：' + humanEditError(e && e.message || e); return false; }
+  } catch (e) { $('#err').textContent = label + '失败：' + humanEditError(e && e.message || e); return false; }
 }
-export function borderSelUI(px){ if (selection && SELM && px > 0) setSelection(SELM.borderSelection(selection, px), { label: '边界' }); }
-export function smoothSelUI(px){ if (selection && SELM && px > 0) setSelection(smoothSelection(selection, px), { label: '平滑' }); }
+export function borderSelUI(px){
+  if (!selection || !SELM || !(px > 0)) return;
+  try { setSelection(SELM.borderSelection(selection, px), { label: '边界' }); }
+  catch (e) { $('#notice').textContent = e && e.message || String(e); }
+}
+export function smoothSelUI(px){
+  if (!selection || !SELM || !(px > 0)) return;
+  try { setSelection(smoothSelection(selection, px), { label: '平滑' }); }
+  catch (e) { $('#notice').textContent = e && e.message || String(e); }
+}
 
 
 
@@ -630,11 +811,25 @@ export function tfBeginSelectionOutline(kind){
   if (!selection) { shell.status('先建立一个选区'); return false; }
   const b = selectionBounds(selection);
   if (!(b && b.width > 0 && b.height > 0)) { shell.status('选区是空的'); return false; }
+  const base = [[b.x, b.y], [b.x + b.width, b.y], [b.x + b.width, b.y + b.height], [b.x, b.y + b.height]];
+  if (b.width * b.height > 16e6) {
+
+    pushDocHistory('变换选区');
+    set_tfState({
+      refShown: !!PREF.get('tools.showRefPoint'), idx: selLayer, kind, ref: 4, dragging: false, pushed: true, affine: true,
+      base: base.map(p => p.slice()), orig: {},
+      num: { dx: 0, dy: 0, sx: 1, sy: 1, rot: 0, skewX: 0, skewY: 0 }, vector: null,
+      selOnly: { huge: true, bbox: b, quad: base.map(p => p.slice()), before: selection },
+    });
+    QUADW.load().then(() => { tfSyncBar(); drawGizmo(); }).catch(() => {});
+    document.querySelector('.app').classList.add('transforming');
+    syncToolOptions(); tfSyncBar(); drawGizmo();
+    return true;
+  }
   
   const src = { data: new Uint8ClampedArray(b.width * b.height * 4), width: b.width, height: b.height };
   for (let y = 0; y < b.height; y++) for (let x = 0; x < b.width; x++)
     src.data[(y * b.width + x) * 4 + 3] = selectionValueAt(selection, b.x + x, b.y + y);
-  const base = [[b.x, b.y], [b.x + b.width, b.y], [b.x + b.width, b.y + b.height], [b.x, b.y + b.height]];
   pushDocHistory('变换选区');
   set_tfState({
     refShown: !!PREF.get('tools.showRefPoint'),   
@@ -649,19 +844,78 @@ export function tfBeginSelectionOutline(kind){
   return true;
 }
 
+function tfWarpSelectionHuge(S){
+  const b = S.bbox, before = S.before;
+  const [q0, q1, q2, q3] = S.quad;
+  const e = 1e-6;
+  const dx = q0[0] - b.x, dy = q0[1] - b.y;
+
+  if (Math.abs(q1[1] - q0[1]) < e && Math.abs(q3[0] - q0[0]) < e
+      && Math.abs((q1[0] - q0[0]) - b.width) < e && Math.abs((q3[1] - q0[1]) - b.height) < e
+      && Math.abs(q2[0] - q1[0]) < e && Math.abs(q2[1] - q3[1]) < e) {
+    const nx = Math.round(b.x + dx), ny = Math.round(b.y + dy);
+    if (nx >= 0 && ny >= 0 && nx + b.width <= docW && ny + b.height <= docH)
+      return { ...before, x: nx, y: ny };
+  }
+  const fwd = QUADM.quadMatrix(b.width, b.height, S.quad);
+  if (!fwd) return null;
+  const inv = QUADM.invert3(fwd); if (!inv) return null;
+  const box = QUADM.quadBounds(S.quad, { x: 0, y: 0, width: docW, height: docH });
+  if (!(box.width > 0 && box.height > 0)) return null;
+  const TS = 256, cols = Math.ceil(box.width / TS), tiles = new Map();
+  for (let ty = 0; ty < box.height; ty += TS) for (let tx = 0; tx < box.width; tx += TS) {
+    const gx = box.x + tx, gy = box.y + ty;
+    const tw = Math.min(TS, box.width - tx), th = Math.min(TS, box.height - ty);
+    let sx0 = Infinity, sy0 = Infinity, sx1 = -Infinity, sy1 = -Infinity;
+
+    for (const [px, py] of [[gx, gy], [gx + tw, gy], [gx, gy + th], [gx + tw, gy + th], [gx + tw / 2, gy], [gx + tw / 2, gy + th], [gx, gy + th / 2], [gx + tw, gy + th / 2]]) {
+      const p = QUADM.applyMatrix(inv, px, py); if (!p) continue;
+      sx0 = Math.min(sx0, p[0]); sy0 = Math.min(sy0, p[1]);
+      sx1 = Math.max(sx1, p[0]); sy1 = Math.max(sy1, p[1]);
+    }
+    if (!Number.isFinite(sx0)) continue;
+    sx0 = Math.max(0, Math.floor(sx0) - 2); sy0 = Math.max(0, Math.floor(sy0) - 2);
+    sx1 = Math.min(b.width, Math.ceil(sx1) + 2); sy1 = Math.min(b.height, Math.ceil(sy1) + 2);
+    const cw = sx1 - sx0, ch = sy1 - sy0;
+    if (!(cw > 0 && ch > 0)) continue;
+    const src = { data: new Uint8ClampedArray(cw * ch * 4), width: cw, height: ch };
+    for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++)
+      src.data[(y * cw + x) * 4 + 3] = selectionValueAt(before, b.x + sx0 + x, b.y + sy0 + y);
+    const q = [[sx0, sy0], [sx1, sy0], [sx1, sy1], [sx0, sy1]]
+      .map(([x, y]) => QUADM.applyMatrix(fwd, x, y));
+    if (q.some(p => !p)) continue;
+    const r = QUADM.warpQuad(src, q, { samples: 2, clip: { x: gx, y: gy, width: tw, height: th } });
+    if (!r) continue;
+    const t = new Uint8Array(TS * TS);
+    let any = false;
+    for (let y = 0; y < r.height; y++) for (let x = 0; x < r.width; x++) {
+      const v = r.data[(y * r.width + x) * 4 + 3];
+      const X = r.x + x - gx, Y = r.y + y - gy;
+      if (v && X >= 0 && Y >= 0 && X < tw && Y < th) { t[Y * TS + X] = v; any = true; }
+    }
+    if (any) tiles.set(((ty / TS) | 0) * cols + ((tx / TS) | 0), t);
+  }
+  return SELM.selectionFromTiles(box.x, box.y, box.width, box.height, tiles, 0, docW, docH);
+}
+
 export function tfSelOnlyApply(fast){
   const S = tfState && tfState.selOnly; if (!S || !QUADM) return;
+  if (S.huge) {
+    if (fast) return;
+    const next = tfWarpSelectionHuge(S);
+    setSelection(next && !isEmptySelection(next) ? next : null, { history: false, props: false });
+    return;
+  }
   const r = QUADM.warpQuad(S.src, S.quad, { samples: fast ? 1 : 2 });
   if (!r) return;
-  const data = new Uint8Array(docW * docH);
-  for (let y = 0; y < r.height; y++) {
-    const dy = r.y + y; if (dy < 0 || dy >= docH) continue;
-    for (let x = 0; x < r.width; x++) {
-      const dx = r.x + x; if (dx < 0 || dx >= docW) continue;
-      data[dy * docW + dx] = r.data[(y * r.width + x) * 4 + 3];
-    }
-  }
-  const next = trimSelection({ x: 0, y: 0, width: docW, height: docH, data, docW, docH });
+
+  const x0 = Math.max(0, r.x), y0 = Math.max(0, r.y);
+  const x1 = Math.min(docW, r.x + r.width), y1 = Math.min(docH, r.y + r.height);
+  if (!(x1 > x0 && y1 > y0)) { setSelection(null, { history: false, props: false }); return; }
+  const data = new Uint8Array((x1 - x0) * (y1 - y0));
+  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++)
+    data[(y - y0) * (x1 - x0) + (x - x0)] = r.data[((y - r.y) * r.width + (x - r.x)) * 4 + 3];
+  const next = trimSelection({ x: x0, y: y0, width: x1 - x0, height: y1 - y0, data, docW, docH });
   setSelection(isEmptySelection(next) ? null : next, { history: false, props: false });
 }
 
@@ -669,9 +923,114 @@ export function tfSelOnlyApply(fast){
 
 
 
+async function sampleLazyBandRGBA(y0, h, all = true) {
+  const out = new Uint8ClampedArray(docW * h * 4);
+  const over = (r, g, b, a, q, op) => {
+    const sa = a / 255 * op; if (!(sa > 0)) return;
+    const da = out[q + 3] / 255, oa = sa + da * (1 - sa); if (!(oa > 0)) return;
+    out[q] = Math.round((r * sa + out[q] * da * (1 - sa)) / oa);
+    out[q + 1] = Math.round((g * sa + out[q + 1] * da * (1 - sa)) / oa);
+    out[q + 2] = Math.round((b * sa + out[q + 2] * da * (1 - sa)) / oa);
+    out[q + 3] = Math.round(oa * 255);
+  };
+  const ids = all ? displayOrder() : (selLayer >= 0 ? [selLayer] : []);
+  for (const i of ids) {
+    const l = doc.layers[i]; if (!l || l.hidden) continue;
+    const op = all ? ((l.opacity ?? 255) / 255) * ((l.fillOpacity ?? 255) / 255) : 1;
+    if (!(op > 0)) continue;
+    const b = l.bounds || { left: 0, top: 0 }, L = b.left | 0, T = b.top | 0;
+    const w = l.width | 0, lh = l.height | 0;
+    const xa = Math.max(0, L), xb = Math.min(docW, L + w), ya = Math.max(y0, T), yb = Math.min(y0 + h, T + lh);
+    const tc = textRenders[i] && textCrops[i];
+    if (tc?.rgba) {
+      const tb = tc.bounds, tw = tb.right - tb.left, th = tb.bottom - tb.top;
+      const ta = Math.max(y0, tb.top), tz = Math.min(y0 + h, tb.bottom);
+      for (let y = ta; y < tz; y++) for (let x = Math.max(0, tb.left); x < Math.min(docW, tb.right); x++) {
+        const s = ((y - tb.top) * tw + (x - tb.left)) * 4;
+        over(tc.rgba[s], tc.rgba[s + 1], tc.rgba[s + 2], tc.rgba[s + 3], ((y - y0) * docW + x) * 4, op);
+      }
+    } else if (l.rgba && w > 0 && lh > 0 && xb > xa && yb > ya) {
+      for (let y = ya; y < yb; y++) {
+        const so = (y - T) * w;
+        for (let x = xa; x < xb; x++) {
+          const s = (so + x - L) * 4;
+          over(l.rgba[s], l.rgba[s + 1], l.rgba[s + 2], l.rgba[s + 3], ((y - y0) * docW + x) * 4, op);
+        }
+      }
+    } else if ((l.lazyTileStore || l.lazyPixelOps?.length || l.lazyImage || l.lazyRasterFile || l.lazyChannels) && xb > xa && yb > ya) {
+      const band = await readLazyImageBand(l, ya - T, yb - ya);
+      if (band) {
+        for (let yy = 0; yy < band.height; yy++) {
+          const so = yy * band.width;
+          for (let x = xa; x < xb; x++) {
+            const s = (so + x - L) * 4;
+            over(band.data[s], band.data[s + 1], band.data[s + 2], band.data[s + 3], ((ya + yy - y0) * docW + x) * 4, op);
+          }
+        }
+      } else if (l.lazyPreview?.data?.length) {
+        const pw = l.lazyPreview.width, ph = l.lazyPreview.height, p = l.lazyPreview.data;
+        const kx = pw / Math.max(1, w), ky = ph / Math.max(1, lh);
+        for (let y = ya; y < yb; y++) {
+          const py = Math.min(ph - 1, Math.max(0, Math.floor((y - T) * ky)));
+          for (let x = xa; x < xb; x++) {
+            const px = Math.min(pw - 1, Math.max(0, Math.floor((x - L) * kx)));
+            const s = (py * pw + px) * 4;
+            over(p[s], p[s + 1], p[s + 2], p[s + 3], ((y - y0) * docW + x) * 4, op);
+          }
+        }
+      }
+    }
 
+    const tiles = pixelPaint[i]?.sparse?.tiles;
+    if (tiles?.size) {
+      const left = pixelPaint[i].left | 0, top = pixelPaint[i].top | 0;
+      for (const t of tiles.values()) {
+        const ty0 = Math.max(y0, top + t.y), ty1 = Math.min(y0 + h, top + t.y + t.height);
+        if (ty1 <= ty0) continue;
+        const tx0 = Math.max(0, left + t.x), tx1 = Math.min(docW, left + t.x + t.width);
+        for (let y = ty0; y < ty1; y++) for (let x = tx0; x < tx1; x++) {
+          const s = ((y - top - t.y) * t.width + (x - left - t.x)) * 4;
+          over(t.data[s], t.data[s + 1], t.data[s + 2], t.data[s + 3], ((y - y0) * docW + x) * 4, op);
+        }
+      }
+    }
+  }
+  return out;
+}
 
-
+async function colorRangeLazy(colors, fz, invert, state, job) {
+  const hi = fz * 2 || 1, cols = Math.ceil(docW / 256), tiles = new Map();
+  let any = false;
+  for (let y0 = 0; y0 < docH; y0 += 256) {
+    if (colorRangeState !== state || state.job !== job) return null;
+    const h = Math.min(256, docH - y0);
+    const rgba = await sampleLazyBandRGBA(y0, h, true);
+    for (let yy = 0; yy < h; yy++) {
+      const gy = y0 + yy;
+      for (let x = 0; x < docW; x++) {
+        const o = (yy * docW + x) * 4;
+        let best = 255;
+        for (const c of colors) {
+          let d = Math.abs(rgba[o] - c[0]);
+          const g = Math.abs(rgba[o + 1] - c[1]); if (g > d) d = g;
+          const b = Math.abs(rgba[o + 2] - c[2]); if (b > d) d = b;
+          if (d < best) best = d;
+          if (!best) break;
+        }
+        let v = best <= fz ? 255 : (best >= hi ? 0 : Math.round(255 * (hi - best) / (hi - fz)));
+        if (invert) v = 255 - v;
+        if (!v) continue;
+        const tx = (x / 256) | 0, ty = (gy / 256) | 0, k = ty * cols + tx;
+        let t = tiles.get(k);
+        if (!t) { t = new Uint8Array(256 * 256); tiles.set(k, t); }
+        t[((gy % 256) * 256) + (x % 256)] = v; any = true;
+      }
+    }
+    await new Promise(r => setTimeout(r, 0));
+  }
+  if (!any) return null;
+  return trimSelection(brushSelection(docW, docH, tiles, null));
+}
 
 
 export let colorRangeDlgEl = null, colorRangeState = null;
@@ -714,20 +1073,38 @@ export function openColorRangeDialog(opts = {}){
   info.style.cssText = 'opacity:.75;font-size:12px;margin-top:6px';
   body.append(info);
 
-  colorRangeState = { color: fgRGB.slice(), fuzziness: 40, invert: false, before: selection, preview: null };
-  const rgba = sampleRGBA(true);
+  colorRangeState = { color: fgRGB.slice(), fuzziness: 40, invert: false, before: selection, preview: null, job: 0 };
+
+  const small = docW * docH <= 64e6;
+  const rgba = small ? sampleRGBA(true) : null;
   const sync = () => {
     swatch.style.background = `rgb(${colorRangeState.color.join(',')})`;
     fuzzNum.textContent = String(colorRangeState.fuzziness);
     fuzz.value = String(colorRangeState.fuzziness);
     inv.checked = colorRangeState.invert;
+    const st = colorRangeState, job = ++st.job;
+    if (!small) {
+      info.textContent = '正在扫描整幅文档…';
+      colorRangeLazy([st.color], st.fuzziness, st.invert, st, job).then(next => {
+        if (colorRangeState !== st || st.job !== job) return;
+        st.preview = next && !isEmptySelection(next) ? next : null;
+        setSelection(st.preview, { history: false, props: false });
+        info.textContent = st.preview
+          ? `选中约 ${Math.round(selectionArea(st.preview))} 像素`
+          : '这个容差下一个像素都没选中';
+      }).catch(e => {
+        if (colorRangeState === st && st.job === job)
+          info.textContent = '算不出来：' + humanEditError(e && e.message || e);
+      });
+      return;
+    }
     try {
       const next = SELM.colorRangeSelection(rgba, docW, docH, {
-        colors: [colorRangeState.color], fuzziness: colorRangeState.fuzziness, invert: colorRangeState.invert });
-      colorRangeState.preview = isEmptySelection(next) ? null : next;
-      setSelection(colorRangeState.preview, { history: false, props: false });
-      info.textContent = colorRangeState.preview
-        ? `选中约 ${Math.round(selectionArea(colorRangeState.preview))} 像素`
+        colors: [st.color], fuzziness: st.fuzziness, invert: st.invert });
+      st.preview = isEmptySelection(next) ? null : next;
+      setSelection(st.preview, { history: false, props: false });
+      info.textContent = st.preview
+        ? `选中约 ${Math.round(selectionArea(st.preview))} 像素`
         : '这个容差下一个像素都没选中';
     } catch (e) { info.textContent = '算不出来：' + humanEditError(e && e.message || e); }
   };
@@ -756,6 +1133,16 @@ export function openColorRangeDialog(opts = {}){
 export function colorRangePick(pt){
   if (!colorRangeState || !doc) return false;
   const x = Math.max(0, Math.min(docW - 1, Math.floor(pt.x))), y = Math.max(0, Math.min(docH - 1, Math.floor(pt.y)));
+  if (docW * docH > 64e6) {
+    const st = colorRangeState;
+    sampleLazyBandRGBA(y, 1, true).then(band => {
+      if (colorRangeState !== st) return;
+      const o = x * 4;
+      st.color = [band[o], band[o + 1], band[o + 2]];
+      if (colorRangeDlgEl && colorRangeDlgEl.__sync) colorRangeDlgEl.__sync();
+    }).catch(() => {});
+    return true;
+  }
   const rgba = sampleRGBA(true), o = (y * docW + x) * 4;
   colorRangeState.color = [rgba[o], rgba[o + 1], rgba[o + 2]];
   if (colorRangeDlgEl && colorRangeDlgEl.__sync) colorRangeDlgEl.__sync();

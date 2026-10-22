@@ -68,8 +68,8 @@ import {
   handActive, loadMixerBrush, moveOpts, setDocTool, stageLocal, viewAngle, zoomOutMode,
 } from './31-selection-brush.js';
 import {
-  cursorKickEl, dispPx, doWand, drawAnts, drawBrushCursor, drawSelBrushOverlay, drawSelDragPreview, effSelMode,
-  selBrushDown, syncGizmoCursor, syncPointerModifiers,
+  cursorKickEl, dispPx, doWand, drawAnts, drawBrushCursor, drawQuickMaskOverlay, drawSelBrushOverlay,
+  drawSelDragPreview, effSelMode, selBrushDown, syncGizmoCursor, syncPointerModifiers,
 } from './32-cursors-select-options.js';
 import {
   closeMagLasso, drawObjFinder, drawObjSelGizmo, magLasso, magLassoDown, objSelDown, polyLasso, polyLassoDown,
@@ -340,18 +340,29 @@ export function renderSmartFilters(box, idx, l, ui){
 }
 
 
+
+
+let docTabKey = null;
 export function syncDocTab(){
-  if (!doc || !docW) { shell.setDocTab(null); return; }
+  if (!doc || !docW) {
+    if (docTabKey === '') return;
+    docTabKey = ''; shell.setDocTab(null); return;
+  }
   const L = layerTree && layerTree.flat && layerTree.flat[selLayer];
   const modeName = DOC_MODE_NAMES[doc.mode] || ('mode ' + doc.mode);
   const name = docName;
-  shell.setDocTab({ name: name || '未命名', zoom, layer: L ? (layerRenames[selLayer] || L.name) : '', mode: modeName, depth: doc.depth, dirty: docStack.length ? insideDirty() : DOCS.isDirty() });
+  const layerName = L ? (layerRenames[selLayer] || L.name) : '';
+  const dirty = docStack.length ? insideDirty() : DOCS.isDirty();
+  const key = [DOCS.activeUid(), name, zoom, layerName, modeName, doc.depth, dirty ? 1 : 0].join('\u0001');
+  if (key === docTabKey) return;
+  docTabKey = key;
+  shell.setDocTab({ name: name || '未命名', zoom, layer: layerName, mode: modeName, depth: doc.depth, dirty });
   DOCS.refreshTabs();
 }
 export function syncDocStats(){
   syncDocTab();
   const el = $('#docStats'); if (!el) return;
-  if (!doc || !docW) { el.textContent = ''; return; }
+  if (!doc || !docW) { if (el.textContent !== '') el.textContent = ''; return; }
   const modeName = DOC_MODE_NAMES[doc.mode] || ('mode ' + doc.mode);
   let s = `${docW} × ${docH} 像素 · ${modeName}/${doc.depth}位`;
   const L = layerTree && layerTree.flat && layerTree.flat[selLayer];
@@ -360,8 +371,14 @@ export function syncDocStats(){
     const nm = layerRenames[selLayer] || L.name || ('图层 ' + selLayer);
     s += ` ｜ 「${nm}」 ${Math.round(t.w)} × ${Math.round(t.h)} @ ${Math.round(t.x)},${Math.round(t.y)}`;
   }
-  el.textContent = s;
-  const ds = $('#docSize'); if (ds) ds.textContent = `文档:${fmtBytes(docW * docH * (doc.mode === 4 ? 4 : 3) * (doc.depth / 8))}/${fmtBytes(origBuffer ? origBuffer.byteLength : 0)}`;
+
+
+  if (el.textContent !== s) el.textContent = s;
+  const ds = $('#docSize');
+  if (ds) {
+    const sizeText = `文档:${fmtBytes(docW * docH * (doc.mode === 4 ? 4 : 3) * (doc.depth / 8))}/${fmtBytes(origBuffer ? origBuffer.byteLength : 0)}`;
+    if (ds.textContent !== sizeText) ds.textContent = sizeText;
+  }
 }
 export const fmtBytes = n => n >= 1048576 ? (n / 1048576).toFixed(2) + 'M' : n >= 1024 ? (n / 1024).toFixed(1) + 'K' : n + 'B';
 
@@ -467,8 +484,9 @@ export function drawGizmo(){
   }
   drawSmView(ctx);                              
   drawSelBrushOverlay(ctx);                     
+  drawQuickMaskOverlay(ctx);
   drawObjFinder(ctx);                           
-  drawAnts(ctx);                                
+  if (!qmask) drawAnts(ctx);
   drawSelDragPreview(ctx);
   if (textOverlay) drawTextBoxGizmo(ctx);       
   if (textOverlay) drawTextRichCaret(ctx);      

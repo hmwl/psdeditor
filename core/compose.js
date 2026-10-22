@@ -9,7 +9,7 @@ import { applyAdjustment } from './adjust.js';
 import { parseLut, applyLutRGBA } from './lut.js';   
 import { groupSubpaths } from './psd-path.js';
 import { patternToRGBA } from './psd-additional.js';
-import { buildGradientLut, buildNoiseLut, ditherNoise, methodFromKey } from './paint-fill.js';
+import { buildGradientLut, buildNoiseLut, ditherNoise, methodFromKey, gradientMidpointsFromPSD, gradientSpan } from './paint-fill.js';
 import { contourPointsOf, contourLutFromPoints } from './contour.js';   
 import { adjustAlpha, featherDensityPlane } from './mask-feather.js';   
 
@@ -419,8 +419,8 @@ export function adjustmentRenderParams(adjustment) {
     }
     case 'vibA': {
       const d = p.desc;
-      return d && Number.isFinite(d.vibrance) && Number.isFinite(d['Strt'])
-        ? { type: 'vibrance', vibrance: d.vibrance, saturation: d['Strt'] } : null;
+      return d && Number.isFinite(d.vibrance) && (d.Strt === undefined || Number.isFinite(d.Strt))
+        ? { type: 'vibrance', vibrance: d.vibrance, saturation: d.Strt === undefined ? 0 : d.Strt } : null;
     }
     case 'phfl': {
       const color = photoFilterColorToRgb(p);
@@ -753,7 +753,7 @@ function gradientStops(gradient) {
   if (raw.length < 2) return null;
   if (raw.every((s, i) => i === 0 || s.pos <= raw[i - 1].pos)) raw.forEach((s, i) => { s.pos = i / (raw.length - 1); });
   else raw.sort((a, b) => a.pos - b.pos);
-  return raw;
+  return gradientMidpointsFromPSD(raw);
 }
 
 
@@ -777,22 +777,23 @@ function gradientLutF(gradient, size = 1024) {
   const mk = gradient.gradientsInterpolationMethod;
   const method = methodFromKey(mk && typeof mk === 'object' ? mk.value : mk) || 'classic';
   const intr = Number.isFinite(gradient.Grad.Intr) ? gradient.Grad.Intr : 4096;
-  return buildGradientLut({ colors: cs.map(s => ({ pos: s.pos, color: s.color, mid: s.mid })), alphas: ts.length ? ts : null,
+  return buildGradientLut({ colors: cs.map(s => ({ pos: s.pos, color: s.color, mid: s.mid })), alphas: ts.length ? gradientMidpointsFromPSD(ts.sort((a, b) => a.pos - b.pos)) : null,
     method, smoothness: Math.max(0, Math.min(1, intr / 4096)), size });
 }
 function gradientLut(gradient) {
   const f = gradientLutF(gradient, 256); if (!f) return null;
   const lut = new Uint8ClampedArray(256 * 4);
-  for (let k = 0; k < lut.length; k++) lut[k] = f[k] + .5;
+  for (let k = 0; k < lut.length; k++) lut[k] = f[k];
   return lut;
 }
 
 
 function gradientT(gradient, width, height, scale, ofsX = 0, ofsY = 0) {
-  const ang = unitValue(gradient.Angl, 90) * Math.PI / 180, cs = Math.cos(ang), sn = -Math.sin(ang);
+  const ang = unitValue(gradient.Angl, 0) * Math.PI / 180, cs = Math.cos(ang), sn = -Math.sin(ang);
   const type = gradient.Type?.value || 'Lnr ', rev = !!gradient.Rvrs;
-  const cx = (width - 1) / 2 + ofsX, cy = (height - 1) / 2 + ofsY;
-  const span = Math.max(1, (Math.abs(cs) * width + Math.abs(sn) * height) * scale), half = span / 2;
+  const inset = type === 'Lnr ' ? 0 : 1;
+  const cx = (width - inset) / 2 + ofsX, cy = (height - inset) / 2 + ofsY;
+  const span = Math.max(1, gradientSpan(type, width, height, cs, sn) * scale), half = span / 2;
   return (x, y) => {
     const dx = x - cx, dy = y - cy, u = dx * cs + dy * sn;
     let t;
@@ -824,10 +825,10 @@ function renderGradientFill(fill, vectorMask, width, height, patterns, opts = {}
   const T0 = gradientT(gradient, bw, bh, scale, ofs(gradient.Ofst?.Hrzn) / 100 * bw, ofs(gradient.Ofst?.Vrtc) / 100 * bh);
   const T = (x, y) => T0(x - bx, y - by);
   
-  const dither = gradient.Dthr !== false;
+  const dither = gradient.Dthr === true;
   for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
     const tv = T(x, y), k = (((Number.isFinite(tv) ? tv : 0) * 1023 + .5) | 0) * 4, p = (y * width + x) * 4, n = dither ? ditherNoise(x, y) : 0;
-    data[p] = lut[k] + .5 + n; data[p + 1] = lut[k + 1] + .5 + n; data[p + 2] = lut[k + 2] + .5 + n;
+    data[p] = lut[k] + n; data[p + 1] = lut[k + 1] + n; data[p + 2] = lut[k + 2] + n;
     data[p + 3] = (lut[k + 3] * (alpha && !opts.colorOnly ? alpha[y * width + x] : 255) / 255 + .5) | 0;   
   }
   return { data, width, height };
@@ -2193,6 +2194,38 @@ export function computeLayerFx(item, l, patterns = null) {
   return FX;
 }
 
+export function clippingAdjustmentEnd(layers, base, to = layers.length) {
+  if (layers[base].clipping || layers[base].group || layers[base].adjustment || layers[base].knockout) return base + 1;
+  let end = base + 1;
+  while (end < to && layers[end].clipping && !layers[end].group) end++;
+  return end;
+}
+export function opaqueSource(src) {
+  const data = new Uint8ClampedArray(src.data);
+  for (let p = 3; p < data.length; p += 4) data[p] = 255;
+  return { ...src, data };
+}
+
+export function mixSurfaceByMask(dst, source, mask, opacity = 1) {
+  const D = dst.data, S = source.data;
+  for (let p = 0; p < D.length; p += 4) {
+    const k = mask.data[p + 3] / 255 * opacity; if (!k) continue;
+    const da = D[p + 3] / 255, sa = S[p + 3] / 255, a = da * (1 - k) + sa * k;
+    if (a) for (let c = 0; c < 3; c++) D[p + c] = Math.round((D[p + c] * da * (1 - k) + S[p + c] * sa * k) / a);
+    D[p + 3] = Math.round(a * 255);
+  }
+  markAllDirty(dst);
+  return dst;
+}
+
+export function drawWithLockedAlpha(dst, src, left, top, options, layer = null) {
+  const alpha = new Uint8Array(dst.width * dst.height), D = dst.data;
+  for (let p = 0; p < alpha.length; p++) { alpha[p] = D[p * 4 + 3]; D[p * 4 + 3] = alpha[p] ? 255 : 0; }
+  drawContent(dst, src, left, top, options, layer);
+  for (let p = 0; p < alpha.length; p++) D[p * 4 + 3] = alpha[p];
+  return dst;
+}
+
 
 
 
@@ -2223,6 +2256,7 @@ export function compositeSplitPoints(doc) {
 export function compositeAll(doc, docW, docH, warped, opts = null) {
   setGlobalLightAngle(globalLightAngleOf(doc));   
   const layers = doc.layers, pairs = new Map(), stack = [];
+  const hasKnockout = layers.some(l => l.knockout);
   
 
 
@@ -2265,11 +2299,16 @@ export function compositeAll(doc, docW, docH, warped, opts = null) {
     }
     return null;
   };
-  const renderRange = (dst, from, to, inheritedHidden = false, capture = null) => {
+  const renderRange = (dst, from, to, inheritedHidden = false, capture = null, clipping = null, deepBackdrop = null) => {
     
 
-    let clipBase = null;
-    const baseOf = cb => (cb && cb.__lazy ? baseAlphaMask(cb.__lazy.src, cb.__lazy.left, cb.__lazy.top, docW, docH) : cb);
+    let clipBase = clipping;
+    const shallowBackdrop = hasKnockout ? { ...dst, data: dst.data.slice() } : null;
+    let deep = deepBackdrop || shallowBackdrop;
+    const draw = clipping ? drawWithLockedAlpha : drawLayer;
+    const content = clipping ? drawWithLockedAlpha : drawContent;
+    const clip = (src, left, top, base) => clipping ? src : clipToBase(src, left, top, base, docW, docH);
+    const baseOf = cb => (clipping ? cb : cb && cb.__lazy ? baseAlphaMask(cb.__lazy.src, cb.__lazy.left, cb.__lazy.top, docW, docH) : cb);
     for (let i = from; i < to; i++) {
       if (capture && capture.at === i) { capture.opts.captured = dst.data.slice(); capture = null; }
       const l = layers[i], type = l.group && l.group.type;
@@ -2285,7 +2324,7 @@ export function compositeAll(doc, docW, docH, warped, opts = null) {
 
           const target = createSurface(docW, docH);
           target.data.set(dst.data);          
-          renderRange(target, i + 1, header, false);   
+          renderRange(target, i + 1, header, false, null, null, deep);
           const m = groupMaskAlpha(group, docW, docH), k = (group.opacity ?? 255) / 255;
           const D = dst.data, T = target.data;
           const rc = dirtyRect(target);
@@ -2296,7 +2335,7 @@ export function compositeAll(doc, docW, docH, warped, opts = null) {
               const a = m[q] / 255;
               for (let c = 0; c < 4; c++) T[p4 + c] = Math.round(D[p4 + c] + (T[p4 + c] - D[p4 + c]) * a);
             }
-            drawLayer(target, stroke.src, stroke.left, stroke.top, { opacity: 1, blendMode: 'norm' });
+            draw(target, stroke.src, stroke.left, stroke.top, { opacity: 1, blendMode: 'norm' });
             const sr = dirtyRect(target);
             for (let yy = sr.top; yy < sr.bottom; yy++) for (let xx = sr.left, p4 = (yy * docW + sr.left) * 4; xx < sr.right; xx++, p4 += 4)
               for (let c = 0; c < 4; c++) D[p4 + c] = Math.round(D[p4 + c] + (T[p4 + c] - D[p4 + c]) * k);
@@ -2333,7 +2372,7 @@ export function compositeAll(doc, docW, docH, warped, opts = null) {
             growDirty(target, abR.l, abR.t, abR.r, abR.b);
           }
         }
-        if (!hidden) renderRange(target, i + 1, header, false);
+        if (!hidden) renderRange(target, i + 1, header, false, null, null, iso ? null : deep);
         if (abR && !abd.noClip) {             
           const T = target.data, rc = dirtyRect(target);
           for (let yy = rc.top; yy < rc.bottom; yy++) {
@@ -2349,16 +2388,18 @@ export function compositeAll(doc, docW, docH, warped, opts = null) {
           for (let yy = rc.top; yy < rc.bottom; yy++) for (let xx = rc.left, q = yy * docW + rc.left; xx < rc.right; xx++, q++)
             if (m[q] !== 255) T[q * 4 + 3] = Math.round(T[q * 4 + 3] * m[q] / 255);
         }
-        if (stroke) drawLayer(target, stroke.src, stroke.left, stroke.top, { opacity: 1, blendMode: 'norm' });
-        if (iso && !hidden) drawLayer(dst, target, 0, 0, { opacity: (group.opacity ?? 255) / 255, blendMode: pass ? 'norm' : group.blendMode,
+        if (stroke) draw(target, stroke.src, stroke.left, stroke.top, { opacity: 1, blendMode: 'norm' });
+        if (iso && !hidden) draw(dst, target, 0, 0, { opacity: (group.opacity ?? 255) / 255, blendMode: pass ? 'norm' : group.blendMode,
           ...(target === dst ? {} : { region: dirtyRect(target) }) });
         clipBase = null; i = header; continue;
       }
       if (type === 1 || type === 2 || type === 3 || inheritedHidden || l.hidden) { if (!l.clipping) clipBase = null; continue; }
+      if (l.clipping && !clipBase) continue;
       const adjustment = adjustmentRenderParams(l.adjustment);
       if (adjustment) {
         const adjusted = createSurface(docW, docH);
         adjusted.data.set(adjustment.type === 'colorLookup' ? applyLutRGBA(dst.data, adjustment.lut, adjustment.opts) : applyAdjustment(dst.data, docW, docH, adjustment));
+        if (clipping) for (let p = 3; p < adjusted.data.length; p += 4) adjusted.data[p] = 255;
         
         
         if (l.mask && l.mask.gray && !l.mask.disabled)
@@ -2366,9 +2407,8 @@ export function compositeAll(doc, docW, docH, warped, opts = null) {
         
         
         
-        
-        const clipped = l.clipping && clipBase ? clipToBase(adjusted, 0, 0, (clipBase = baseOf(clipBase)), docW, docH) : adjusted;
-        drawLayer(dst, clipped, 0, 0, { opacity: (l.opacity ?? 255) / 255, blendMode: l.blendMode });
+        const clipped = l.clipping && clipBase ? clip(adjusted, 0, 0, (clipBase = baseOf(clipBase))) : adjusted;
+        draw(dst, clipped, 0, 0, { opacity: (l.opacity ?? 255) / 255, blendMode: l.blendMode });
         if (!l.clipping) clipBase = null;
         continue;
       }
@@ -2384,10 +2424,10 @@ export function compositeAll(doc, docW, docH, warped, opts = null) {
         FX = computeLayerFx(item, l, doc.patterns);
         if (fxc) fxc.set(i, FX);
       }
-      for (const shadow of FX.shadows) drawLayer(dst, shadow.src, item.left + shadow.left, item.top + shadow.top,
+      for (const shadow of FX.shadows) draw(dst, shadow.src, item.left + shadow.left, item.top + shadow.top,
         { opacity: (l.opacity ?? 255) / 255, blendMode: shadow.blendMode });
       const glow = FX.glow;
-      if (glow) drawLayer(dst, glow.src, item.left + glow.left, item.top + glow.top,
+      if (glow) draw(dst, glow.src, item.left + glow.left, item.top + glow.top,
         { opacity: (l.opacity ?? 255) / 255, blendMode: glow.blendMode });
       const overlayLayer = FX.overlay;
       item.src = FX.src;
@@ -2396,54 +2436,72 @@ export function compositeAll(doc, docW, docH, warped, opts = null) {
       
 
       const contentOpacity = ((l.opacity ?? 255) / 255) * (item.fillApplied ? 1 : ((l.fillOpacity ?? 255) / 255));
+      let contentSrc = item.src, contentLeft = item.left, contentTop = item.top;
+      const stackEnd = clipping ? i + 1 : clippingAdjustmentEnd(layers, i, to);
+      if (stackEnd > i + 1) {
+        const colors = createSurface(docW, docH);
+        if (l.blendClipped === false) {
+          colors.data.set(dst.data);
+          drawContent(colors, opaqueSource(item.src), item.left, item.top,
+            { opacity: item.fillApplied ? 1 : (l.fillOpacity ?? 255) / 255, blendMode: l.blendMode }, l);
+        } else drawLayer(colors, item.src, item.left, item.top, { opacity: 1, blendMode: 'norm' });
+        renderRange(colors, i + 1, stackEnd, false, null, { __lazy: { src: item.src, left: item.left, top: item.top } });
+        contentSrc = colors; contentLeft = contentTop = 0;
+      }
       if (!l.clipping) {
         clipBase = { __lazy: { src: item.src, left: item.left, top: item.top } };
         
         
+        if (l.knockout) {
+          mixSurfaceByMask(dst, l.knockout === 2 ? deep : shallowBackdrop,
+            baseAlphaMask(item.src, item.left, item.top, docW, docH), (l.opacity ?? 255) / 255);
+          content(dst, contentSrc, contentLeft, contentTop, { opacity: contentOpacity, blendMode: l.blendMode }, l);
+        } else if (stackEnd > i + 1 && l.blendClipped === false)
+          mixSurfaceByMask(dst, contentSrc, baseAlphaMask(item.src, item.left, item.top, docW, docH), (l.opacity ?? 255) / 255);
+        else content(dst, contentSrc, contentLeft, contentTop, { opacity: contentOpacity, blendMode: l.blendMode }, l);
+        if (overlayLayer) draw(dst, overlayLayer, item.left, item.top, { opacity: (l.opacity ?? 255) / 255, blendMode: l.blendMode });
+        for (const mo of FX.modeOverlays || []) draw(dst, mo.src, item.left, item.top, { opacity: (l.opacity ?? 255) / 255, blendMode: mo.blendMode });
+        if (satin) draw(dst, satin.src, item.left, item.top, { opacity: (l.opacity ?? 255) / 255, blendMode: satin.blendMode });
+        if (innerGlow) draw(dst, innerGlow.src, item.left, item.top, { opacity: (l.opacity ?? 255) / 255, blendMode: innerGlow.blendMode });
+        for (const innerShadow of innerShadows) draw(dst, innerShadow.src, item.left, item.top, { opacity: (l.opacity ?? 255) / 255, blendMode: innerShadow.blendMode });
         
-        if (l.knockout) eraseWith(dst, item.src, item.left, item.top, (l.fillOpacity ?? 255) / 255);
-        else drawContent(dst, item.src, item.left, item.top, { opacity: contentOpacity, blendMode: l.blendMode }, l);
-        if (overlayLayer) drawLayer(dst, overlayLayer, item.left, item.top, { opacity: (l.opacity ?? 255) / 255, blendMode: l.blendMode });
-        for (const mo of FX.modeOverlays || []) drawLayer(dst, mo.src, item.left, item.top, { opacity: (l.opacity ?? 255) / 255, blendMode: mo.blendMode });
-        if (satin) drawLayer(dst, satin.src, item.left, item.top, { opacity: (l.opacity ?? 255) / 255, blendMode: satin.blendMode });
-        if (innerGlow) drawLayer(dst, innerGlow.src, item.left, item.top, { opacity: (l.opacity ?? 255) / 255, blendMode: innerGlow.blendMode });
-        for (const innerShadow of innerShadows) drawLayer(dst, innerShadow.src, item.left, item.top, { opacity: (l.opacity ?? 255) / 255, blendMode: innerShadow.blendMode });
-        
-        for (const stroke of outerStrokes) drawLayer(dst, stroke.src, item.left + stroke.left, item.top + stroke.top, { opacity: (l.opacity ?? 255) / 255, blendMode: stroke.blendMode });
-        for (const innerStroke of innerStrokes) drawLayer(dst, innerStroke.src, item.left, item.top, { opacity: (l.opacity ??255) / 255, blendMode: innerStroke.blendMode });
+        for (const stroke of outerStrokes) draw(dst, stroke.src, item.left + stroke.left, item.top + stroke.top, { opacity: (l.opacity ?? 255) / 255, blendMode: stroke.blendMode });
+        for (const innerStroke of innerStrokes) draw(dst, innerStroke.src, item.left, item.top, { opacity: (l.opacity ??255) / 255, blendMode: innerStroke.blendMode });
         if (bevel) {
-          drawLayer(dst, bevel.shadow.src, item.left + (bevel.shadow.left || 0), item.top + (bevel.shadow.top || 0), { opacity: (l.opacity ?? 255) / 255, blendMode: bevel.shadow.blendMode });
-          drawLayer(dst, bevel.highlight.src, item.left + (bevel.highlight.left || 0), item.top + (bevel.highlight.top || 0), { opacity: (l.opacity ?? 255) / 255, blendMode: bevel.highlight.blendMode });
+          draw(dst, bevel.shadow.src, item.left + (bevel.shadow.left || 0), item.top + (bevel.shadow.top || 0), { opacity: (l.opacity ?? 255) / 255, blendMode: bevel.shadow.blendMode });
+          draw(dst, bevel.highlight.src, item.left + (bevel.highlight.left || 0), item.top + (bevel.highlight.top || 0), { opacity: (l.opacity ?? 255) / 255, blendMode: bevel.highlight.blendMode });
         }
       } else if (clipBase) {
         clipBase = baseOf(clipBase);
-        drawContent(dst, clipToBase(item.src, item.left, item.top, clipBase, docW, docH), item.left, item.top,
+        content(dst, clip(item.src, item.left, item.top, clipBase), item.left, item.top,
           { opacity: contentOpacity, blendMode: l.blendMode }, l);
-        if (overlayLayer) drawLayer(dst, clipToBase(overlayLayer, item.left, item.top, clipBase, docW, docH), item.left, item.top,
+        if (overlayLayer) draw(dst, clip(overlayLayer, item.left, item.top, clipBase), item.left, item.top,
           { opacity: (l.opacity ?? 255) / 255, blendMode: l.blendMode });
-        for (const mo of FX.modeOverlays || []) drawLayer(dst, clipToBase(mo.src, item.left, item.top, clipBase, docW, docH), item.left, item.top,
+        for (const mo of FX.modeOverlays || []) draw(dst, clip(mo.src, item.left, item.top, clipBase), item.left, item.top,
           { opacity: (l.opacity ?? 255) / 255, blendMode: mo.blendMode });
-        if (satin) drawLayer(dst, clipToBase(satin.src, item.left, item.top, clipBase, docW, docH), item.left, item.top,
+        if (satin) draw(dst, clip(satin.src, item.left, item.top, clipBase), item.left, item.top,
           { opacity: (l.opacity ?? 255) / 255, blendMode: satin.blendMode });
-        if (innerGlow) drawLayer(dst, clipToBase(innerGlow.src, item.left, item.top, clipBase, docW, docH), item.left, item.top,
+        if (innerGlow) draw(dst, clip(innerGlow.src, item.left, item.top, clipBase), item.left, item.top,
           { opacity: (l.opacity ?? 255) / 255, blendMode: innerGlow.blendMode });
-        for (const innerShadow of innerShadows) drawLayer(dst, clipToBase(innerShadow.src, item.left, item.top, clipBase, docW, docH), item.left, item.top,
+        for (const innerShadow of innerShadows) draw(dst, clip(innerShadow.src, item.left, item.top, clipBase), item.left, item.top,
           { opacity: (l.opacity ?? 255) / 255, blendMode: innerShadow.blendMode });
         if (bevel) for (const part of [bevel.shadow, bevel.highlight]) {
           const bx = item.left + (part.left || 0), by = item.top + (part.top || 0);
-          drawLayer(dst, clipToBase(part.src, bx, by, clipBase, docW, docH), bx, by, { opacity: (l.opacity ?? 255) / 255, blendMode: part.blendMode });
+          draw(dst, clip(part.src, bx, by, clipBase), bx, by, { opacity: (l.opacity ?? 255) / 255, blendMode: part.blendMode });
         }
-        for (const innerStroke of innerStrokes) drawLayer(dst, clipToBase(innerStroke.src, item.left, item.top, clipBase, docW, docH), item.left, item.top,
+        for (const innerStroke of innerStrokes) draw(dst, clip(innerStroke.src, item.left, item.top, clipBase), item.left, item.top,
           { opacity: (l.opacity ??255) / 255, blendMode: innerStroke.blendMode });
-        for (const stroke of outerStrokes) drawLayer(dst, clipToBase(stroke.src, item.left + stroke.left, item.top + stroke.top, clipBase, docW, docH), item.left + stroke.left, item.top + stroke.top,
+        for (const stroke of outerStrokes) draw(dst, clip(stroke.src, item.left + stroke.left, item.top + stroke.top, clipBase), item.left + stroke.left, item.top + stroke.top,
           { opacity: (l.opacity ?? 255) / 255, blendMode: stroke.blendMode });
       }
+      if (hasKnockout && l.isBackground) { deep = { ...dst, data: dst.data.slice() }; shallowBackdrop.data.set(dst.data); }
+      i = stackEnd - 1;
     }
   };
   const surf = createSurface(docW, docH);
   const below = opts && opts.below;
   let start = 0;
-  if (below && below.data && below.data.length === surf.data.length && below.at > 0 && below.at <= layers.length) {
+  if (!hasKnockout && below && below.data && below.data.length === surf.data.length && below.at > 0 && below.at <= layers.length) {
     surf.data.set(below.data); markAllDirty(surf); start = below.at;
   }
   const cap = opts && opts.captureBelow;

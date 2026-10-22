@@ -5,20 +5,21 @@
 
 import './49-fonts-text-model.js';   
 import { compositeAll } from '../../../core/app.js';
+import { createTileWriter } from '../../../core/tile-store.js';
 import { shell } from '../shell.js';
 import { $, EDIT, applyEdits, ensureLazy, selectionBounds, selectionToMaskGray, selectionValueAt } from './01-boot.js';
 import {
-  doc, docH, docName, docStack, docW, layerDeletes, layerRenames, layerTree, li, maskPaint, origBuffer,
-  selection, set_layerReorder, textCrops, textRenders,
+  doc, docH, docName, docStack, docW, layerDeletes, layerRenames, layerReorder, layerTree, li, maskPaint,
+  origBuffer, pixelPaint, selection, set_layerReorder, textCrops, textRenders,
 } from './02-doc-state.js';
-import { pushDocHistory, structuralBegin, structuralDone } from './03-history.js';
+import { pushDocHistory, structuralApply, structuralBegin, structuralDone, updateUndoButtons } from './03-history.js';
 import {
   isBackgroundLayer, rasterKindOf, rasterizeLayerUI, renderLayerAlone, toggleLayerLock,
 } from './05-layer-lock-guides.js';
 import { paintMap } from './11-paint-common.js';
 import { activeDocSubs } from './17-shape-pen.js';
 import { hasAnyEdits, refreshAll } from './20-snap-smart-object.js';
-import { initDocument } from './21-load-document.js';
+import { initDocument, lazyPixelSource, readLazyImageBand } from './21-load-document.js';
 import { layerOrderView, renderLayerPanel, selLayer, selLayers, set_selLayer } from './23-layers-panel.js';
 import {
   commitLayerOps, effClipping, effLock, humanEditError, putLayerOp, renderProps, setOpField,
@@ -58,7 +59,6 @@ function layerSampler(idx){
     return { rgba: pp.rgba, w: pp.w, h: pp.h, M: map.M, inv: map.inv };
   }
   if (doc?.layers?.[idx]?.lazyChannels || doc?.layers?.[idx]?.lazyCompressedChannels) return null;
-  
   const full = renderLayerAlone(idx);
   if (!full) return null;
   return { rgba: full, w: docW, h: docH, M: [1, 0, 0, 1, 0, 0], inv: [1, 0, 0, 1, 0, 0] };
@@ -76,11 +76,170 @@ export function compositeNowRGBA(){
 
 
 
+const layerNeedsStore = l => !!(l && (l.lazyTileStore || l.lazyPixelOps?.length || l.lazyChannels || l.lazyCompressedChannels || l.lazyImage || l.lazyRasterFile));
+function useStoreCopy(merged){
+  if (docW * docH > 64e6) return true;
+  return (merged ? doc.layers : [doc.layers[selLayer]]).some(layerNeedsStore);
+}
+
+// shortcut: disk compositing handles plain raster layers; reject richer appearance until band rendering supports it.
+function storeCompositeWhy(ids){
+  for (const i of ids) {
+    const l = doc.layers[i], tree = layerTree?.flat?.[i];
+    if (!l || layerDeletes.has(i)) continue;
+    if (l.group || tree?.isGroup || tree?.groupType != null || l.mask || l.vectorMask || l.lazyMaskEdits
+        || l.effects || l.adjustment || l.fill || l.vectorStroke || l.clipping || l.blendIf || l.knockout
+        || (l.blendMode || 'norm') !== 'norm' || transformChanged(i) || isMeshTransform(i)
+        || tree?.isSmartObject || (l.lazyPixelOps?.length && !l.lazyTileStore))
+      return `图层「${layerRenames[i] || l.name || i}」包含分块合成尚不支持的蒙版、混合、效果、分组或变换；请先栅格化。`;
+  }
+  return '';
+}
+
+async function layerBandRGBA(l, idx, y0, h){
+  const out = new Uint8ClampedArray(docW * h * 4);
+  if (!l) return out;
+  const b = l.bounds || { left: 0, top: 0 }, L = b.left | 0, T = b.top | 0, w = l.width | 0, lh = l.height | 0;
+  const tc = textRenders[idx] && textCrops[idx];
+  if (tc?.rgba) {
+    const tb = tc.bounds, tw = tb.right - tb.left;
+    const ya = Math.max(y0, tb.top), yb = Math.min(y0 + h, tb.bottom);
+    for (let y = ya; y < yb; y++) {
+      const xa = Math.max(0, tb.left), xb = Math.min(docW, tb.right);
+      if (xb > xa) out.set(tc.rgba.subarray(((y - tb.top) * tw + (xa - tb.left)) * 4, ((y - tb.top) * tw + (xb - tb.left)) * 4), ((y - y0) * docW + xa) * 4);
+    }
+  } else if (l.rgba && w > 0 && lh > 0) {
+    const ya = Math.max(y0, T), yb = Math.min(y0 + h, T + lh);
+    const xa = Math.max(0, L), xb = Math.min(docW, L + w);
+    if (xb > xa) for (let y = ya; y < yb; y++)
+      out.set(l.rgba.subarray(((y - T) * w + (xa - L)) * 4, ((y - T) * w + (xb - L)) * 4), ((y - y0) * docW + xa) * 4);
+  } else if (layerNeedsStore(l) && w > 0 && lh > 0) {
+    const ya = Math.max(y0, T), yb = Math.min(y0 + h, T + lh), xa = Math.max(0, L), xb = Math.min(docW, L + w);
+    if (xb > xa && yb > ya) {
+      if (!l.lazyTileStore && !l.lazyImage && !l.lazyRasterFile && (l.lazyChannels || l.lazyCompressedChannels)) {
+        const read = lazyPixelSource(l, doc.depth || 8, doc.mode || 3);
+        for (let ty = Math.floor((ya - T) / 256) * 256; ty < yb - T; ty += 256)
+          for (let tx = Math.floor((xa - L) / 256) * 256; tx < xb - L; tx += 256) {
+            const tile = await read(tx, ty);
+            if (!tile?.data) throw new Error('无法读取原始 PSD 像素；已取消操作');
+            const x0 = Math.max(xa, L + tile.x), x1 = Math.min(xb, L + tile.x + tile.width);
+            for (let y = Math.max(ya, T + tile.y); y < Math.min(yb, T + tile.y + tile.height); y++) {
+              const offset = ((y - T - tile.y) * tile.width + x0 - L - tile.x) * 4;
+              out.set(tile.data.subarray(offset, offset + (x1 - x0) * 4), ((y - y0) * docW + x0) * 4);
+            }
+          }
+      } else {
+        const band = await readLazyImageBand(l, ya - T, yb - ya);
+        if (!band || band.preview) throw new Error('无法读取原始图片像素；已取消操作，避免使用缩略预览');
+        for (let yy = 0; yy < band.height; yy++)
+          out.set(band.data.subarray((yy * band.width + (xa - L)) * 4, (yy * band.width + (xb - L)) * 4), ((ya + yy - y0) * docW + xa) * 4);
+      }
+    }
+  }
+  const pp = pixelPaint[idx], tiles = pp?.sparse?.tiles;
+  if (tiles?.size) {
+    const left = pp.left | 0, top = pp.top | 0;
+    for (const t of tiles.values()) {
+      const ya = Math.max(y0, top + t.y), yb = Math.min(y0 + h, top + t.y + t.height);
+      const xa = Math.max(0, left + t.x), xb = Math.min(docW, left + t.x + t.width);
+      for (let y = ya; y < yb; y++) for (let x = xa; x < xb; x++) {
+        const s = ((y - top - t.y) * t.width + (x - left - t.x)) * 4, d = ((y - y0) * docW + x) * 4;
+        out[d] = t.data[s]; out[d + 1] = t.data[s + 1]; out[d + 2] = t.data[s + 2]; out[d + 3] = t.data[s + 3];
+      }
+    }
+  }
+  return out;
+}
+async function mergedBandRGBA(y0, h){
+  const out = new Uint8ClampedArray(docW * h * 4);
+  const over = (r, g, b, a, q, op) => {
+    const sa = a / 255 * op; if (!(sa > 0)) return;
+    const da = out[q + 3] / 255, oa = sa + da * (1 - sa); if (!(oa > 0)) return;
+    out[q] = Math.round((r * sa + out[q] * da * (1 - sa)) / oa);
+    out[q + 1] = Math.round((g * sa + out[q + 1] * da * (1 - sa)) / oa);
+    out[q + 2] = Math.round((b * sa + out[q + 2] * da * (1 - sa)) / oa);
+    out[q + 3] = Math.round(oa * 255);
+  };
+  for (const i of displayOrder()) {
+    const l = doc.layers[i]; if (!l || l.hidden || layerDeletes.has(i)) continue;
+    const op = ((l.opacity ?? 255) / 255) * ((l.fillOpacity ?? 255) / 255); if (!(op > 0)) continue;
+    const band = await layerBandRGBA(l, i, y0, h);
+    for (let q = 0; q < band.length; q += 4) over(band[q], band[q + 1], band[q + 2], band[q + 3], q, op);
+  }
+  return out;
+}
+const selCoversFull = () => {
+  const d = selection?.data;
+  return !!(selection && d?.__virtual && !d.__tiles.size && !d.__base && !d.__neg && (d.__fill | 0) === 255
+    && selection.x === 0 && selection.y === 0 && selection.width === docW && selection.height === docH);
+};
+async function copyToStore(merged){
+  const why = storeCompositeWhy(merged ? displayOrder() : [selLayer]);
+  if (why) { $('#notice').textContent = why; return false; }
+  let region;
+  if (merged) {
+    const sb = selection ? selectionBounds(selection) : null;
+    if (selection && !(sb && sb.width > 0 && sb.height > 0)) { $('#notice').textContent = '选区是空的：先画一个选区，或取消选择拷整幅画布。'; return false; }
+    region = sb ? { x: Math.max(0, sb.x), y: Math.max(0, sb.y), w: Math.min(docW, sb.x + sb.width) - Math.max(0, sb.x), h: Math.min(docH, sb.y + sb.height) - Math.max(0, sb.y) }
+                 : { x: 0, y: 0, w: docW, h: docH };
+  } else {
+    const l = doc.layers[selLayer]; if (!l) return false;
+    const b = l.bounds || { left: 0, top: 0, right: l.width, bottom: l.height };
+    if (selection) {
+      const sb = selectionBounds(selection);
+      if (!(sb && sb.width > 0 && sb.height > 0)) { $('#notice').textContent = '选区是空的：先画一个选区。'; return false; }
+      region = { x: Math.max(0, sb.x), y: Math.max(0, sb.y), w: Math.min(docW, sb.x + sb.width) - Math.max(0, sb.x), h: Math.min(docH, sb.y + sb.height) - Math.max(0, sb.y) };
+    } else {
+      const x0 = Math.max(0, b.left | 0), y0 = Math.max(0, b.top | 0), x1 = Math.min(docW, b.right | 0), y1 = Math.min(docH, b.bottom | 0);
+      if (!(x1 > x0 && y1 > y0)) { $('#notice').textContent = '这一层在画布上没有像素。'; return false; }
+      region = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+    }
+  }
+  if (!(region.w > 0 && region.h > 0)) return false;
+  const { x: rx, y: ry, w, h } = region;
+  const fs = selCoversFull();
+  const k = Math.max(1, Math.ceil(Math.max(w, h) / 512));
+  const pw = Math.max(1, Math.ceil(w / k)), ph = Math.max(1, Math.ceil(h / k));
+  const preview = new Uint8ClampedArray(pw * ph * 4);
+  const writer = await createTileWriter(w, h, 256);
+  try {
+    for (let yy = 0; yy < h; yy += 256) {
+      const bh = Math.min(256, h - yy);
+      const src = merged ? await mergedBandRGBA(ry + yy, bh) : await layerBandRGBA(doc.layers[selLayer], selLayer, ry + yy, bh);
+      const data = new Uint8ClampedArray(w * bh * 4);
+      for (let row = 0; row < bh; row++) data.set(src.subarray(((row) * docW + rx) * 4, ((row) * docW + rx + w) * 4), row * w * 4);
+      if (selection && !fs) {
+        for (let row = 0; row < bh; row++) for (let x = 0; x < w; x++) {
+          const a = data[(row * w + x) * 4 + 3];
+          if (!a) continue;
+          data[(row * w + x) * 4 + 3] = Math.round(a * selectionValueAt(selection, rx + x, ry + yy + row) / 255);
+        }
+      }
+      for (let py = 0; py < ph; py++) {
+        const sy = Math.min(h - 1, py * k);
+        if (sy < yy || sy >= yy + bh) continue;
+        for (let px = 0; px < pw; px++) {
+          const sx = Math.min(w - 1, px * k);
+          preview.set(data.subarray(((sy - yy) * w + sx) * 4, ((sy - yy) * w + sx) * 4 + 4), (py * pw + px) * 4);
+        }
+      }
+      await writer.write({ x: 0, y: yy, width: w, height: bh, data });
+      await new Promise(r => setTimeout(r, 0));
+    }
+    const store = await writer.close();
+    pixelClipboard = { x: rx, y: ry, w, h, store, lazy: true, preview: { data: preview, width: pw, height: ph } };
+    set_lastClipKind('pixels');
+    $('#notice').textContent = `已${merged ? '合并' : ''}拷贝 ${w}×${h} 像素（磁盘瓦片 ${Math.round(w * h / 1e6)} MP）`;
+    return true;
+  } catch (e) {
+    try { await writer.abort(); } catch {}
+    $('#notice').textContent = '拷贝失败：' + humanEditError(e && e.message || e);
+    return false;
+  }
+}
 export function copyPixelsUI(merged){
   if (!doc || li || selLayer < 0) return false;
-  if (merged ? doc.layers.some(l => l?.lazyChannels || l?.lazyCompressedChannels) : (doc.layers[selLayer]?.lazyChannels || doc.layers[selLayer]?.lazyCompressedChannels)) {
-    $('#notice').textContent = '超大懒加载图层暂不支持整层复制；请先缩小选区到分块编辑范围。'; return false;
-  }
+  if (useStoreCopy(merged)) return copyToStore(merged);
   if (merged) {
     
     const sb = selection ? selectionBounds(selection) : null;
@@ -151,9 +310,54 @@ export function cropRGBABox(data, w, b){
 }
 
 
+
+
+function pasteLazyClipboard(c, mode){
+  if (mode === 'into' || mode === 'outside') {
+    $('#notice').textContent = '大文档的磁盘剪贴板暂只支持普通粘贴 / 原位粘贴（贴入/外部粘贴需要把选区蒙版写进新层）。';
+    return false;
+  }
+  if (!c.store?.id) { $('#notice').textContent = '剪贴板的磁盘瓦片已经失效，请重新拷贝。'; return false; }
+  let c2 = c;
+  const target = artboardOfLayer(selLayer);
+  if (target && mode === 'inPlace' && c.ab) c2 = { ...c, x: c.x - c.ab.x + target.rect.x, y: c.y - c.ab.y + target.rect.y };
+  else if (target && mode === 'paste') {
+    const t = target.rect;
+    c2 = { ...c, x: Math.round(t.x + (t.w - c.w) / 2), y: Math.round(t.y + (t.h - c.h) / 2) };
+  }
+  const name = nextLayerName('图层');
+  const view = layerOrderView();
+  const synth = doc.layers.length;
+  pushDocHistory('粘贴');
+  const layer = {
+    name, width: c2.w, height: c2.h,
+    bounds: { top: c2.y, left: c2.x, bottom: c2.y + c2.h, right: c2.x + c2.w },
+    rgba: null, hidden: false, opacity: 255, fillOpacity: 255, blendMode: 'norm', clipping: false,
+    lazyTileStore: c.store,
+    lazyPreview: c.preview ? { data: c.preview.data, width: c.preview.width, height: c.preview.height } : null,
+  };
+  doc.layers.push(layer);
+  const order = (layerReorder ? layerReorder.slice() : doc.layers.slice(0, synth).map((_, i) => i));
+  let at = order.indexOf(selLayer); if (at < 0) at = order.length - 1;
+  order.splice(at + 1, 0, synth);
+  set_layerReorder(order);
+  const proto = (layerTree?.flat || []).find(n => n && !n.group && n.groupType == null) || {};
+  layerTree.flat[synth] = { ...proto, index: synth, name, width: c2.w, height: c2.h,
+    bounds: { ...layer.bounds }, groupType: null, group: null, mask: null, vectorMask: null,
+    adjustment: null, fill: null, text: null, isText: false, isSmartObject: false, hidden: false,
+    opacity: 255, blendMode: 'norm' };
+  layerRenames[synth] = name;
+  selLayers.clear();
+  set_selLayer(synth);
+  renderLayerPanel(); renderProps(); renderPreviewOnly(); updateUndoButtons();
+  const msg = `已粘贴为图层「${name}」（${c2.w}×${c2.h} @ ${c2.x},${c2.y}，磁盘瓦片）`;
+  $('#notice').textContent = msg; shell.status(msg);
+  return true;
+}
 export async function pasteClipboardUI(mode){
   if (!doc || li) return false;
   if (!pixelClipboard) { $('#notice').textContent = '剪贴板是空的：先拷贝或剪切一些像素。'; return false; }
+  if (pixelClipboard.lazy) return pasteLazyClipboard(pixelClipboard, mode);
   if (mode === 'into' && !selection) { $('#notice').textContent = '「贴入」需要先有一个选区。'; return false; }
   if (mode === 'outside' && !selection) { $('#notice').textContent = '「外部粘贴」需要先有一个选区。'; return false; }
   if (!await ensureLazy(EDIT, '粘贴')) return false;
@@ -218,7 +422,9 @@ export async function pasteClipboardUI(mode){
 }
 
 export function cutPixelsUI(){
-  if (!copyPixelsUI(false)) return false;
+  const r = copyPixelsUI(false);
+  if (r && typeof r.then === 'function') return r.then(ok => { if (!ok) return false; clearSelectionPixels(); return true; });
+  if (!r) return false;
   clearSelectionPixels();
   return true;
 }
@@ -279,6 +485,102 @@ export function canMergeDown(){
   }
   return false;
 }
+
+async function composeIdsBand(ids, y0, h, flatten){
+  const out = new Uint8ClampedArray(docW * h * 4);
+  if (flatten) { out.fill(255); }
+  else for (let q = 3; q < out.length; q += 4) out[q] = 0;
+  const want = new Set(ids);
+  for (const i of displayOrder()) {
+    if (!want.has(i)) continue;
+    const l = doc.layers[i]; if (!l || l.hidden || layerDeletes.has(i)) continue;
+    const op = ((l.opacity ?? 255) / 255) * ((l.fillOpacity ?? 255) / 255); if (!(op > 0)) continue;
+    const band = await layerBandRGBA(l, i, y0, h);
+    for (let q = 0; q < band.length; q += 4) {
+      let sa = band[q + 3] / 255 * op;
+      if (l.clipping) sa *= out[q + 3] / 255;
+      if (!(sa > 0)) continue;
+      const da = out[q + 3] / 255, oa = sa + da * (1 - sa);
+      out[q] = Math.round((band[q] * sa + out[q] * da * (1 - sa)) / oa);
+      out[q + 1] = Math.round((band[q + 1] * sa + out[q + 1] * da * (1 - sa)) / oa);
+      out[q + 2] = Math.round((band[q + 2] * sa + out[q + 2] * da * (1 - sa)) / oa);
+      out[q + 3] = Math.round(oa * 255);
+    }
+  }
+  return out;
+}
+
+
+async function mergeHugeLayers(kind, involved, targetIdx, targetIsGroup, targetHead){
+  const ids = [...new Set(involved.flat())];
+  const why = storeCompositeWhy(ids);
+  if (why) { $('#notice').textContent = why; return false; }
+  const content = ids.filter(i => doc.layers[i] && !doc.layers[i].hidden);
+  const name = targetIsGroup
+    ? (layerRenames[targetHead] || layerTree.flat[targetHead]?.name || layerTree.flat[targetHead]?.unicodeName || '图层')
+    : (layerRenames[targetIdx] || doc.layers[targetIdx]?.name || '图层');
+  const flatten = kind === 'flatten';
+  const pk = Math.max(1, Math.ceil(Math.max(docW, docH) / 512));
+  const pw = Math.max(1, Math.ceil(docW / pk)), ph = Math.max(1, Math.ceil(docH / pk));
+  const preview = new Uint8ClampedArray(pw * ph * 4);
+  const writer = await createTileWriter(docW, docH, 256);
+  let prev = null;
+  try {
+    for (let y0 = 0; y0 < docH; y0 += 256) {
+      const bh = Math.min(256, docH - y0);
+      const band = await composeIdsBand(content, y0, bh, flatten);
+      for (let py = 0; py < ph; py++) {
+        const sy = Math.min(docH - 1, py * pk);
+        if (sy < y0 || sy >= y0 + bh) continue;
+        for (let px = 0; px < pw; px++) {
+          const sx = Math.min(docW - 1, px * pk);
+          preview.set(band.subarray(((sy - y0) * docW + sx) * 4, ((sy - y0) * docW + sx) * 4 + 4), (py * pw + px) * 4);
+        }
+      }
+      await writer.write({ x: 0, y: y0, width: docW, height: bh, data: band });
+      await new Promise(r => setTimeout(r, 0));
+    }
+    const store = await writer.close();
+    prev = structuralBegin();
+    const synth = doc.layers.length;
+    const layer = { name, width: docW, height: docH,
+      bounds: { top: 0, left: 0, bottom: docH, right: docW },
+      rgba: null, hidden: false, opacity: 255, fillOpacity: 255, blendMode: 'norm', clipping: false,
+      lazyTileStore: store, lazyPreview: { data: preview, width: pw, height: ph } };
+    doc.layers.push(layer);
+    const order = layerReorder ? layerReorder.slice() : doc.layers.slice(0, synth).map((_, i) => i);
+    const lowId = involved[0]?.[0];
+    let pos = order.indexOf(lowId);
+    if (pos < 0) pos = 0;
+    order.splice(pos, 0, synth);
+    for (const i of ids) layerDeletes.add(i);
+    set_layerReorder(order);
+    const proto = (layerTree?.flat || []).find(n => n && !n.group && n.groupType == null) || {};
+    layerTree.flat[synth] = { ...proto, index: synth, name, width: docW, height: docH,
+      bounds: { ...layer.bounds }, groupType: null, group: null, mask: null, vectorMask: null,
+      adjustment: null, fill: null, text: null, isText: false, isSmartObject: false, hidden: false,
+      opacity: 255, blendMode: 'norm' };
+    layerRenames[synth] = name;
+
+
+    const built = await buildPsdBuffer({ fast: true });
+    if (!built?.buf) throw new Error('合并结果没能写回分块缓冲');
+    const mergedSel = order.indexOf(synth);
+    await initDocument(built.buf, docName, { nested: docStack.length > 0 });
+    selLayers.clear();
+    set_selLayer(Math.min(Math.max(mergedSel, 0), doc.layers.length - 1));
+    refreshAll(false);
+    structuralDone(prev, flatten ? '拼合图像' : '合并图层');
+    const msg = `${flatten ? '已拼合' : '已合并'} ${ids.length} 个图层（分块合成，共 ${(docW * docH / 1e6).toFixed(1)} MP）`;
+    $('#notice').textContent = msg; shell.status(msg);
+    return true;
+  } catch (e) {
+    try { await writer.abort(); } catch {}
+    if (prev) { try { structuralApply(prev); } catch {} }
+    $('#notice').textContent = '合并失败：' + humanEditError(e && e.message || e);
+    return false;
+  }
+}
 export async function mergeLayersUI(kind){
   if (!doc || li || !origBuffer) return false;
   const view = layerOrderView();
@@ -303,7 +605,6 @@ export async function mergeLayersUI(kind){
     involved = blocks.filter(b => !doc.layers[b[b.length - 1]].hidden);   
   }
   if (involved.length < 2 && kind !== 'flatten') { $('#notice').textContent = '至少需要两个图层才能合并。'; return false; }
-  if (involved.flat().some(i => doc.layers[i]?.lazyChannels || doc.layers[i]?.lazyCompressedChannels)) { $('#notice').textContent = '超大懒加载图层暂不支持合并或拼合，以免整层展开。'; return false; }
   const targetBlock = involved[0];
   const targetHead = targetBlock[targetBlock.length - 1];
   const targetNode = view.nodes[targetHead];
@@ -315,6 +616,8 @@ export async function mergeLayersUI(kind){
     $('#notice').textContent = `「${layerRenames[targetIdx] || (flat[targetIdx] || {}).name || '图层'}」已锁定：先解锁再合并。`;
     return false;
   }
+  if (docW * docH > 128e6 || involved.flat().some(i => layerNeedsStore(doc.layers[i])))
+    return mergeHugeLayers(kind, involved, targetIdx, targetIsGroup, targetHead);
   if (!await ensureLazy(EDIT, '合并图层')) return false;
   $('#err').textContent = '';
   try {
